@@ -1,0 +1,102 @@
+name: Release
+
+# Publishes the gem to RubyGems on a version tag (vX.Y.Z), or builds artifacts
+# only on manual dispatch (dry run). Produces:
+#   - precompiled, multi-ABI platform gems via rake-compiler-dock (oxidize-rb
+#     cross-gem-action): one fat gem per platform, covering Ruby 3.1–3.4
+#   - the pure source gem (fallback for unlisted platforms; needs a Rust toolchain)
+#
+# The native extension depends on the microsandbox core crate via a pinned git
+# tag, so every build is self-contained (no adjacent checkout needed) — the
+# rake-compiler-dock containers fetch it from git.
+#
+# Publishing uses RubyGems Trusted Publishing (OIDC); configure the gem's trusted
+# publisher to this repo + workflow in the RubyGems UI before the first release.
+#
+# NOTE: the core crate is heavy (a platform-specific build.rs that downloads the
+# msb runtime, plus native deps and Apple-native keyring on macOS). Whether the
+# `arm64-darwin` target cross-builds under osxcross in rake-compiler-dock is to be
+# confirmed on the first run; if it can't, move that platform to a native macos-14
+# runner job that builds all 3.1–3.4 ABIs into one gem.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build artifacts but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-gems:
+    name: gem (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - x86_64-linux
+          - aarch64-linux
+          - arm64-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - name: Build precompiled gem
+        uses: oxidize-rb/cross-gem-action@v9
+        with:
+          platform: ${{ matrix.platform }}
+          ruby-versions: "3.1,3.2,3.3,3.4"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gem-${{ matrix.platform }}
+          path: pkg/*.gem
+
+  source-gem:
+    name: source gem
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: bundle exec rake build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gem-source
+          path: pkg/*.gem
+
+  publish:
+    name: publish to RubyGems
+    needs: [cross-gems, source-gem]
+    runs-on: ubuntu-latest
+    # Real tag pushes only — never on a manual dry run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write # required for Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: Configure RubyGems trusted publishing
+        uses: rubygems/configure-trusted-publisher@v1
+      - name: Push gems
+        run: |
+          shopt -s nullglob
+          for gem in dist/*.gem; do
+            echo "Pushing $gem"
+            gem push "$gem"
+          done

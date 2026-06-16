@@ -76,14 +76,28 @@ SDK-set path (`Microsandbox.runtime_path=`) → config file → workspace build 
 expose the core `setup::install`/`is_installed` for explicit, idempotent
 provisioning (mirrors the Python `install()`/`is_installed()`).
 
-## Packaging
+## Core-crate dependency (self-contained)
 
-* Source gem: compiles the extension via `extconf.rb` (rb-sys
-  `create_rust_makefile`); requires a Rust toolchain (MSRV documented below).
-* Precompiled platform gems (roadmap): built with `rake-compiler` +
-  `rake-compiler-dock` per `Gem::Platform`, shipping `lib/microsandbox/<ruby_abi>/`
-  native artifacts — the same model Node uses with per-platform
-  `optionalDependencies`. End users then install with no Rust toolchain.
+`ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
+(`microsandbox` / `microsandbox-network` at `v0.5.7`), so the gem builds anywhere
+— CI, `rake-compiler-dock` release containers, and end-user source installs —
+without an adjacent checkout. For fast local development against a sibling
+microsandbox checkout, copy `.cargo/config.toml.example` to `.cargo/config.toml`
+(gitignored); its `paths` override builds against the local crates instead of
+git. The override must never be committed — it would break container builds.
+
+## Packaging & releases
+
+* **Source gem**: compiles the extension via `extconf.rb` (rb-sys
+  `create_rust_makefile`); requires a Rust toolchain (MSRV below).
+* **Precompiled platform gems**: built in CI on a `vX.Y.Z` tag
+  (`.github/workflows/release.yml`) with `oxidize-rb/cross-gem-action`
+  (`rake-compiler-dock`) per `Gem::Platform`, shipping multi-ABI
+  `lib/microsandbox/<ruby_abi>/` native artifacts — the same model Node uses with
+  per-platform packages. End users then install with no Rust toolchain. Published
+  to RubyGems via Trusted Publishing (OIDC). See [Releasing](README.md#releasing).
+  Whether the heavy core cross-builds for `arm64-darwin` under osxcross is
+  confirmed on first run; if not, that platform moves to a native macOS runner.
 
 ## Build requirements
 

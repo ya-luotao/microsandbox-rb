@@ -38,7 +38,10 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   image management, snapshots, SSH, the raw agent client, and fine-grained
   networking/secrets/patches are not yet exposed. The native layer is
   structured to add them module-by-module.
-- Precompiled platform gems are not yet published; installing from source
-  requires a Rust toolchain.
+- The release pipeline (`.github/workflows/release.yml`) builds precompiled
+  platform gems via `rake-compiler-dock` and publishes via Trusted Publishing;
+  the `arm64-darwin` cross-build needs validation on the first tagged run (the
+  core crate has Apple-native deps). Until precompiled gems are published,
+  installing from source requires a Rust toolchain (stable >= 1.91).
 
 [0.5.7]: https://github.com/superradcompany/microsandbox/releases/tag/v0.5.7

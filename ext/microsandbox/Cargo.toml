@@ -25,13 +25,15 @@ magnus = "0.8"
 rb-sys = "0.9"
 
 # The microsandbox core runtime, wrapped via FFI exactly like the official
-# Python (pyo3) and Node (napi) SDKs. Path dependency to the adjacent checkout
-# for local development; release builds of precompiled platform gems use the
-# same source. "ssh" matches the feature set the Python/Node SDKs ship with;
-# default features include "prebuilt" (provisions msb + libkrunfw at build time),
-# "net", and "keyring".
-microsandbox = { path = "../../../microsandbox/crates/microsandbox", default-features = true, features = ["ssh"] }
-microsandbox-network = { path = "../../../microsandbox/crates/network" }
+# Python (pyo3) and Node (napi) SDKs. Pinned to the matching upstream tag so the
+# gem is self-contained and buildable anywhere (CI, release containers, end-user
+# source installs) without an adjacent checkout. For local development against a
+# sibling checkout, use the `paths` override in `.cargo/config.toml` (see
+# `.cargo/config.toml.example`). "ssh" matches the feature set the Python/Node
+# SDKs ship with; default features add "prebuilt" (provisions msb + libkrunfw at
+# build time), "net", and "keyring".
+microsandbox = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.7", default-features = true, features = ["ssh"] }
+microsandbox-network = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.7" }
 
 # Async core bridged to Ruby's synchronous API via a blocking tokio runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

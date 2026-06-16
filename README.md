@@ -215,6 +215,29 @@ Unit specs run without a runtime. Integration specs boot real microVMs and are
 opt-in via `MICROSANDBOX_INTEGRATION=1` (override the test image with
 `MICROSANDBOX_TEST_IMAGE`).
 
+The native extension depends on the `microsandbox` core crate via a pinned git
+tag, so it builds without an adjacent checkout. To develop against a sibling
+`microsandbox/` checkout instead (faster, reflects local runtime changes):
+
+```bash
+cp .cargo/config.toml.example .cargo/config.toml   # gitignored path override
+bundle exec rake compile
+```
+
+## Releasing
+
+Releases are automated by `.github/workflows/release.yml`:
+
+1. Bump `Microsandbox::VERSION` (and the `tag = "vX.Y.Z"` on the core-crate
+   dependency in `ext/microsandbox/Cargo.toml`) to match the upstream runtime,
+   update `CHANGELOG.md`.
+2. Push a `vX.Y.Z` tag. CI builds precompiled, multi-ABI platform gems
+   (`x86_64-linux`, `aarch64-linux`, `arm64-darwin`) with
+   `rake-compiler-dock`, plus the source gem, and publishes them to RubyGems via
+   Trusted Publishing (OIDC — configure the trusted publisher in the RubyGems UI
+   first). Use the workflow's manual `dry_run` dispatch to build artifacts without
+   publishing.
+
 See [DESIGN.md](DESIGN.md) for the architecture and [the implemented-surface
 section](DESIGN.md#implemented-surface-v1-vs-roadmap) for what's covered today
 vs. on the roadmap (streaming exec/logs, volumes, images, snapshots, SSH, the

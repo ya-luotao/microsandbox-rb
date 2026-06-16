@@ -3004,6 +3004,7 @@ dependencies = [
 [[package]]
 name = "microsandbox"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "anyhow",
  "astral-tokio-tar",
@@ -3054,6 +3055,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-agent-client"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "ciborium",
  "microsandbox-protocol",
@@ -3066,6 +3068,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-db"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "async-trait",
  "sea-orm",
@@ -3077,6 +3080,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-filesystem"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "libc",
  "microsandbox-utils",
@@ -3089,6 +3093,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-image"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -3114,6 +3119,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-metrics"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "chrono",
  "libc",
@@ -3124,6 +3130,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-migration"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "sea-orm-migration",
  "serde_json",
@@ -3132,6 +3139,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-network"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "base64",
  "bytes",
@@ -3171,6 +3179,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-protocol"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "chrono",
  "ciborium",
@@ -3184,6 +3193,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-runtime"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "bytes",
  "chrono",
@@ -3211,6 +3221,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-utils"
 version = "0.5.7"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.5.7#4dbb712bfd636f8964939a5317f749ba111e6a6d"
 dependencies = [
  "dirs",
  "libc",
