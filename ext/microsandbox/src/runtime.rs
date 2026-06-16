@@ -11,7 +11,15 @@ use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::OnceLock;
 
+use magnus::Ruby;
 use tokio::runtime::Runtime;
+
+/// The current Ruby handle. Safe to call from any bound method or value
+/// conversion: we always hold the GVL there (conversions run after `block_on`
+/// returns and re-acquires it).
+pub fn ruby() -> Ruby {
+    Ruby::get().expect("microsandbox: not on a Ruby thread")
+}
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 

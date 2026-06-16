@@ -14,9 +14,12 @@ end
 
 require_relative "microsandbox/errors"
 require_relative "microsandbox/exec_output"
+require_relative "microsandbox/exec_handle"
 require_relative "microsandbox/fs"
 require_relative "microsandbox/metrics"
 require_relative "microsandbox/log_entry"
+require_relative "microsandbox/image"
+require_relative "microsandbox/volume"
 require_relative "microsandbox/sandbox"
 
 # Microsandbox — lightweight microVM sandboxes for Ruby.

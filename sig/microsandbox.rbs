@@ -125,7 +125,8 @@ module Microsandbox
                       ?env: Hash[untyped, untyped]?, ?workdir: String?, ?shell: String?,
                       ?user: String?, ?hostname: String?, ?labels: Hash[untyped, untyped]?,
                       ?scripts: Hash[untyped, untyped]?, ?entrypoint: Array[String]?,
-                      ?ports: Hash[untyped, untyped]?, ?network: untyped?, ?detached: bool,
+                      ?ports: Hash[untyped, untyped]?, ?volumes: Hash[untyped, untyped]?,
+                      ?network: untyped?, ?from_snapshot: String?, ?detached: bool,
                       ?replace: bool, ?replace_with_timeout: Numeric?)
                       ?{ (Sandbox) -> untyped } -> untyped
     def self.start: (String name, ?detached: bool) -> Sandbox
@@ -138,11 +139,109 @@ module Microsandbox
                ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecOutput
     def shell: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
                 ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecOutput
+    def exec_stream: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
+                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecHandle
+    def shell_stream: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
+                       ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecHandle
     def fs: () -> FS
     def metrics: () -> Metrics
     def logs: (?tail: Integer?, ?since_ms: Numeric?, ?until_ms: Numeric?,
                ?sources: Array[String | Symbol]?) -> Array[LogEntry]
     def stop: (?timeout: Numeric?) -> nil
     def kill: (?timeout: Numeric?) -> nil
+  end
+
+  class ExecEvent
+    def type: () -> Symbol
+    def pid: () -> Integer?
+    def code: () -> Integer?
+    def data: () -> String?
+    def text: () -> String?
+    def started?: () -> bool
+    def stdout?: () -> bool
+    def stderr?: () -> bool
+    def exited?: () -> bool
+    def failed?: () -> bool
+    def stdin_error?: () -> bool
+  end
+
+  class ExitStatus
+    def exit_code: () -> Integer
+    def success?: () -> bool
+    def failure?: () -> bool
+  end
+
+  class ExecStdin
+    def write: (untyped data) -> self
+    def close: () -> nil
+  end
+
+  class ExecHandle
+    include Enumerable[ExecEvent]
+    def id: () -> String
+    def each: () { (ExecEvent) -> void } -> self
+            | () -> Enumerator[ExecEvent, self]
+    def wait: () -> ExitStatus
+    def collect: () -> ExecOutput
+    def signal: (Integer sig) -> nil
+    def kill: () -> nil
+    def resize: (Integer rows, Integer cols) -> nil
+    def stdin: () -> ExecStdin?
+  end
+
+  class ImageInfo
+    def reference: () -> String
+    def size_bytes: () -> Integer?
+    def manifest_digest: () -> String?
+    def architecture: () -> String?
+    def os: () -> String?
+    def layer_count: () -> Integer
+    def created_at: () -> Time?
+    def last_used_at: () -> Time?
+  end
+
+  class ImageDetail
+    def handle: () -> ImageInfo
+    def config: () -> Hash[String, untyped]?
+    def layers: () -> Array[Hash[String, untyped]]
+    def reference: () -> String
+  end
+
+  class ImagePruneReport
+    def image_refs_removed: () -> Integer
+    def manifests_removed: () -> Integer
+    def layers_removed: () -> Integer
+    def fsmeta_removed: () -> Integer
+    def vmdk_removed: () -> Integer
+    def bytes_reclaimed: () -> Integer?
+  end
+
+  class Image
+    def self.list: () -> Array[ImageInfo]
+    def self.get: (String reference) -> ImageInfo
+    def self.inspect: (?String? reference) -> (ImageDetail | String)
+    def self.remove: (String reference, ?force: bool) -> nil
+    def self.prune: () -> ImagePruneReport
+  end
+
+  class VolumeInfo
+    def name: () -> String
+    def path: () -> String?
+    def kind: () -> Symbol?
+    def quota_mib: () -> Integer?
+    def used_bytes: () -> Integer?
+    def capacity_bytes: () -> Integer?
+    def disk_format: () -> String?
+    def disk_fstype: () -> String?
+    def labels: () -> Hash[String, String]
+    def created_at: () -> Time?
+  end
+
+  class Volume
+    def self.create: (String name, ?kind: String, ?size_mib: Integer?, ?quota_mib: Integer?,
+                      ?labels: Hash[untyped, untyped]?) -> VolumeInfo
+    def self.get: (String name) -> VolumeInfo
+    def self.list: () -> Array[VolumeInfo]
+    def self.remove: (String name) -> nil
   end
 end

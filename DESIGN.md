@@ -108,14 +108,17 @@ git. The override must never be committed — it would break container builds.
 
 ## Implemented surface (v1) vs roadmap
 
-**v1 (this release):** sandbox lifecycle (`create`/`start`/`get`/`list`/`remove`/
-`stop`/`kill`, block form), `exec`/`shell` with collected `ExecOutput`, the full
-guest filesystem API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…),
-`metrics`, `logs`, `version`/`install`/`installed?`, and the typed error
-hierarchy.
+**Implemented:** sandbox lifecycle (`create`/`start`/`get`/`list`/`remove`/
+`stop`/`kill`, block form), `exec`/`shell` with collected `ExecOutput`,
+**streaming** `exec_stream`/`shell_stream` (`ExecHandle` is `Enumerable` over
+`ExecEvent`s, with stdin sink + signal/kill/resize), the full guest filesystem
+API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…), `metrics`, `logs`,
+**OCI image-cache management** (`Image.get`/`list`/`inspect`/`remove`/`prune`),
+**named volumes** (`Volume.create`/`get`/`list`/`remove` + `volumes:` mounts),
+**boot-from-snapshot** (`from_snapshot:`), `version`/`install`/`installed?`, and
+the typed error hierarchy.
 
-**Roadmap:** streaming exec/logs/metrics (`exec_stream`, `log_stream`,
-`metrics_stream`), named volumes, image management, snapshots, SSH, the raw
-agent client, and fine-grained networking/secrets/patches options. The native
-layer is structured so these slot in module-by-module, exactly as in the Python
-binding.
+**Roadmap:** streaming logs/metrics (`log_stream`, `metrics_stream`), snapshot
+creation/management, SSH, the raw agent client, and fine-grained
+networking/secrets/patches options. The native layer is structured so these slot
+in module-by-module, exactly as in the Python binding.

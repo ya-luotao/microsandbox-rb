@@ -160,6 +160,56 @@ Microsandbox::Sandbox.create("obs", image: "alpine") do |sb|
 end
 ```
 
+### Streaming output
+
+For long-running commands, stream events as they arrive instead of waiting:
+
+```ruby
+Microsandbox::Sandbox.create("stream", image: "python") do |sb|
+  handle = sb.exec_stream("python", ["-u", "-c", "import time\nfor i in range(3): print(i); time.sleep(1)"])
+  handle.each do |event|       # ExecHandle is Enumerable
+    print event.text if event.stdout?
+  end
+  # or: out = handle.collect  → ExecOutput  (drain to the end)
+  # interactive stdin:
+  #   sink = handle.stdin; sink.write("data\n"); sink.close
+  # control: handle.signal(15), handle.kill, handle.resize(rows, cols)
+end
+```
+
+### Images
+
+Manage the local OCI image cache (images are pulled automatically on `create`):
+
+```ruby
+Microsandbox::Image.list           # => [Microsandbox::ImageInfo, ...]
+Microsandbox::Image.get("alpine")  # => Microsandbox::ImageInfo
+Microsandbox::Image.inspect("alpine").layers  # => [{...}, ...]
+Microsandbox::Image.remove("alpine", force: true)
+report = Microsandbox::Image.prune
+report.bytes_reclaimed
+```
+
+### Named volumes
+
+Persistent storage that outlives individual sandboxes:
+
+```ruby
+Microsandbox::Volume.create("cache", kind: "disk", size_mib: 512)
+Microsandbox::Volume.list           # => [Microsandbox::VolumeInfo, ...]
+
+Microsandbox::Sandbox.create("with-vol", image: "alpine",
+                             volumes: { "/data" => { named: "cache" } }) do |sb|
+  sb.fs.write("/data/state.txt", "persisted")
+end
+
+Microsandbox::Volume.remove("cache")
+```
+
+`volumes:` accepts a host path String (bind mount) or `{ bind: "/host" }` /
+`{ named: "volume-name" }` per guest path. Boot from a snapshot with
+`Sandbox.create(name, from_snapshot: "snap-name-or-path")`.
+
 ### Error handling
 
 All errors descend from `Microsandbox::Error` and carry a stable `#code`:
@@ -238,10 +288,12 @@ Releases are automated by `.github/workflows/release.yml`:
    first). Use the workflow's manual `dry_run` dispatch to build artifacts without
    publishing.
 
-See [DESIGN.md](DESIGN.md) for the architecture and [the implemented-surface
-section](DESIGN.md#implemented-surface-v1-vs-roadmap) for what's covered today
-vs. on the roadmap (streaming exec/logs, volumes, images, snapshots, SSH, the
-raw agent client, and fine-grained networking).
+See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
+section for what's covered today vs. on the roadmap. Covered: sandbox lifecycle,
+`exec`/`shell` (collected and streaming), the full guest filesystem, metrics,
+logs, OCI image-cache management, named volumes, and boot-from-snapshot. Still on
+the roadmap: streaming logs/metrics, snapshot creation, SSH, the raw agent
+client, and fine-grained networking/secrets/patches.
 
 ## License
 

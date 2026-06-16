@@ -10,8 +10,11 @@
 
 mod conv;
 mod error;
+mod exec;
+mod image;
 mod runtime;
 mod sandbox;
+mod volume;
 
 use magnus::{function, prelude::*, Error, Ruby};
 
@@ -55,6 +58,9 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
 
     sandbox::define(ruby, &native)?;
+    exec::define(ruby, &native)?;
+    image::define(ruby, &native)?;
+    volume::define(ruby, &native)?;
 
     Ok(())
 }

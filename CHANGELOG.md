@@ -17,6 +17,14 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   `Microsandbox::ExecOutput` (`exit_code`, `success?`, `stdout`/`stderr`,
   `stdout_bytes`/`stderr_bytes`), with `cwd`, `user`, `env`, `timeout`, `tty`,
   and `stdin` options.
+- Streaming execution: `Sandbox#exec_stream`/`#shell_stream` returning an
+  `Enumerable` `Microsandbox::ExecHandle` over `Microsandbox::ExecEvent`s, with
+  a stdin sink (`#stdin`), `#wait`/`#collect`, and `#signal`/`#kill`/`#resize`.
+- OCI image-cache management: `Microsandbox::Image.get`/`list`/`inspect`/
+  `remove`/`prune` with `ImageInfo`/`ImageDetail`/`ImagePruneReport`.
+- Named volumes: `Microsandbox::Volume.create`/`get`/`list`/`remove` with
+  `VolumeInfo`, plus `volumes:` mounts (`{ bind: }` / `{ named: }`) and
+  `from_snapshot:` boot in `Sandbox.create`.
 - Guest filesystem (`Sandbox#fs`): `read`, `read_text`, `write`, `list`,
   `mkdir`, `remove`, `remove_dir`, `copy`, `rename`, `exists?`, `stat`,
   `copy_from_host`, `copy_to_host`, with `FsEntry`/`FsMetadata` value objects.
@@ -34,8 +42,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
 
 ### Known limitations / roadmap
 
-- Streaming APIs (`exec_stream`, `log_stream`, `metrics_stream`), named volumes,
-  image management, snapshots, SSH, the raw agent client, and fine-grained
+- Streaming logs/metrics (`log_stream`, `metrics_stream`), snapshot
+  creation/management, SSH, the raw agent client, and fine-grained
   networking/secrets/patches are not yet exposed. The native layer is
   structured to add them module-by-module.
 - The release pipeline (`.github/workflows/release.yml`) builds precompiled

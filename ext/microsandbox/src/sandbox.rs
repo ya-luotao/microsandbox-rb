@@ -18,7 +18,8 @@ use microsandbox::sandbox::{
 
 use crate::conv;
 use crate::error;
-use crate::runtime::block_on;
+use crate::exec::ExecHandle;
+use crate::runtime::{block_on, ruby};
 
 #[magnus::wrap(class = "Microsandbox::Native::Sandbox", free_immediately, size)]
 pub struct Sandbox {
@@ -40,6 +41,9 @@ impl Sandbox {
 
         if let Some(v) = conv::opt_string(opts, "image")? {
             b = b.image(v);
+        }
+        if let Some(v) = conv::opt_string(opts, "from_snapshot")? {
+            b = b.from_snapshot(v);
         }
         if let Some(v) = conv::opt_u8(opts, "cpus")? {
             b = b.cpus(v);
@@ -74,6 +78,28 @@ impl Sandbox {
         }
         for (host, guest) in conv::opt_port_map(opts, "ports")? {
             b = b.port(host, guest);
+        }
+        // volumes: normalized by the Ruby layer to [guest, kind, source] triples.
+        for spec in conv::opt::<Vec<Vec<String>>>(opts, "volumes")?.unwrap_or_default() {
+            if spec.len() != 3 {
+                return Err(error::base_error("invalid volume mount spec"));
+            }
+            let (guest, kind, source) = (spec[0].clone(), spec[1].clone(), spec[2].clone());
+            match kind.as_str() {
+                "bind" | "named" => {}
+                other => {
+                    return Err(error::base_error(format!(
+                        "unknown volume mount kind {other:?} (expected \"bind\" or \"named\")"
+                    )))
+                }
+            }
+            b = b.volume(guest, move |m| {
+                if kind == "named" {
+                    m.named(source)
+                } else {
+                    m.bind(source)
+                }
+            });
         }
         if let Some(net) = conv::opt_string(opts, "network")? {
             match net.as_str() {
@@ -150,6 +176,30 @@ impl Sandbox {
         let output = block_on(self.inner.shell_with(script, move |b| parsed.apply(b)))
             .map_err(error::to_ruby)?;
         exec_output_to_hash(output)
+    }
+
+    /// Streaming command execution. Returns an ExecHandle to pull events from.
+    fn exec_stream(
+        &self,
+        cmd: String,
+        args: Vec<String>,
+        opts: RHash,
+    ) -> Result<ExecHandle, Error> {
+        let parsed = ExecOpts::parse(args, opts)?;
+        let handle = block_on(self.inner.exec_stream_with(cmd, move |b| parsed.apply(b)))
+            .map_err(error::to_ruby)?;
+        Ok(ExecHandle::from_core(handle))
+    }
+
+    /// Streaming shell execution.
+    fn shell_stream(&self, script: String, opts: RHash) -> Result<ExecHandle, Error> {
+        let parsed = ExecOpts::parse(Vec::new(), opts)?;
+        let handle = block_on(
+            self.inner
+                .shell_stream_with(script, move |b| parsed.apply(b)),
+        )
+        .map_err(error::to_ruby)?;
+        Ok(ExecHandle::from_core(handle))
     }
 
     /// Graceful stop (+ wait). `timeout` is optional seconds.
@@ -321,12 +371,6 @@ impl ExecOpts {
 // Value conversions
 //--------------------------------------------------------------------------------------------------
 
-/// The current Ruby handle. Safe to call from any bound method: we always hold
-/// the GVL at conversion time (after `block_on` has returned).
-fn ruby() -> Ruby {
-    Ruby::get().expect("microsandbox: value conversion off the Ruby thread")
-}
-
 /// Collect an iterator of `RHash` into a Ruby `Array`.
 fn rhash_array<I: IntoIterator<Item = RHash>>(items: I) -> Result<RArray, Error> {
     let arr = ruby().ary_new();
@@ -336,7 +380,7 @@ fn rhash_array<I: IntoIterator<Item = RHash>>(items: I) -> Result<RArray, Error>
     Ok(arr)
 }
 
-fn exec_output_to_hash(output: microsandbox::ExecOutput) -> Result<RHash, Error> {
+pub(crate) fn exec_output_to_hash(output: microsandbox::ExecOutput) -> Result<RHash, Error> {
     let ruby = ruby();
     let hash = ruby.hash_new();
     let status = output.status();
@@ -502,6 +546,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("name", method!(Sandbox::name, 0))?;
     class.define_method("exec", method!(Sandbox::exec, 3))?;
     class.define_method("shell", method!(Sandbox::shell, 2))?;
+    class.define_method("exec_stream", method!(Sandbox::exec_stream, 3))?;
+    class.define_method("shell_stream", method!(Sandbox::shell_stream, 2))?;
     class.define_method("stop", method!(Sandbox::stop, 1))?;
     class.define_method("kill", method!(Sandbox::kill, 1))?;
     class.define_method("metrics", method!(Sandbox::metrics, 0))?;

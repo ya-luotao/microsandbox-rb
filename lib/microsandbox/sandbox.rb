@@ -79,10 +79,12 @@ module Microsandbox
       def create(name,
                  image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
                  shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
-                 entrypoint: nil, ports: nil, network: nil, detached: false,
-                 replace: false, replace_with_timeout: nil)
+                 entrypoint: nil, ports: nil, volumes: nil, network: nil,
+                 from_snapshot: nil, detached: false, replace: false,
+                 replace_with_timeout: nil)
         opts = {}
         opts["image"] = image.to_s if image
+        opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
         opts["cpus"] = Integer(cpus) if cpus
         opts["memory"] = Integer(memory) if memory
         opts["workdir"] = workdir.to_s if workdir
@@ -94,6 +96,7 @@ module Microsandbox
         opts["scripts"] = stringify(scripts) if scripts
         opts["entrypoint"] = Array(entrypoint).map(&:to_s) if entrypoint
         opts["ports"] = intify_ports(ports) if ports
+        opts["volumes"] = normalize_volumes(volumes) if volumes
         opts["network"] = network.to_s if network
         opts["detached"] = true if detached
         if replace_with_timeout
@@ -150,6 +153,29 @@ module Microsandbox
       def intify_ports(ports)
         ports.each_with_object({}) { |(k, v), acc| acc[Integer(k)] = Integer(v) }
       end
+
+      # Normalize volumes (Hash of guest_path => spec) into [guest, kind, source]
+      # triples for the native layer. A spec is a host path String (bind mount),
+      # or a Hash { bind: "/host" } / { named: "volume-name" }.
+      def normalize_volumes(volumes)
+        volumes.map do |guest, spec|
+          guest = guest.to_s
+          case spec
+          when String
+            [guest, "bind", spec]
+          when Hash
+            if (named = spec[:named] || spec["named"])
+              [guest, "named", named.to_s]
+            elsif (bind = spec[:bind] || spec["bind"])
+              [guest, "bind", bind.to_s]
+            else
+              raise ArgumentError, "volume spec for #{guest.inspect} needs :bind or :named"
+            end
+          else
+            raise ArgumentError, "invalid volume spec for #{guest.inspect}: #{spec.inspect}"
+          end
+        end
+      end
     end
 
     def initialize(native)
@@ -182,6 +208,21 @@ module Microsandbox
     def shell(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil)
       ExecOutput.new(@native.shell(script.to_s,
                                    exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)))
+    end
+
+    # Run a command and stream its output as it arrives.
+    # @return [ExecHandle]
+    # @see ExecHandle
+    def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil)
+      ExecHandle.new(@native.exec_stream(command.to_s, Array(args).map(&:to_s),
+                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)))
+    end
+
+    # Run a shell script and stream its output as it arrives.
+    # @return [ExecHandle]
+    def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil)
+      ExecHandle.new(@native.shell_stream(script.to_s,
+                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)))
     end
 
     # Guest filesystem operations.
