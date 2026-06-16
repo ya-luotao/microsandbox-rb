@@ -1,0 +1,27 @@
+# Ruby
+/.bundle/
+/vendor/bundle/
+/pkg/
+/tmp/
+/doc/
+/.yardoc/
+*.gem
+.rspec_status
+Gemfile.lock
+
+# Compiled native extension artifacts
+*.bundle
+*.so
+*.dll
+*.o
+*.a
+/lib/microsandbox/microsandbox.bundle
+/lib/microsandbox/microsandbox.so
+
+# Rust / Cargo native extension build output
+/ext/microsandbox/target/
+/target/
+
+# Editor / OS
+.DS_Store
+*.swp
