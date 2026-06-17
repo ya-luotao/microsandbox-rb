@@ -22,6 +22,10 @@ require_relative "microsandbox/streams"
 require_relative "microsandbox/image"
 require_relative "microsandbox/volume"
 require_relative "microsandbox/snapshot"
+require_relative "microsandbox/patch"
+require_relative "microsandbox/network"
+require_relative "microsandbox/agent"
+require_relative "microsandbox/ssh"
 require_relative "microsandbox/sandbox"
 
 # Microsandbox — lightweight microVM sandboxes for Ruby.

@@ -137,24 +137,32 @@ API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…), `metrics`,
 **OCI image-cache management** (`Image.get`/`list`/`inspect`/`remove`/`prune`),
 **named volumes** (`Volume.create`/`get`/`list`/`remove` + `volumes:` mounts),
 **snapshots** (`Snapshot.create`/`get`/`list`/`remove`/`verify`/`export`/`import`
-+ `from_snapshot:` boot), `version`/`install`/`installed?`/`ensure_runtime!`,
-**registry auth** (`registry_auth`/`registry_insecure`/`registry_ca_certs` on
-`create`, for private/authenticated registries), and the typed error hierarchy.
++ `from_snapshot:` boot), **rootfs patches** (`Patch.text`/`file`/`append`/
+`copy_file`/`copy_dir`/`symlink`/`mkdir`/`remove` via `create(patches:)`),
+**custom per-rule network policies** (`NetworkPolicy`/`Rule`/`Destination` —
+CIDR/IP/domain/suffix/group allow-deny rules with per-direction defaults and
+bulk domain denials, alongside the presets), interactive **`attach`/
+`attach_shell`** (host-TTY coupled — raw mode + SIGWINCH), **SSH**
+(`Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`), the **raw agent client**
+(`AgentClient` → `AgentStream`/`AgentFrame`),
+`version`/`install`/`installed?`/`ensure_runtime!`, **registry auth**
+(`registry_auth`/`registry_insecure`/`registry_ca_certs` on `create`, for
+private/authenticated registries), and the typed error hierarchy.
 
 Create options now cover `image`, `cpus`, `memory`, `oci_upper_size`, `env`,
 `workdir`, `shell`, `user`, `hostname`, `labels`, `scripts`, `entrypoint`,
-`ports`/`ports_udp`, `volumes`, `network` policy presets
-(`public_only`/`none`/`allow_all`/`non_local`), `log_level`, `quiet_logs`,
-`security`, `max_duration`, `idle_timeout`, `rlimits`, `pull_policy`,
-`registry_auth`/`registry_insecure`/`registry_ca_certs`, `secrets`,
-`from_snapshot`, `detached`, and `replace`/`replace_with_timeout`. `exec`/`shell`
-add per-call `rlimits`.
+`ports`/`ports_udp`, `volumes`, `patches`, `network` (policy presets
+`public_only`/`none`/`allow_all`/`non_local`, or a custom `NetworkPolicy`/Hash),
+`log_level`, `quiet_logs`, `security`, `max_duration`, `idle_timeout`, `rlimits`,
+`pull_policy`, `registry_auth`/`registry_insecure`/`registry_ca_certs`,
+`secrets`, `from_snapshot`, `detached`, and `replace`/`replace_with_timeout`.
+`exec`/`shell` add per-call `rlimits`.
 
 ## Verification
 
 The binding is verified at four levels:
 
-1. **Unit** (140 examples) — the Ruby layer's option normalization and value
+1. **Unit** (192 examples) — the Ruby layer's option normalization and value
    objects, with the native layer stubbed.
 2. **Real-microVM integration** (`spec/integration`, opt-in via
    `MICROSANDBOX_INTEGRATION=1`) — boots actual sandboxes and round-trips
@@ -170,9 +178,10 @@ The binding is verified at four levels:
    shipped Rust source via `extconf.rb` and the installed gem boots a real
    microVM, confirming the gem manifest and source-install path are complete.
 
-**Roadmap:** custom per-rule network policies (CIDR/domain/group allow-deny
-rules — the presets and secret-host allowances are covered), file patches,
-interactive `attach`/`attach_shell` (host-TTY coupled — raw mode,
-SIGWINCH), SSH (`SshClient`/`SftpClient`/`SshServer`), and the raw agent client.
-The native layer is structured so these slot in module-by-module, exactly as in
-the Python binding.
+**Roadmap:** the v1 roadmap (custom per-rule network policies, file patches,
+interactive `attach`/`attach_shell`, SSH, and the raw agent client) is now
+implemented — see the list above. What remains is upstream-gated rather than a
+binding gap: surfacing newer core features as the pinned core-crate tag advances
+(e.g. additional network knobs like DNS/TLS-proxy tuning and per-mount stat
+virtualization), which slot in module-by-module exactly as the existing bindings
+do.

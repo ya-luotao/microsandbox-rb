@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use magnus::{value::ReprValue, Error, RHash, TryConvert, Value};
+use magnus::{value::ReprValue, Error, RArray, RHash, TryConvert, Value};
 
 /// Fetch a non-nil value for `key`, if present.
 fn get(hash: RHash, key: &str) -> Option<Value> {
@@ -58,6 +58,24 @@ pub fn opt_string_map(hash: RHash, key: &str) -> Result<Vec<(String, String)>, E
 pub fn opt_string_vec(hash: RHash, key: &str) -> Result<Vec<String>, Error> {
     match get(hash, key) {
         Some(v) => Ok(Vec::<String>::try_convert(v)?),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Array of `Hash`es (e.g. `patches`, custom-policy `rules`). Empty if absent.
+///
+/// `RHash` is a GC-managed handle and so cannot be collected via the blanket
+/// `Vec<T: TryConvert>` path; we walk the `Array` and convert each element.
+pub fn opt_hash_vec(hash: RHash, key: &str) -> Result<Vec<RHash>, Error> {
+    match get(hash, key) {
+        Some(v) => {
+            let arr = RArray::try_convert(v)?;
+            let mut out = Vec::with_capacity(arr.len());
+            for i in 0..arr.len() {
+                out.push(arr.entry::<RHash>(i as isize)?);
+            }
+            Ok(out)
+        }
         None => Ok(Vec::new()),
     }
 }

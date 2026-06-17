@@ -8,6 +8,7 @@
 //! Everything here lives under `Microsandbox::Native`; the ergonomic, idiomatic
 //! surface is the pure-Ruby layer in `lib/microsandbox/`.
 
+mod agent;
 mod conv;
 mod error;
 mod exec;
@@ -15,6 +16,7 @@ mod image;
 mod runtime;
 mod sandbox;
 mod snapshot;
+mod ssh;
 mod stream;
 mod volume;
 
@@ -79,6 +81,8 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     snapshot::define(ruby, &native)?;
     image::define(ruby, &native)?;
     volume::define(ruby, &native)?;
+    agent::define(ruby, &native)?;
+    ssh::define(ruby, &native)?;
 
     Ok(())
 }
