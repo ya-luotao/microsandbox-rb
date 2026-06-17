@@ -163,10 +163,10 @@ module Microsandbox
     def shell: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
                 ?timeout: Numeric?, ?tty: bool, ?stdin: String?, ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
     def exec_stream: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
-                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?,
+                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe)?,
                       ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def shell_stream: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
-                       ?timeout: Numeric?, ?tty: bool, ?stdin: String?, ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
+                       ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe)?, ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def attach: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
                  ?env: Hash[untyped, untyped]?, ?detach_keys: String?,
                  ?rlimits: Hash[untyped, untyped]?) -> Integer

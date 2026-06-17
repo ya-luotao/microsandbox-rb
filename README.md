@@ -197,8 +197,9 @@ Microsandbox::Sandbox.create("stream", image: "public.ecr.aws/docker/library/pyt
     print event.text if event.stdout?
   end
   # or: out = handle.collect  → ExecOutput  (drain to the end)
-  # interactive stdin:
-  #   sink = handle.stdin; sink.write("data\n"); sink.close
+  # interactive stdin — create the stream with stdin: :pipe to get a writable sink:
+  #   h = sb.exec_stream("cat", [], stdin: :pipe)
+  #   sink = h.stdin; sink.write("data\n"); sink.close  # close sends EOF
   # control: handle.signal(15), handle.kill, handle.resize(rows, cols)
 end
 ```
@@ -335,21 +336,9 @@ bundle exec rake compile
 ## Releasing
 
 Releases are automated by `.github/workflows/release.yml` via RubyGems
-**Trusted Publishing** (OIDC) — there is no API key to store as a secret.
-
-**One-time setup** (before the first release), create a *pending* trusted
-publisher at <https://rubygems.org/profile/oidc/pending_trusted_publishers>:
-
-| Field | Value |
-|-------|-------|
-| RubyGems gem name | `microsandbox-rb` |
-| Repository owner | `ya-luotao` |
-| Repository name | `microsandbox-rb` |
-| Workflow filename | `release.yml` |
-| Environment | *(leave blank)* |
-
-On the first successful push the pending publisher auto-converts to a permanent
-one bound to the gem.
+**Trusted Publishing** (OIDC) — there is no API key to store as a secret. The
+trusted publisher is already configured for this gem, so no per-release secret
+or credential setup is needed.
 
 **Each release:**
 

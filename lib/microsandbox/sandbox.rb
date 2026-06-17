@@ -358,7 +358,9 @@ module Microsandbox
     # @param env [Hash, nil] extra environment variables
     # @param timeout [Numeric, nil] kill after N seconds
     # @param tty [Boolean] allocate a pseudo-terminal
-    # @param stdin [String, nil] data to feed to stdin
+    # @param stdin [String, Symbol, nil] bytes to feed to stdin, or +:pipe+ to
+    #   open a streaming stdin pipe (write/close it via {ExecHandle#stdin}; only
+    #   useful with the streaming variants)
     # @return [ExecOutput]
     def exec(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecOutput.new(@native.exec(command.to_s, Array(args).map(&:to_s),
@@ -373,18 +375,22 @@ module Microsandbox
     end
 
     # Run a command and stream its output as it arrives.
+    #
+    # Pass +stdin: :pipe+ to feed the process interactively: {ExecHandle#stdin}
+    # then returns a writable sink; close it to send EOF (a process like +cat+
+    # that reads until EOF will otherwise block forever).
     # @return [ExecHandle]
     # @see ExecHandle
     def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.exec_stream(command.to_s, Array(args).map(&:to_s),
-                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
+                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
     end
 
     # Run a shell script and stream its output as it arrives.
     # @return [ExecHandle]
     def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.shell_stream(script.to_s,
-                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
+                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
     end
 
     # Attach an interactive terminal to a command in the sandbox.
@@ -556,14 +562,31 @@ module Microsandbox
 
     private
 
-    def exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)
+    def exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: false)
       opts = {}
       opts["cwd"] = cwd.to_s if cwd
       opts["user"] = user.to_s if user
       opts["env"] = env.each_with_object({}) { |(k, v), a| a[k.to_s] = v.to_s } if env
       opts["timeout"] = Float(timeout) if timeout
       opts["tty"] = true if tty
-      opts["stdin"] = stdin.to_s if stdin
+      # `stdin: :pipe` opens a streaming stdin pipe — write to it via
+      # {ExecHandle#stdin} and close to send EOF. It is only meaningful for the
+      # streaming variants (which return an ExecHandle); a blocking exec/shell
+      # collects to completion and has nowhere to hand back the sink, so a piped
+      # process that reads stdin would block forever waiting for EOF. Reject it
+      # there. Any other truthy value is fed as a fixed byte buffer (closed
+      # automatically). nil means no stdin.
+      case stdin
+      when nil then nil
+      when :pipe
+        unless pipe_ok
+          raise ArgumentError,
+                "stdin: :pipe is only valid for exec_stream/shell_stream — a blocking " \
+                "exec/shell cannot expose a writable stdin sink; pass a String to feed bytes"
+        end
+        opts["stdin_pipe"] = true
+      else opts["stdin"] = stdin.to_s
+      end
       if rlimits
         opts["rlimits"] = rlimits.map do |resource, limit|
           soft, hard = limit.is_a?(Array) ? [limit[0], limit[1]] : [limit, limit]

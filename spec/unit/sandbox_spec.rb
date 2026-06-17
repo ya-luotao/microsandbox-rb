@@ -196,6 +196,24 @@ RSpec.describe Microsandbox::Sandbox do
       expect(out).to be_a(Microsandbox::ExecOutput)
     end
 
+    it "rejects stdin: :pipe on blocking exec (there is no sink to write to)" do
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+      expect { sb.exec("cat", stdin: :pipe) }.to raise_error(ArgumentError, /pipe/)
+      expect(native).not_to have_received(:exec)
+    end
+
+    it "passes a stdin string as bytes, not a pipe" do
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+      sb.exec("cat", stdin: "data")
+
+      expect(native).to have_received(:exec).with(
+        "cat", [], hash_including("stdin" => "data")
+      )
+      expect(native).to have_received(:exec).with(
+        "cat", [], hash_excluding("stdin_pipe")
+      )
+    end
+
     it "defaults args to an empty array" do
       sb = Microsandbox::Sandbox.create("box", image: "x")
       sb.exec("whoami")

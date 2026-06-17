@@ -26,14 +26,16 @@ RSpec.describe "streaming, images, volumes", :integration do
 
     it "feeds stdin through the handle" do
       Microsandbox::Sandbox.create(unique_sandbox_name, image: image) do |sb|
-        handle = sb.exec_stream("cat", [], stdin: nil)
+        # `stdin: :pipe` opens a writable sink. `cat` reads stdin until EOF, so
+        # closing the sink is what lets it exit — without the pipe (or without
+        # the close) `collect` would block forever waiting for the exit event.
+        handle = sb.exec_stream("cat", [], stdin: :pipe)
         sink = handle.stdin
-        if sink
-          sink.write("from-stdin")
-          sink.close
-        end
+        expect(sink).not_to be_nil
+        sink.write("from-stdin")
+        sink.close
         out = handle.collect
-        expect(out.stdout).to include("from-stdin") if sink
+        expect(out.stdout).to include("from-stdin")
       end
     end
   end
