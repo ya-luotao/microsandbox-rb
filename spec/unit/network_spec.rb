@@ -85,6 +85,27 @@ RSpec.describe "network policy" do
     it "rejects an invalid action" do
       expect { described_class.custom(default_egress: :maybe) }.to raise_error(ArgumentError, /:allow or :deny/)
     end
+
+    it "canonicalizes a hand-written rule's singular protocol/port to plural arrays" do
+      # Regression: a plain-Hash rule using the singular protocol/port keys (the
+      # spelling Go/Python's PolicyRule use) must not be dropped — that would widen
+      # an `allow tcp/443` rule into an all-protocol/all-port allow.
+      policy = described_class.custom(
+        rules: [{ action: "allow", destination: "1.1.1.1", protocol: "tcp", port: "443" }]
+      )
+      expect(policy.to_h["rules"]).to eq(
+        [{ "action" => "allow", "destination" => "1.1.1.1", "protocols" => ["tcp"], "ports" => ["443"] }]
+      )
+    end
+
+    it "accepts a typed Destination hash inside a hand-written rule" do
+      policy = described_class.custom(
+        rules: [{ action: "deny", destination: Microsandbox::Destination.group(:metadata) }]
+      )
+      expect(policy.to_h["rules"]).to eq(
+        [{ "action" => "deny", "destination_kind" => "group", "destination" => "metadata" }]
+      )
+    end
   end
 
   describe "Sandbox.create routing" do
@@ -167,6 +188,27 @@ RSpec.describe "network policy" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", network: { preset: :none, default_ingress: :deny })
       end.to raise_error(ArgumentError, /preset:.*cannot be combined/)
+    end
+
+    it "treats a deny-list-only hash as permissive (block listed domains, allow the rest)" do
+      # Regression: { deny_domains: [...] } with no preset/defaults must keep the
+      # rest of the network reachable, not deny all unmatched egress.
+      Microsandbox::Sandbox.create("box", image: "x", network: { deny_domains: ["evil.com"] })
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "network_policy" => {
+            "default_egress" => "allow", "default_ingress" => "allow", "deny_domains" => ["evil.com"]
+          }
+        )
+      )
+    end
+
+    it "treats an empty network hash as a no-op (leaves the default policy)" do
+      Microsandbox::Sandbox.create("box", image: "x", network: {})
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_excluding("network", "network_policy")
+      )
     end
 
     it "still omits network entirely when not given" do

@@ -193,7 +193,9 @@ module Microsandbox
           h = { "preset" => canonical_preset(sym[:preset]) }
           add_deny_lists(h, sym[:deny_domains], sym[:deny_domain_suffixes])
           h
-        else
+        elsif sym.key?(:rules) || sym.key?(:default_egress) || sym.key?(:default_ingress)
+          # An explicit custom policy: the caller chose the rule list and/or the
+          # fall-through defaults (which default to :deny / :allow).
           custom(
             default_egress: sym.fetch(:default_egress, :deny),
             default_ingress: sym.fetch(:default_ingress, :allow),
@@ -201,6 +203,19 @@ module Microsandbox
             deny_domains: sym[:deny_domains] || [],
             deny_domain_suffixes: sym[:deny_domain_suffixes] || []
           ).to_h
+        else
+          # Deny-list-only shorthand (`network: { deny_domains: [...] }`): keep the
+          # rest of the network reachable and just block the listed domains, using
+          # permissive defaults — mirrors the official SDKs' "full network minus
+          # blocked domains" semantics. An empty Hash is a no-op (leaves the
+          # default policy in place).
+          dd = Array(sym[:deny_domains]).map(&:to_s)
+          ds = Array(sym[:deny_domain_suffixes]).map(&:to_s)
+          return {} if dd.empty? && ds.empty?
+
+          h = { "default_egress" => "allow", "default_ingress" => "allow" }
+          add_deny_lists(h, dd, ds)
+          h
         end
       end
 
@@ -230,11 +245,42 @@ module Microsandbox
         end
       end
 
+      # Canonicalize a rule Hash (from the {Rule} factory or hand-written) into
+      # the wire shape the native parser reads. Accepts singular `protocol`/`port`
+      # (the spelling the Go/Python `PolicyRule` use) as well as the plural
+      # `protocols`/`ports`, and a `destination` that is a shorthand String or a
+      # {Destination} Hash — so a hand-written `{ action:, destination:, protocol:,
+      # port: }` rule behaves identically to a factory-built one (without this, a
+      # singular `protocol`/`port` was silently dropped, widening the rule).
       def normalize_rule(rule)
         unless rule.is_a?(Hash)
           raise ArgumentError, "rule must be a Hash (use Microsandbox::Rule.allow/deny): #{rule.inspect}"
         end
-        rule.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v }
+        sym = rule.transform_keys { |k| k.to_s.to_sym }
+        out = {}
+        out["action"] = sym[:action].to_s if sym[:action]
+        out["direction"] = sym[:direction].to_s if sym[:direction]
+        normalize_rule_destination(sym, out)
+        protos = (Array(sym[:protocols]) + Array(sym[:protocol])).compact.map(&:to_s)
+        out["protocols"] = protos unless protos.empty?
+        ports = (Array(sym[:ports]) + Array(sym[:port])).compact.map(&:to_s)
+        out["ports"] = ports unless ports.empty?
+        out
+      end
+
+      # Resolve a rule's destination (explicit kind+value, a {Destination} Hash,
+      # or a shorthand String) onto the wire `out` Hash.
+      def normalize_rule_destination(sym, out)
+        if sym.key?(:destination_kind)
+          out["destination_kind"] = sym[:destination_kind].to_s
+          out["destination"] = sym[:destination].to_s unless sym[:destination].nil?
+        elsif sym[:destination].is_a?(Hash)
+          dest = sym[:destination].transform_keys(&:to_s)
+          out["destination_kind"] = dest["destination_kind"].to_s if dest["destination_kind"]
+          out["destination"] = dest["destination"].to_s if dest.key?("destination")
+        elsif !sym[:destination].nil?
+          out["destination"] = sym[:destination].to_s
+        end
       end
     end
 

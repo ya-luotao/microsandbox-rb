@@ -330,6 +330,8 @@ module Microsandbox
       # {NetworkPolicy}, or a plain Hash.
       def apply_network_opts(opts, network)
         norm = NetworkPolicy.coerce(network)
+        return if norm.empty? # e.g. network: {} — leave the default policy in place
+
         if norm.keys == ["preset"]
           opts["network"] = norm["preset"]
         else
