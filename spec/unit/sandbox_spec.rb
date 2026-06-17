@@ -8,6 +8,9 @@ RSpec.describe Microsandbox::Sandbox do
 
   before do
     allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
+    # Don't let the auto-provision hook touch the filesystem / network in unit
+    # tests; runtime provisioning is covered separately in runtime_spec.
+    allow(Microsandbox).to receive(:ensure_runtime!)
   end
 
   describe ".create option mapping" do
@@ -41,6 +44,61 @@ RSpec.describe Microsandbox::Sandbox do
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box", { "image" => "alpine" }
       )
+    end
+
+    it "ensures the runtime is provisioned before creating" do
+      Microsandbox::Sandbox.create("box", image: "x")
+      expect(Microsandbox).to have_received(:ensure_runtime!)
+    end
+
+    it "flattens registry_auth into registry_username/registry_password" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        registry_auth: { username: "alice", password: "s3cr3t" }
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("registry_username" => "alice", "registry_password" => "s3cr3t")
+      )
+    end
+
+    it "accepts string-keyed registry_auth and passes insecure + ca_certs through" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        registry_auth: { "username" => "bob", "password" => "tok" },
+        registry_insecure: true,
+        registry_ca_certs: "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----"
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "registry_username" => "bob", "registry_password" => "tok",
+          "registry_insecure" => true,
+          "registry_ca_certs" => ["-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----"]
+        )
+      )
+    end
+
+    it "wraps a single ca_cert and an array of ca_certs the same way" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x", registry_ca_certs: %w[pem-a pem-b]
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("registry_ca_certs" => %w[pem-a pem-b])
+      )
+    end
+
+    it "omits registry keys entirely when no registry options are given" do
+      Microsandbox::Sandbox.create("box", image: "x")
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_excluding("registry_username", "registry_insecure", "registry_ca_certs")
+      )
+    end
+
+    it "raises on a half-specified registry_auth (missing password)" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", registry_auth: { username: "alice" })
+      end.to raise_error(ArgumentError, /:username and :password/)
     end
 
     it "maps pull_policy and normalizes secrets into [env, value, host] triples" do

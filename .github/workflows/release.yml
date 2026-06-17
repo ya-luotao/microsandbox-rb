@@ -13,11 +13,30 @@ name: Release
 # Publishing uses RubyGems Trusted Publishing (OIDC); configure the gem's trusted
 # publisher to this repo + workflow in the RubyGems UI before the first release.
 #
-# NOTE: the core crate is heavy (a platform-specific build.rs that downloads the
-# msb runtime, plus native deps and Apple-native keyring on macOS). Whether the
-# `arm64-darwin` target cross-builds under osxcross in rake-compiler-dock is to be
-# confirmed on the first run; if it can't, move that platform to a native macos-14
-# runner job that builds all 3.1–3.4 ABIs into one gem.
+# What a precompiled gem ships (and what it does NOT): the gem carries the
+# compiled Rust extension with the guest-side `agentd` baked in (the core's
+# filesystem build.rs downloads agentd by *target* arch via CARGO_CFG_TARGET_ARCH
+# and embeds it with include_bytes!, so it cross-compiles correctly). The gem
+# does NOT carry the host-side `msb` runtime + `libkrunfw`: those are downloaded
+# into ~/.microsandbox on first use by `Microsandbox.ensure_runtime!` (called
+# automatically by Sandbox.create/start). That is the piece that makes precompiled
+# gems usable at all — a precompiled-gem user never ran the source build, so the
+# runtime is provisioned lazily at runtime (by the *running* host's arch) instead.
+#
+# Cross-compile reality check (corrects an earlier, pessimistic note here):
+#   - microsandbox/build.rs downloads msb + libkrunfw keyed on the *host* arch
+#     into the build container's ~/.microsandbox. That is self-consistent on the
+#     x86_64 dock host and never enters the gem, so it does NOT block the cross
+#     build — it's just wasted work. (libkrunfw is dlopen'd by msb at runtime; it
+#     is never *linked* into the extension.)
+#   - The genuine cross blockers are the *target* native libraries the extension
+#     links: libcap-ng on Linux (via the capng crate → msb_krun_devices) and the
+#     Hypervisor + Security system frameworks on macOS (HVF + Apple-native keyring).
+#     aarch64-linux therefore needs libcap-ng:arm64 (handled below via Debian
+#     multiarch); arm64-darwin needs osxcross to resolve those frameworks from the
+#     macOS SDK — that's the one platform still to confirm on first dispatch. If it
+#     can't link, move arm64-darwin to a native macos-14 runner job (which builds
+#     all 3.1–3.4 ABIs into one fat gem with no osxcross involved).
 
 on:
   push:
@@ -34,15 +53,19 @@ permissions:
 
 jobs:
   # Precompiled per-platform gems — a UX optimization (users skip the Rust
-  # compile). EXPERIMENTAL / not on the release path yet: this gem wraps a heavy
-  # core crate whose build.rs downloads platform-specific msb + libkrunfw and
-  # links libkrunfw/keyring, which doesn't cross-compile cleanly through the
-  # generic rake-compiler-dock/osxcross flow. So this job is gated to manual
-  # `workflow_dispatch` only — tag releases ship the source gem (which installs
-  # everywhere by compiling via rb_sys). Iterate on it with a manual dispatch;
-  # when it produces working gems on all platforms, re-add it to `publish.needs`
-  # and drop the workflow_dispatch gate. The `bundle install` below fixes the
-  # first blocker (Bundler::GemNotFound inside the dock container).
+  # compile). Gated to manual `workflow_dispatch`: tag releases ship the source
+  # gem (which installs everywhere by compiling via rb_sys), while precompiled
+  # gems are built best-effort here for validation. They are NOT auto-published
+  # on tags yet, because a gem that *compiles but doesn't boot a microVM* would
+  # be served to users in preference to the source gem — and CI cannot boot a VM
+  # to prove it works (no nested virt). Validate a dispatched build by installing
+  # the artifact on each real platform, then promote it (see `publish` below).
+  #
+  # cross-compile prerequisites handled below:
+  #   - bundle install: rake/rb_sys/rake-compiler inside the dock container
+  #     (else Bundler::GemNotFound).
+  #   - libcap-ng: host package for x86_64-linux; the arm64 multiarch variant for
+  #     aarch64-linux (the extension links -lcap-ng for the *target* arch).
   cross-gems:
     name: gem (${{ matrix.platform }})
     if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -67,18 +90,28 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: "3.1,3.2,3.3,3.4"
-          # The core crate links libcap-ng on Linux targets, so the rake-compiler-dock
-          # container needs the dev package before the cross-build (same failure mode
-          # as CI: `cannot find -lcap-ng`). The containers are Debian-based (apt); the
-          # guard keeps the darwin container — which needs nothing — from erroring.
-          # NOTE (validate on first real release): aarch64-linux is cross-compiled, so
-          # the linker resolves libs from the target sysroot, not the host arch. The
-          # host-arch package below covers x86_64-linux; if aarch64 still fails to find
-          # -lcap-ng, enable arm64 multiarch (dpkg --add-architecture arm64) and
-          # install libcap-ng-dev:arm64 here.
+          # The extension links libcap-ng on Linux targets (capng crate →
+          # msb_krun_devices), so the rake-compiler-dock container needs the dev
+          # package before the cross-build (else `cannot find -lcap-ng`). The
+          # Linux containers are Debian-based (apt); darwin needs nothing here
+          # (its frameworks come from the osxcross macOS SDK), so the apt guard
+          # keeps it from erroring.
+          #
+          # aarch64-linux is cross-compiled from an x86_64 container: the target
+          # linker (aarch64-linux-gnu) resolves -lcap-ng from the *arm64* sysroot,
+          # not the host package — so add the arch and install libcap-ng-dev:arm64.
+          # Debian's main mirror carries every arch, so multiarch fetches work
+          # without switching to ports.ubuntu.com.
           setup: |
             if command -v apt-get >/dev/null 2>&1; then
               apt-get update && apt-get install -y libcap-ng-dev
+              case "${{ matrix.platform }}" in
+                aarch64-linux*)
+                  dpkg --add-architecture arm64
+                  apt-get update
+                  apt-get install -y libcap-ng-dev:arm64
+                  ;;
+              esac
             fi
             # The dock container runs `bundle exec rake native:<plat> gem`; install
             # the bundle (rb_sys/rake/rake-compiler) first or it fails with
@@ -107,9 +140,12 @@ jobs:
 
   publish:
     name: publish to RubyGems
-    # Only the source gem is required to publish; precompiled cross-gems are
-    # best-effort (see cross-gems above) and pushed too if they happened to
-    # build (the gem push loop globs whatever artifacts are present).
+    # On a tag push, only `source-gem` runs (cross-gems is workflow_dispatch-only),
+    # so this publishes the source gem alone — the safe default. The push loop
+    # globs every gem under dist/, so once precompiled gems are validated they can
+    # be promoted by either (a) re-adding `cross-gems` to `needs` and dropping its
+    # workflow_dispatch gate, or (b) attaching the validated artifacts to the
+    # release run. Until then, tag releases stay source-only on purpose.
     needs: [source-gem]
     runs-on: ubuntu-latest
     # Real tag pushes only — never on a manual dry run.

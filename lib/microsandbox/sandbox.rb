@@ -119,6 +119,14 @@ module Microsandbox
       # @param rlimits [Hash, nil] resource limits: { resource => limit } or
       #   { resource => [soft, hard] } (e.g. { nofile: 65_535 })
       # @param pull_policy ["always","if-missing","never", nil] image pull behavior
+      # @param registry_auth [Hash, nil] credentials for a private/authenticated
+      #   registry: { username:, password: } (the password may be a token).
+      #   Without this the core's default resolution chain still applies (OS
+      #   keyring, global config, `~/.docker/config.json`).
+      # @param registry_insecure [Boolean] reach the registry over plain HTTP
+      #   instead of HTTPS (for local/self-hosted registries)
+      # @param registry_ca_certs [String, Array<String>, nil] extra PEM-encoded CA
+      #   root certificate(s) to trust (for a registry with a private CA)
       # @param secrets [Array<Hash>, nil] placeholder-protected secrets, each
       #   { env:, value:, host: } — the value is substituted by the TLS proxy only
       #   for the allowed host (auto-enables TLS interception)
@@ -133,8 +141,10 @@ module Microsandbox
                  entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
                  from_snapshot: nil, log_level: nil, quiet_logs: false, security: nil,
                  oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
-                 pull_policy: nil, secrets: nil,
+                 pull_policy: nil, registry_auth: nil, registry_insecure: false,
+                 registry_ca_certs: nil, secrets: nil,
                  detached: false, replace: false, replace_with_timeout: nil)
+        Microsandbox.ensure_runtime!
         opts = {}
         opts["image"] = image.to_s if image
         opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
@@ -160,6 +170,7 @@ module Microsandbox
         opts["idle_timeout"] = Integer(idle_timeout) if idle_timeout
         opts["rlimits"] = normalize_rlimits(rlimits) if rlimits
         opts["pull_policy"] = pull_policy.to_s if pull_policy
+        apply_registry_opts(opts, registry_auth, registry_insecure, registry_ca_certs)
         opts["secrets"] = normalize_secrets(secrets) if secrets
         opts["detached"] = true if detached
         if replace_with_timeout
@@ -185,6 +196,7 @@ module Microsandbox
       # Restart a previously-defined sandbox by name.
       # @return [Sandbox]
       def start(name, detached: false)
+        Microsandbox.ensure_runtime!
         new(Native::Sandbox.start(name.to_s, { "detached" => detached }))
       end
 
@@ -223,6 +235,25 @@ module Microsandbox
 
       def intify_ports(ports)
         ports.each_with_object({}) { |(k, v), acc| acc[Integer(k)] = Integer(v) }
+      end
+
+      # Flatten the registry options into the native layer's `registry_*` keys.
+      # `auth` is a Hash { username:, password: } (string or symbol keys); both
+      # are required when given. `ca_certs` accepts one PEM string or an Array.
+      def apply_registry_opts(opts, auth, insecure, ca_certs)
+        if auth
+          username = auth[:username] || auth["username"]
+          password = auth[:password] || auth["password"]
+          unless username && password
+            # Report only the keys given, never the values — auth carries secrets.
+            raise ArgumentError,
+                  "registry_auth needs :username and :password (got keys: #{auth.keys.inspect})"
+          end
+          opts["registry_username"] = username.to_s
+          opts["registry_password"] = password.to_s
+        end
+        opts["registry_insecure"] = true if insecure
+        opts["registry_ca_certs"] = Array(ca_certs).map(&:to_s) if ca_certs
       end
 
       # Normalize secrets into [env, value, host] triples for the native layer.
