@@ -196,6 +196,30 @@ RSpec.describe Microsandbox::Sandbox do
       expect(out).to be_a(Microsandbox::ExecOutput)
     end
 
+    it "maps stdin: :pipe to stdin_pipe and omits stdin bytes" do
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+      sb.exec("cat", stdin: :pipe)
+
+      expect(native).to have_received(:exec).with(
+        "cat", [], hash_including("stdin_pipe" => true)
+      )
+      expect(native).to have_received(:exec).with(
+        "cat", [], hash_excluding("stdin")
+      )
+    end
+
+    it "passes a stdin string as bytes, not a pipe" do
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+      sb.exec("cat", stdin: "data")
+
+      expect(native).to have_received(:exec).with(
+        "cat", [], hash_including("stdin" => "data")
+      )
+      expect(native).to have_received(:exec).with(
+        "cat", [], hash_excluding("stdin_pipe")
+      )
+    end
+
     it "defaults args to an empty array" do
       sb = Microsandbox::Sandbox.create("box", image: "x")
       sb.exec("whoami")

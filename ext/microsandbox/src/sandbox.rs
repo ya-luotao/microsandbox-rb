@@ -1064,6 +1064,7 @@ struct ExecOpts {
     timeout: Option<Duration>,
     tty: bool,
     stdin: Option<Vec<u8>>,
+    stdin_pipe: bool,
     rlimits: Vec<(RlimitResource, u64, u64)>,
 }
 
@@ -1078,6 +1079,7 @@ impl ExecOpts {
             timeout: conv::opt_f64(opts, "timeout")?.map(Duration::from_secs_f64),
             tty: conv::opt_bool(opts, "tty")?,
             stdin,
+            stdin_pipe: conv::opt_bool(opts, "stdin_pipe")?,
             rlimits: parse_rlimits(opts)?,
         })
     }
@@ -1104,7 +1106,13 @@ impl ExecOpts {
         if self.tty {
             b = b.tty(true);
         }
-        if let Some(stdin) = self.stdin {
+        // Pipe mode opens a writable stdin sink (lifted out by ExecHandle via
+        // `take_stdin`); bytes mode feeds a fixed buffer and closes. The core's
+        // `StdinMode` is a single enum, so the two are mutually exclusive — pipe
+        // wins if a caller somehow sets both.
+        if self.stdin_pipe {
+            b = b.stdin_pipe();
+        } else if let Some(stdin) = self.stdin {
             b = b.stdin_bytes(stdin);
         }
         for (resource, soft, hard) in self.rlimits {

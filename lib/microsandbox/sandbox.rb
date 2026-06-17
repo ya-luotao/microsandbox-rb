@@ -358,7 +358,9 @@ module Microsandbox
     # @param env [Hash, nil] extra environment variables
     # @param timeout [Numeric, nil] kill after N seconds
     # @param tty [Boolean] allocate a pseudo-terminal
-    # @param stdin [String, nil] data to feed to stdin
+    # @param stdin [String, Symbol, nil] bytes to feed to stdin, or +:pipe+ to
+    #   open a streaming stdin pipe (write/close it via {ExecHandle#stdin}; only
+    #   useful with the streaming variants)
     # @return [ExecOutput]
     def exec(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecOutput.new(@native.exec(command.to_s, Array(args).map(&:to_s),
@@ -373,6 +375,10 @@ module Microsandbox
     end
 
     # Run a command and stream its output as it arrives.
+    #
+    # Pass +stdin: :pipe+ to feed the process interactively: {ExecHandle#stdin}
+    # then returns a writable sink; close it to send EOF (a process like +cat+
+    # that reads until EOF will otherwise block forever).
     # @return [ExecHandle]
     # @see ExecHandle
     def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
@@ -563,7 +569,14 @@ module Microsandbox
       opts["env"] = env.each_with_object({}) { |(k, v), a| a[k.to_s] = v.to_s } if env
       opts["timeout"] = Float(timeout) if timeout
       opts["tty"] = true if tty
-      opts["stdin"] = stdin.to_s if stdin
+      # `stdin: :pipe` opens a streaming stdin pipe — write to it via
+      # {ExecHandle#stdin} and close to send EOF. Any other truthy value is fed
+      # as a fixed byte buffer (closed automatically). nil means no stdin.
+      case stdin
+      when nil then nil
+      when :pipe then opts["stdin_pipe"] = true
+      else opts["stdin"] = stdin.to_s
+      end
       if rlimits
         opts["rlimits"] = rlimits.map do |resource, limit|
           soft, hard = limit.is_a?(Array) ? [limit[0], limit[1]] : [limit, limit]

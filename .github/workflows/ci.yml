@@ -13,6 +13,9 @@ jobs:
   test:
     name: test (ruby ${{ matrix.ruby }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Native compile + unit specs finish in well under 10 min; the cap just keeps
+    # a wedged build from sitting until GitHub's 6-hour default.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +71,11 @@ jobs:
     name: integration (real microVM, KVM)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # A full run (compile + boot real microVMs + specs) lands around 10-12 min.
+    # This cap is the safety net: a single deadlocked spec (e.g. a guest process
+    # blocked on stdin that never gets EOF) would otherwise wedge the job until
+    # GitHub's 6-hour default and surface the whole run as "cancelled".
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -111,6 +119,7 @@ jobs:
   lint:
     name: rustfmt + clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
