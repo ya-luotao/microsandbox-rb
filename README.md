@@ -21,7 +21,9 @@ This is an **unofficial, community-maintained** Ruby implementation — not part
 
 - **Ruby** >= 3.1
 - **Linux** with KVM enabled, or **macOS** on Apple Silicon (M-series)
-- Building from source additionally needs a **Rust** toolchain (stable >= 1.91)
+- A **Rust** toolchain (stable >= 1.91) — the gem currently installs as a source
+  gem and compiles the native extension on install (precompiled per-platform
+  gems are planned; see [Releasing](#releasing))
 
 ## Installation
 
@@ -38,6 +40,9 @@ bundle install
 # or
 gem install microsandbox-rb
 ```
+
+Installing compiles the Rust extension, so the first install takes a few minutes
+and needs a Rust toolchain on `PATH`.
 
 The first build downloads the `msb` runtime and `libkrunfw` firmware into
 `~/.microsandbox`. You can (re)provision them explicitly at any time:
@@ -301,14 +306,19 @@ one bound to the gem.
 1. Bump `Microsandbox::VERSION` (and the `tag = "vX.Y.Z"` on the core-crate
    dependency in `ext/microsandbox/Cargo.toml`) to match the upstream runtime,
    update `CHANGELOG.md`.
-2. *(Recommended first time)* run the workflow's manual `dry_run` dispatch to
-   build all platform gems without publishing — confirms the `arm64-darwin`
-   cross-build succeeds.
-3. Push a `vX.Y.Z` tag. CI builds precompiled, multi-ABI platform gems
-   (`x86_64-linux`, `aarch64-linux`, `arm64-darwin`) with `rake-compiler-dock`,
-   plus the source gem, and pushes them to RubyGems. The publish job uses
-   `rubygems/configure-rubygems-credentials` (OIDC) with `id-token: write` — no
+2. Push a `vX.Y.Z` tag. CI builds the **source gem** and pushes it to RubyGems
+   via `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no
    `RUBYGEMS_API_KEY` secret required.
+
+> **Precompiled per-platform gems** are not on the release path yet — this gem
+> wraps a heavy core crate whose `build.rs` downloads platform-specific `msb` +
+> `libkrunfw` binaries and links `libkrunfw`/keyring, which doesn't
+> cross-compile cleanly through the generic `rake-compiler-dock`/osxcross flow.
+> The `cross-gems` job is gated to manual `workflow_dispatch` so you can iterate
+> on it (`gh workflow run release.yml`) without failing tag releases. Once it
+> produces working gems on all platforms, re-add it to `publish.needs` and drop
+> the `workflow_dispatch` gate. Until then, users install the source gem (which
+> compiles via `rb_sys`).
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
 section for what's covered today vs. on the roadmap. Covered: full sandbox

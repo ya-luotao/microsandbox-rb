@@ -34,14 +34,18 @@ permissions:
 
 jobs:
   # Precompiled per-platform gems — a UX optimization (users skip the Rust
-  # compile). Best-effort for now: marked continue-on-error so a cross-build
-  # failure does NOT block publishing the source gem. The source gem installs
-  # everywhere (compiling the extension via rb_sys), so the release is complete
-  # without these. TODO: the rake-compiler-dock build currently fails with
-  # Bundler::GemNotFound inside the container (needs `bundle install` in the
-  # dock step) — fix and then re-enable as a publish dependency.
+  # compile). EXPERIMENTAL / not on the release path yet: this gem wraps a heavy
+  # core crate whose build.rs downloads platform-specific msb + libkrunfw and
+  # links libkrunfw/keyring, which doesn't cross-compile cleanly through the
+  # generic rake-compiler-dock/osxcross flow. So this job is gated to manual
+  # `workflow_dispatch` only — tag releases ship the source gem (which installs
+  # everywhere by compiling via rb_sys). Iterate on it with a manual dispatch;
+  # when it produces working gems on all platforms, re-add it to `publish.needs`
+  # and drop the workflow_dispatch gate. The `bundle install` below fixes the
+  # first blocker (Bundler::GemNotFound inside the dock container).
   cross-gems:
     name: gem (${{ matrix.platform }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
@@ -76,6 +80,11 @@ jobs:
             if command -v apt-get >/dev/null 2>&1; then
               apt-get update && apt-get install -y libcap-ng-dev
             fi
+            # The dock container runs `bundle exec rake native:<plat> gem`; install
+            # the bundle (rb_sys/rake/rake-compiler) first or it fails with
+            # Bundler::GemNotFound. Skip the dev group (rspec etc. aren't needed to build).
+            bundle config set --local without development
+            bundle install --jobs 4
       - uses: actions/upload-artifact@v4
         with:
           name: gem-${{ matrix.platform }}
