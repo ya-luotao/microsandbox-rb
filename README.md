@@ -56,7 +56,7 @@ Microsandbox.install unless Microsandbox.installed?
 ```ruby
 require "microsandbox"
 
-Microsandbox::Sandbox.create("hello", image: "python") do |sb|
+Microsandbox::Sandbox.create("hello", image: "public.ecr.aws/docker/library/python:3-slim") do |sb|
   output = sb.exec("python", ["-c", "print('Hello, World!')"])
   puts output.stdout      # => "Hello, World!\n"
   puts output.success?    # => true
@@ -64,18 +64,25 @@ end
 # the sandbox is stopped automatically when the block returns
 ```
 
+> **Why `public.ecr.aws/docker/library/...`?** The examples pull from AWS's
+> public mirror of the Docker Library because anonymous **Docker Hub** pulls are
+> rate-limited and often fail with `registry error: Not authorized`. Plain short
+> names like `image: "python"` work too if you aren't rate-limited; registry
+> auth for private registries isn't exposed by the gem yet (on the roadmap), so
+> until then use a public mirror or a pre-pulled image.
+
 ## Usage
 
 ### Lifecycle
 
 ```ruby
 # Block form — recommended; stops the sandbox automatically (even on error)
-Microsandbox::Sandbox.create("box", image: "alpine") do |sb|
+Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
   # ...
 end
 
 # Manual form — you are responsible for stopping it
-sb = Microsandbox::Sandbox.create("box", image: "alpine")
+sb = Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/alpine:latest")
 begin
   # ...
 ensure
@@ -95,7 +102,7 @@ Microsandbox::Sandbox.remove("box")   # remove a stopped sandbox
 ```ruby
 Microsandbox::Sandbox.create(
   "configured",
-  image:    "python",
+  image:    "public.ecr.aws/docker/library/python:3-slim",
   cpus:     2,
   memory:   1024,                      # MiB
   env:      { "API_BASE" => "https://example.com" },
@@ -112,7 +119,7 @@ end
 ### Executing commands
 
 ```ruby
-Microsandbox::Sandbox.create("exec-demo", image: "alpine") do |sb|
+Microsandbox::Sandbox.create("exec-demo", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
   # Direct command (no shell)
   out = sb.exec("ls", ["-la", "/etc"], cwd: "/", timeout: 30)
   out.exit_code   # => 0
@@ -135,7 +142,7 @@ failures (e.g. command not found) and timeouts raise typed errors (see below).
 ### Guest filesystem
 
 ```ruby
-Microsandbox::Sandbox.create("fs-demo", image: "alpine") do |sb|
+Microsandbox::Sandbox.create("fs-demo", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
   sb.fs.write("/tmp/data.txt", "hello")
   sb.fs.read_text("/tmp/data.txt")     # => "hello"  (UTF-8)
   sb.fs.read("/tmp/data.txt")          # => raw bytes (ASCII-8BIT)
@@ -156,7 +163,7 @@ end
 ### Metrics & logs
 
 ```ruby
-Microsandbox::Sandbox.create("obs", image: "alpine") do |sb|
+Microsandbox::Sandbox.create("obs", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
   m = sb.metrics                       # => Microsandbox::Metrics
   m.cpu_percent
   m.memory_bytes
@@ -173,7 +180,7 @@ end
 For long-running commands, stream events as they arrive instead of waiting:
 
 ```ruby
-Microsandbox::Sandbox.create("stream", image: "python") do |sb|
+Microsandbox::Sandbox.create("stream", image: "public.ecr.aws/docker/library/python:3-slim") do |sb|
   handle = sb.exec_stream("python", ["-u", "-c", "import time\nfor i in range(3): print(i); time.sleep(1)"])
   handle.each do |event|       # ExecHandle is Enumerable
     print event.text if event.stdout?
@@ -191,9 +198,9 @@ Manage the local OCI image cache (images are pulled automatically on `create`):
 
 ```ruby
 Microsandbox::Image.list           # => [Microsandbox::ImageInfo, ...]
-Microsandbox::Image.get("alpine")  # => Microsandbox::ImageInfo
-Microsandbox::Image.inspect("alpine").layers  # => [{...}, ...]
-Microsandbox::Image.remove("alpine", force: true)
+Microsandbox::Image.get("public.ecr.aws/docker/library/alpine:latest")  # => Microsandbox::ImageInfo
+Microsandbox::Image.inspect("public.ecr.aws/docker/library/alpine:latest").layers  # => [{...}, ...]
+Microsandbox::Image.remove("public.ecr.aws/docker/library/alpine:latest", force: true)
 report = Microsandbox::Image.prune
 report.bytes_reclaimed
 ```
@@ -206,7 +213,7 @@ Persistent storage that outlives individual sandboxes:
 Microsandbox::Volume.create("cache", kind: "disk", size_mib: 512)
 Microsandbox::Volume.list           # => [Microsandbox::VolumeInfo, ...]
 
-Microsandbox::Sandbox.create("with-vol", image: "alpine",
+Microsandbox::Sandbox.create("with-vol", image: "public.ecr.aws/docker/library/alpine:latest",
                              volumes: { "/data" => { named: "cache" } }) do |sb|
   sb.fs.write("/data/state.txt", "persisted")
 end
@@ -224,8 +231,8 @@ All errors descend from `Microsandbox::Error` and carry a stable `#code`:
 
 ```ruby
 begin
-  Microsandbox::Sandbox.create("dup", image: "alpine")
-  Microsandbox::Sandbox.create("dup", image: "alpine")  # name clash
+  Microsandbox::Sandbox.create("dup", image: "public.ecr.aws/docker/library/alpine:latest")
+  Microsandbox::Sandbox.create("dup", image: "public.ecr.aws/docker/library/alpine:latest")  # name clash
 rescue Microsandbox::SandboxAlreadyExistsError => e
   warn "#{e.code}: #{e.message}"       # => "sandbox-already-exists: ..."
 rescue Microsandbox::Error => e
