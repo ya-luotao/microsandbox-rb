@@ -6,6 +6,8 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-06-18
+
 Closes the remaining roadmap items, bringing the binding surface to parity with
 the official Python/Node/Go SDKs (still wrapping the same upstream core,
 `v0.5.7`).
@@ -41,6 +43,16 @@ the official Python/Node/Go SDKs (still wrapping the same upstream core,
   command (or the default shell) in the sandbox and return its exit code. For
   CLI use — requires a real TTY.
 - RBS signatures for all of the above.
+
+### Notes
+
+- Network policy: a `preset` and custom `rules:`/`default_egress:`/`default_ingress:`
+  are mutually exclusive (a preset already defines its rules and defaults); a
+  preset may still be layered with `deny_domains:`/`deny_domain_suffixes:`. A
+  hand-written rule Hash accepts the singular `protocol:`/`port:` keys (the
+  spelling the Go/Python `PolicyRule` use) as well as the plural forms. The
+  deny-list-only shorthand (`network: { deny_domains: [...] }`) keeps the rest of
+  the network reachable (permissive defaults), matching the official SDKs.
 
 ## [0.5.8] - 2026-06-17
 
