@@ -4,7 +4,7 @@ Lightweight microVM sandboxes for Ruby — run AI agents and untrusted code with
 
 The `microsandbox` gem provides native bindings to the [microsandbox](https://github.com/superradcompany/microsandbox) runtime via a Rust extension (magnus). It spins up real microVMs (not containers) in under 100 ms, runs standard OCI (Docker) images, and gives you full control over command execution, the guest filesystem, networking, and metrics — all from an idiomatic, **synchronous** Ruby API. There is no daemon to install and no server to connect to: the runtime is embedded directly in your process.
 
-This is the Ruby member of the official SDK family ([Rust](https://github.com/superradcompany/microsandbox/tree/main/sdk), TypeScript, Python, Go), wrapping the same core engine.
+This is an **unofficial, community-maintained** Ruby implementation — not part of the official SDK family ([Rust](https://github.com/superradcompany/microsandbox/tree/main/sdk), TypeScript, Python, Go) — though it wraps the same core engine.
 
 ## Features
 
