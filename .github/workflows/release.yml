@@ -50,7 +50,8 @@ jobs:
           ruby-version: "3.4"
           bundler-cache: true
       - name: Build precompiled gem
-        uses: oxidize-rb/cross-gem-action@v9
+        # v7 is the latest release of this action; pinned to its commit SHA.
+        uses: oxidize-rb/cross-gem-action@80f59339d90789841d772f412fe4a8b201a8cfa2 # v7
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: "3.1,3.2,3.3,3.4"
