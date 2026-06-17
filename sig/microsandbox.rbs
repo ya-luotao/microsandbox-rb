@@ -140,7 +140,8 @@ module Microsandbox
                       ?user: String?, ?hostname: String?, ?labels: Hash[untyped, untyped]?,
                       ?scripts: Hash[untyped, untyped]?, ?entrypoint: Array[String]?,
                       ?ports: Hash[untyped, untyped]?, ?ports_udp: Hash[untyped, untyped]?,
-                      ?volumes: Hash[untyped, untyped]?, ?network: untyped?, ?from_snapshot: String?,
+                      ?volumes: Hash[untyped, untyped]?, ?network: untyped?,
+                      ?patches: Array[Hash[untyped, untyped]]?, ?from_snapshot: String?,
                       ?log_level: (String | Symbol)?, ?quiet_logs: bool, ?security: (String | Symbol)?,
                       ?oci_upper_size: Integer?, ?max_duration: Integer?, ?idle_timeout: Integer?,
                       ?rlimits: Hash[untyped, untyped]?, ?pull_policy: (String | Symbol)?,
@@ -166,7 +167,12 @@ module Microsandbox
                       ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def shell_stream: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
                        ?timeout: Numeric?, ?tty: bool, ?stdin: String?, ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
+    def attach: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
+                 ?env: Hash[untyped, untyped]?, ?detach_keys: String?,
+                 ?rlimits: Hash[untyped, untyped]?) -> Integer
+    def attach_shell: () -> Integer
     def fs: () -> FS
+    def ssh: () -> SshOps
     def metrics: () -> Metrics
     def logs: (?tail: Integer?, ?since_ms: Numeric?, ?until_ms: Numeric?,
                ?sources: Array[String | Symbol]?) -> Array[LogEntry]
@@ -320,5 +326,131 @@ module Microsandbox
     def self.export: (String name_or_path, String out_path, ?with_parents: bool,
                       ?with_image: bool, ?plain_tar: bool) -> nil
     def self.import: (String archive_path, ?dest: String?) -> SnapshotInfo
+  end
+
+  module Patch
+    def self.text: (String path, String content, ?mode: Integer?, ?replace: bool) -> Hash[String, untyped]
+    def self.file: (String path, String content, ?mode: Integer?, ?replace: bool) -> Hash[String, untyped]
+    def self.append: (String path, String content) -> Hash[String, untyped]
+    def self.copy_file: (String src, String dst, ?mode: Integer?, ?replace: bool) -> Hash[String, untyped]
+    def self.copy_dir: (String src, String dst, ?replace: bool) -> Hash[String, untyped]
+    def self.symlink: (String target, String link, ?replace: bool) -> Hash[String, untyped]
+    def self.mkdir: (String path, ?mode: Integer?) -> Hash[String, untyped]
+    def self.remove: (String path) -> Hash[String, untyped]
+  end
+
+  module Destination
+    def self.any: () -> Hash[String, String]
+    def self.ip: (String value) -> Hash[String, String]
+    def self.cidr: (String value) -> Hash[String, String]
+    def self.domain: (String value) -> Hash[String, String]
+    def self.domain_suffix: (String value) -> Hash[String, String]
+    def self.group: ((String | Symbol) value) -> Hash[String, String]
+  end
+
+  module Rule
+    def self.allow: (?destination: untyped?, ?direction: (String | Symbol),
+                     ?protocol: (String | Symbol)?, ?protocols: Array[String | Symbol]?,
+                     ?port: (String | Integer)?, ?ports: Array[String | Integer]?) -> Hash[String, untyped]
+    def self.deny: (?destination: untyped?, ?direction: (String | Symbol),
+                    ?protocol: (String | Symbol)?, ?protocols: Array[String | Symbol]?,
+                    ?port: (String | Integer)?, ?ports: Array[String | Integer]?) -> Hash[String, untyped]
+  end
+
+  class NetworkPolicy
+    PRESET_ALIASES: Hash[String, String]
+    def self.public_only: () -> NetworkPolicy
+    def self.none: () -> NetworkPolicy
+    def self.allow_all: () -> NetworkPolicy
+    def self.non_local: () -> NetworkPolicy
+    def self.preset: ((String | Symbol) name) -> NetworkPolicy
+    def self.custom: (?default_egress: (String | Symbol)?, ?default_ingress: (String | Symbol)?,
+                      ?rules: Array[Hash[untyped, untyped]], ?deny_domains: Array[String],
+                      ?deny_domain_suffixes: Array[String]) -> NetworkPolicy
+    def self.coerce: (untyped network) -> Hash[String, untyped]
+    def initialize: (Hash[String, untyped] wire) -> void
+    def to_h: () -> Hash[String, untyped]
+  end
+
+  class AgentFrame
+    def initialize: (Hash[String, untyped] data) -> void
+    def id: () -> Integer
+    def flags: () -> Integer
+    def body: () -> String
+    def terminal?: () -> bool
+    def session_start?: () -> bool
+    def shutdown?: () -> bool
+  end
+
+  class AgentStream
+    include Enumerable[AgentFrame]
+    def id: () -> Integer
+    def recv: () -> AgentFrame?
+    def each: () { (AgentFrame) -> void } -> self
+            | () -> Enumerator[AgentFrame, self]
+    def close: () -> nil
+  end
+
+  class AgentClient
+    FLAG_TERMINAL: Integer
+    FLAG_SESSION_START: Integer
+    FLAG_SHUTDOWN: Integer
+    def self.connect_sandbox: (String name, ?timeout: Numeric?) ?{ (AgentClient) -> untyped } -> untyped
+    def self.connect_path: (String path, ?timeout: Numeric?) ?{ (AgentClient) -> untyped } -> untyped
+    def self.socket_path: (String name) -> String
+    def initialize: (untyped native) -> void
+    def request: (Integer flags, String body) -> AgentFrame
+    def stream: (Integer flags, String body) -> AgentStream
+    def send_frame: (Integer id, Integer flags, String body) -> nil
+    def ready_bytes: () -> String
+    def close: () -> nil
+  end
+
+  class SshOutput
+    def initialize: (Hash[String, untyped] data) -> void
+    def status: () -> Integer
+    def success?: () -> bool
+    def failure?: () -> bool
+    def stdout: () -> String
+    def stderr: () -> String
+    def stdout_bytes: () -> String
+    def stderr_bytes: () -> String
+    def to_s: () -> String
+  end
+
+  class SftpClient
+    def initialize: (untyped native) -> void
+    def read: (String path) -> String
+    def read_text: (String path) -> String
+    def write: (String path, String data) -> nil
+    def mkdir: (String path) -> nil
+    def remove_file: (String path) -> nil
+    def remove_dir: (String path) -> nil
+    def rename: (String old_path, String new_path) -> nil
+    def symlink: (String target, String link_path) -> nil
+    def real_path: (String path) -> String
+    def read_link: (String path) -> String
+    def close: () -> nil
+  end
+
+  class SshClient
+    def initialize: (untyped native) -> void
+    def exec: (String command, ?tty: bool) -> SshOutput
+    def attach: (?term: String?, ?detach_keys: String?) -> Integer
+    def sftp: () ?{ (SftpClient) -> untyped } -> untyped
+    def close: () -> nil
+  end
+
+  class SshServer
+    def initialize: (untyped native) -> void
+    def serve_connection: () -> nil
+    def close: () -> nil
+  end
+
+  class SshOps
+    def initialize: (untyped native) -> void
+    def open_client: (?user: String, ?term: String?, ?sftp: bool) ?{ (SshClient) -> untyped } -> untyped
+    def prepare_server: (?host_key_path: String?, ?authorized_keys_path: String?,
+                         ?user: String?, ?sftp: bool) -> SshServer
   end
 end

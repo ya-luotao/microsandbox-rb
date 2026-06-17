@@ -108,8 +108,15 @@ module Microsandbox
       # @param entrypoint [Array<String>, nil] image entrypoint override
       # @param ports [Hash, nil] host_port => guest_port TCP publications
       # @param ports_udp [Hash, nil] host_port => guest_port UDP publications
-      # @param network ["public_only", "none", "allow_all", "non_local", nil] network
-      #   policy preset (default public_only)
+      # @param network [String, Symbol, NetworkPolicy, Hash, nil] network policy.
+      #   A preset name ("public_only" (default), "none", "allow_all",
+      #   "non_local"), a {NetworkPolicy} (e.g. {NetworkPolicy.custom}), or a Hash
+      #   describing a custom policy (`default_egress:`, `default_ingress:`,
+      #   `rules:`, `deny_domains:`, `deny_domain_suffixes:`). See {NetworkPolicy}
+      #   and {Rule}.
+      # @param patches [Array<Hash>, nil] rootfs patches applied before boot, each
+      #   built with the {Patch} factory (e.g. `Patch.text(...)`, `Patch.mkdir(...)`).
+      #   Not compatible with disk-image roots.
       # @param log_level ["error","warn","info","debug","trace", nil] guest log verbosity
       # @param quiet_logs [Boolean] suppress sandbox process logs
       # @param security ["default", "restricted", nil] exec security profile
@@ -139,6 +146,7 @@ module Microsandbox
                  image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
                  shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
                  entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
+                 patches: nil,
                  from_snapshot: nil, log_level: nil, quiet_logs: false, security: nil,
                  oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
                  pull_policy: nil, registry_auth: nil, registry_insecure: false,
@@ -161,7 +169,8 @@ module Microsandbox
         opts["ports"] = intify_ports(ports) if ports
         opts["ports_udp"] = intify_ports(ports_udp) if ports_udp
         opts["volumes"] = normalize_volumes(volumes) if volumes
-        opts["network"] = network.to_s if network
+        opts["patches"] = normalize_patches(patches) if patches
+        apply_network_opts(opts, network) unless network.nil?
         opts["log_level"] = log_level.to_s if log_level
         opts["quiet_logs"] = true if quiet_logs
         opts["security"] = security.to_s if security
@@ -302,6 +311,33 @@ module Microsandbox
           end
         end
       end
+
+      # Normalize a list of patches (each a Hash from the {Patch} factory, or a
+      # plain Hash) into string-keyed Hashes for the native layer. Values are
+      # passed through unchanged (mode stays Integer, content stays String).
+      def normalize_patches(patches)
+        Array(patches).map do |p|
+          unless p.is_a?(Hash)
+            raise ArgumentError, "patch must be a Hash (use Microsandbox::Patch.*): #{p.inspect}"
+          end
+          p.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v }
+        end
+      end
+
+      # Route the `network:` argument to either the preset path
+      # (`opts["network"]`, the original string-preset behavior) or the custom
+      # policy path (`opts["network_policy"]`). Accepts a preset String/Symbol, a
+      # {NetworkPolicy}, or a plain Hash.
+      def apply_network_opts(opts, network)
+        norm = NetworkPolicy.coerce(network)
+        return if norm.empty? # e.g. network: {} — leave the default policy in place
+
+        if norm.keys == ["preset"]
+          opts["network"] = norm["preset"]
+        else
+          opts["network_policy"] = norm
+        end
+      end
     end
 
     def initialize(native)
@@ -351,10 +387,58 @@ module Microsandbox
                                           exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
+    # Attach an interactive terminal to a command in the sandbox.
+    #
+    # Puts the **host** terminal into raw mode and forwards keystrokes (and
+    # SIGWINCH resizes) to the guest until the command exits or the detach
+    # sequence is typed. Requires a real TTY on stdin/stdout, so it is for CLI
+    # use, not library/automation code (use {#exec}/{#exec_stream} there). Blocks
+    # until the session ends. Mirrors the official SDKs' `attach`.
+    #
+    # @param command [String] the program to run
+    # @param args [Array<String>] its arguments
+    # @param cwd [String, nil] working directory
+    # @param user [String, nil] user to run as
+    # @param env [Hash, nil] extra environment variables
+    # @param detach_keys [String, nil] detach sequence (e.g. "ctrl-p,ctrl-q";
+    #   default "ctrl-]")
+    # @param rlimits [Hash, nil] resource limits (see {#exec})
+    # @return [Integer] the command's exit code (or the code at detach)
+    def attach(command, args = [], cwd: nil, user: nil, env: nil, detach_keys: nil, rlimits: nil)
+      opts = {}
+      opts["cwd"] = cwd.to_s if cwd
+      opts["user"] = user.to_s if user
+      opts["env"] = env.each_with_object({}) { |(k, v), a| a[k.to_s] = v.to_s } if env
+      opts["detach_keys"] = detach_keys.to_s if detach_keys
+      if rlimits
+        opts["rlimits"] = rlimits.map do |resource, limit|
+          soft, hard = limit.is_a?(Array) ? [limit[0], limit[1]] : [limit, limit]
+          [resource.to_s, Integer(soft), Integer(hard)]
+        end
+      end
+      @native.attach(command.to_s, Array(args).map(&:to_s), opts)
+    end
+
+    # Attach an interactive terminal running the sandbox's default shell.
+    # See {#attach} for the host-TTY requirements.
+    # @return [Integer] the shell's exit code (or the code at detach)
+    def attach_shell
+      @native.attach_shell
+    end
+
     # Guest filesystem operations.
     # @return [FS]
     def fs
       @fs ||= FS.new(@native)
+    end
+
+    # SSH access to the sandbox — open a native in-process SSH client or prepare
+    # a reusable server endpoint.
+    # @return [SshOps]
+    # @example
+    #   sb.ssh.open_client { |c| puts c.exec("hostname").stdout }
+    def ssh
+      SshOps.new(@native)
     end
 
     # Latest resource-usage snapshot.

@@ -14,6 +14,10 @@ This is an **unofficial, community-maintained** Ruby implementation — not part
 - **Command execution** — run commands or shell scripts and collect output
 - **Guest filesystem access** — read, write, list, copy, stat files inside a running sandbox
 - **Metrics & logs** — CPU, memory, disk and network I/O; captured stdout/stderr/system logs
+- **Rootfs patches** — inject files, dirs, and symlinks into the image before boot (`Microsandbox::Patch`)
+- **Fine-grained networking** — policy presets *and* custom CIDR/domain/group allow-deny rules (`Microsandbox::NetworkPolicy`)
+- **SSH & SFTP** — native in-process SSH client/server and file transfer (`Sandbox#ssh`)
+- **Raw agent client** — byte-level access to the guest `agentd` protocol (`Microsandbox::AgentClient`)
 - **Idiomatic Ruby** — keyword arguments, block-scoped lifecycle, a typed error hierarchy
 - **Thread-friendly** — the GVL is released during sandbox calls, so other Ruby threads keep running
 
@@ -372,19 +376,22 @@ one bound to the gem.
 > Until promoted, users install the source gem (which compiles via `rb_sys`).
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
-section for what's covered today vs. on the roadmap. Covered: full sandbox
+section. The binding now covers the full official-SDK surface: sandbox
 lifecycle (including the async `request_stop`/`request_kill`/`request_drain`/
 `wait_until_stopped`/`detach`/`owns_lifecycle?` controls and label-filtered
-`list_with`), `exec`/`shell` (collected and streaming), the full guest
-filesystem, metrics (per-sandbox, `Microsandbox.all_sandbox_metrics`, and
-streaming `metrics_stream`/`log_stream`), logs, OCI image-cache management,
-named volumes, and snapshots (create/list/verify/export/import +
-boot-from-snapshot). Create options span resources, network policy presets,
-`log_level`/`security`/`rlimits`/`pull_policy`/`secrets` and more; `exec`/`shell`
-take per-call `rlimits`, and `create` accepts `registry_auth`/`registry_insecure`/
-`registry_ca_certs` for private and authenticated registries. Still on the
-roadmap: custom per-rule network policies, file patches, interactive `attach`,
-SSH, and the raw agent client.
+`list_with`), `exec`/`shell` (collected and streaming), interactive `attach`/
+`attach_shell`, the full guest filesystem, metrics (per-sandbox,
+`Microsandbox.all_sandbox_metrics`, and streaming `metrics_stream`/`log_stream`),
+logs, OCI image-cache management, named volumes, snapshots (create/list/verify/
+export/import + boot-from-snapshot), **rootfs patches** (`Microsandbox::Patch`),
+**custom per-rule network policies** (`Microsandbox::NetworkPolicy`/`Rule`/
+`Destination`, alongside the presets), **SSH** (`Sandbox#ssh` →
+`SshClient`/`SftpClient`/`SshServer`), and the **raw agent client**
+(`Microsandbox::AgentClient`). Create options span resources, network policy,
+`log_level`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches` and more;
+`exec`/`shell` take per-call `rlimits`, and `create` accepts
+`registry_auth`/`registry_insecure`/`registry_ca_certs` for private and
+authenticated registries.
 
 ## License
 

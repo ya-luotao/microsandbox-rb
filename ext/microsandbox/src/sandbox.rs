@@ -15,12 +15,15 @@ use microsandbox::logs::{
     LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
 use microsandbox::sandbox::{
-    FsEntry, FsEntryKind, FsMetadata, PullPolicy, RlimitResource, SandboxFilter, SandboxHandle,
-    SandboxMetrics, SandboxStatus, SandboxStopResult, SecurityProfile,
+    AttachOptionsBuilder, FsEntry, FsEntryKind, FsMetadata, Patch, PullPolicy, RlimitResource,
+    SandboxFilter, SandboxHandle, SandboxMetrics, SandboxStatus, SandboxStopResult,
+    SecurityProfile,
 };
 use microsandbox::LogLevel;
 use microsandbox::RegistryAuth;
-use microsandbox_network::policy::NetworkPolicy;
+use microsandbox_network::policy::{
+    Action, Destination, DestinationGroup, Direction, NetworkPolicy, PortRange, Protocol, Rule,
+};
 
 use crate::conv;
 use crate::error;
@@ -108,6 +111,12 @@ impl Sandbox {
                 }
             });
         }
+        // patches: rootfs modifications applied before boot. The Ruby layer
+        // normalizes each `Microsandbox::Patch.*` into a string-keyed Hash with
+        // a `kind` discriminator; mirrors the Python binding's `apply_patch`.
+        for patch in parse_patches(opts)? {
+            b = b.add_patch(patch);
+        }
         if let Some(net) = conv::opt_string(opts, "network")? {
             match net.as_str() {
                 "none" | "disabled" | "disable" | "airgapped" => b = b.disable_network(),
@@ -122,6 +131,13 @@ impl Sandbox {
                     )))
                 }
             }
+        }
+        // Custom network policy: an ordered allow/deny rule list with per-direction
+        // defaults and bulk domain denials. The Ruby layer routes bare presets to
+        // the `network` key above and full policies here; mirrors the Python
+        // binding's `apply_network`.
+        if let Some(policy) = parse_network_policy(opts)? {
+            b = b.network(move |n| n.policy(policy));
         }
         if let Some(level) = conv::opt_string(opts, "log_level")? {
             b = b.log_level(log_level_from_str(&level)?);
@@ -434,6 +450,120 @@ impl Sandbox {
         let fs = self.inner.fs();
         block_on(fs.copy_to_host(&guest_path, &host_path)).map_err(error::to_ruby)
     }
+
+    //----------------------------------------------------------------------
+    // SSH (mirror SandboxSshOps)
+    //----------------------------------------------------------------------
+
+    /// Open a native in-process SSH client to this sandbox. `opts`: user, term,
+    /// sftp (bool, default true).
+    fn ssh_open_client(&self, opts: RHash) -> Result<crate::ssh::SshClient, Error> {
+        let user = conv::opt_string(opts, "user")?;
+        let term = conv::opt_string(opts, "term")?;
+        let sftp = conv::opt::<bool>(opts, "sftp")?.unwrap_or(true);
+        let ssh = self.inner.ssh();
+        let client = block_on(ssh.open_client_with(move |mut b| {
+            if let Some(u) = user {
+                b = b.user(u);
+            }
+            if let Some(t) = term {
+                b = b.term(t);
+            }
+            b.sftp(sftp)
+        }))
+        .map_err(error::to_ruby)?;
+        Ok(crate::ssh::SshClient::from_core(client))
+    }
+
+    /// Prepare a reusable SSH server endpoint. `opts`: host_key_path,
+    /// authorized_keys_path, user, sftp (bool, default true).
+    fn ssh_prepare_server(&self, opts: RHash) -> Result<crate::ssh::SshServer, Error> {
+        let host_key_path = conv::opt_string(opts, "host_key_path")?;
+        let authorized_keys_path = conv::opt_string(opts, "authorized_keys_path")?;
+        let user = conv::opt_string(opts, "user")?;
+        let sftp = conv::opt::<bool>(opts, "sftp")?.unwrap_or(true);
+        let ssh = self.inner.ssh();
+        let server = block_on(ssh.prepare_server_with(move |mut b| {
+            if let Some(p) = host_key_path {
+                b = b.host_key_path(p);
+            }
+            if let Some(p) = authorized_keys_path {
+                b = b.authorized_keys_path(p);
+            }
+            if let Some(u) = user {
+                b = b.user(u);
+            }
+            b.sftp(sftp)
+        }))
+        .map_err(error::to_ruby)?;
+        Ok(crate::ssh::SshServer::from_core(server))
+    }
+
+    //----------------------------------------------------------------------
+    // Interactive attach (host-TTY coupled)
+    //----------------------------------------------------------------------
+
+    /// Attach an interactive terminal to a command in the sandbox; returns its
+    /// exit code. Puts the host terminal in raw mode (requires a real tty) and
+    /// blocks until the command exits or the detach sequence is typed. `opts`:
+    /// cwd, user, env, detach_keys, rlimits.
+    fn attach(&self, cmd: String, args: Vec<String>, opts: RHash) -> Result<i32, Error> {
+        let parsed = AttachOpts::parse(args, opts)?;
+        block_on(self.inner.attach_with(cmd, move |b| parsed.apply(b))).map_err(error::to_ruby)
+    }
+
+    /// Attach an interactive terminal running the sandbox's default shell.
+    fn attach_shell(&self) -> Result<i32, Error> {
+        block_on(self.inner.attach_shell()).map_err(error::to_ruby)
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Attach option parsing
+//--------------------------------------------------------------------------------------------------
+
+struct AttachOpts {
+    args: Vec<String>,
+    cwd: Option<String>,
+    user: Option<String>,
+    env: Vec<(String, String)>,
+    detach_keys: Option<String>,
+    rlimits: Vec<(RlimitResource, u64, u64)>,
+}
+
+impl AttachOpts {
+    fn parse(args: Vec<String>, opts: RHash) -> Result<Self, Error> {
+        Ok(Self {
+            args,
+            cwd: conv::opt_string(opts, "cwd")?,
+            user: conv::opt_string(opts, "user")?,
+            env: conv::opt_string_map(opts, "env")?,
+            detach_keys: conv::opt_string(opts, "detach_keys")?,
+            rlimits: parse_rlimits(opts)?,
+        })
+    }
+
+    fn apply(self, mut b: AttachOptionsBuilder) -> AttachOptionsBuilder {
+        if !self.args.is_empty() {
+            b = b.args(self.args);
+        }
+        if let Some(cwd) = self.cwd {
+            b = b.cwd(cwd);
+        }
+        if let Some(user) = self.user {
+            b = b.user(user);
+        }
+        for (k, v) in self.env {
+            b = b.env(k, v);
+        }
+        if let Some(keys) = self.detach_keys {
+            b = b.detach_keys(keys);
+        }
+        for (resource, soft, hard) in self.rlimits {
+            b = b.rlimit_range(resource, soft, hard);
+        }
+        b
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -509,6 +639,358 @@ fn parse_rlimits(opts: RHash) -> Result<Vec<(RlimitResource, u64, u64)>, Error> 
         out.push((rlimit_resource_from_str(&triple.0)?, triple.1, triple.2));
     }
     Ok(out)
+}
+
+//--------------------------------------------------------------------------------------------------
+// Patch parsing (mirrors the Python binding's `apply_patch`)
+//--------------------------------------------------------------------------------------------------
+
+/// Read a required string field from a per-patch Hash.
+fn patch_str(h: RHash, key: &str) -> Result<String, Error> {
+    conv::opt_string(h, key)?
+        .ok_or_else(|| error::base_error(format!("patch is missing required key :{key}")))
+}
+
+/// Read a required field as raw bytes (for the binary `file` patch content).
+fn patch_bytes(h: RHash, key: &str) -> Result<Vec<u8>, Error> {
+    let s = conv::opt::<RString>(h, key)?
+        .ok_or_else(|| error::base_error(format!("patch is missing required key :{key}")))?;
+    // Copy out while the GVL is held; the buffer is consumed synchronously here.
+    Ok(unsafe { s.as_slice() }.to_vec())
+}
+
+/// Parse the `patches` option into core `Patch` operations. The Ruby layer
+/// normalizes each `Microsandbox::Patch.*` into a string-keyed Hash carrying a
+/// `kind` discriminator plus the variant-specific fields.
+fn parse_patches(opts: RHash) -> Result<Vec<Patch>, Error> {
+    let mut out = Vec::new();
+    for h in conv::opt_hash_vec(opts, "patches")? {
+        let kind = patch_str(h, "kind")?;
+        let mode = conv::opt_u32(h, "mode")?;
+        let replace = conv::opt_bool(h, "replace")?;
+        let patch = match kind.as_str() {
+            "text" => Patch::Text {
+                path: patch_str(h, "path")?,
+                content: patch_str(h, "content")?,
+                mode,
+                replace,
+            },
+            "file" => Patch::File {
+                path: patch_str(h, "path")?,
+                content: patch_bytes(h, "content")?,
+                mode,
+                replace,
+            },
+            "append" => Patch::Append {
+                path: patch_str(h, "path")?,
+                content: patch_str(h, "content")?,
+            },
+            "copy_file" => Patch::CopyFile {
+                src: patch_str(h, "src")?.into(),
+                dst: patch_str(h, "dst")?,
+                mode,
+                replace,
+            },
+            "copy_dir" => Patch::CopyDir {
+                src: patch_str(h, "src")?.into(),
+                dst: patch_str(h, "dst")?,
+                replace,
+            },
+            "symlink" => Patch::Symlink {
+                target: patch_str(h, "target")?,
+                link: patch_str(h, "link")?,
+                replace,
+            },
+            "mkdir" => Patch::Mkdir {
+                path: patch_str(h, "path")?,
+                mode,
+            },
+            "remove" => Patch::Remove {
+                path: patch_str(h, "path")?,
+            },
+            other => {
+                return Err(error::base_error(format!(
+                    "unknown patch kind {other:?} (expected one of \
+                     text/file/append/copy_file/copy_dir/symlink/mkdir/remove)"
+                )))
+            }
+        };
+        out.push(patch);
+    }
+    Ok(out)
+}
+
+//--------------------------------------------------------------------------------------------------
+// Network policy parsing (mirrors the Python binding's `apply_network`)
+//--------------------------------------------------------------------------------------------------
+
+/// Parse the `network_policy` option (a Hash normalized by the Ruby layer) into
+/// a core `NetworkPolicy`. Returns `None` when the option is absent (bare
+/// presets travel via the separate `network` key handled in `create`).
+///
+/// Composition (mirrors the Go SDK's `NetworkConfig`): bulk domain-deny rules
+/// come first (so they outrank later allow rules), then a preset's rules (if a
+/// preset base is given), then the caller's explicit `rules`. Per-direction
+/// defaults come from the explicit `default_egress`/`default_ingress` when set,
+/// else the preset's defaults, else the asymmetric default (deny egress / allow
+/// ingress).
+fn parse_network_policy(opts: RHash) -> Result<Option<NetworkPolicy>, Error> {
+    let Some(np) = conv::opt::<RHash>(opts, "network_policy")? else {
+        return Ok(None);
+    };
+
+    // Bulk domain denials → prepended deny-egress rules.
+    let mut rules: Vec<Rule> = Vec::new();
+    for d in conv::opt_string_vec(np, "deny_domains")? {
+        let domain = d
+            .parse()
+            .map_err(|e| error::base_error(format!("deny_domains {d:?}: {e}")))?;
+        rules.push(Rule::deny_egress(Destination::Domain(domain)));
+    }
+    for s in conv::opt_string_vec(np, "deny_domain_suffixes")? {
+        let suffix = s
+            .parse()
+            .map_err(|e| error::base_error(format!("deny_domain_suffixes {s:?}: {e}")))?;
+        rules.push(Rule::deny_egress(Destination::DomainSuffix(suffix)));
+    }
+
+    // Optional preset base (its rules and defaults seed the policy).
+    let (preset_egress, preset_ingress) = match conv::opt_string(np, "preset")? {
+        Some(p) => {
+            let mut base = network_preset(&p)?;
+            rules.append(&mut base.rules);
+            (Some(base.default_egress), Some(base.default_ingress))
+        }
+        None => (None, None),
+    };
+
+    // Caller's explicit rules come after preset rules.
+    for rd in conv::opt_hash_vec(np, "rules")? {
+        rules.push(parse_rule(rd)?);
+    }
+
+    let default_egress = match conv::opt_string(np, "default_egress")? {
+        Some(s) => action_from_str(&s)?,
+        None => preset_egress.unwrap_or(Action::Deny),
+    };
+    let default_ingress = match conv::opt_string(np, "default_ingress")? {
+        Some(s) => action_from_str(&s)?,
+        None => preset_ingress.unwrap_or(Action::Allow),
+    };
+
+    Ok(Some(NetworkPolicy {
+        default_egress,
+        default_ingress,
+        rules,
+    }))
+}
+
+fn network_preset(p: &str) -> Result<NetworkPolicy, Error> {
+    Ok(match p {
+        "none" | "disabled" | "disable" | "airgapped" => NetworkPolicy::none(),
+        "public" | "public_only" | "public-only" | "default" => NetworkPolicy::public_only(),
+        "all" | "allow_all" | "allow-all" => NetworkPolicy::allow_all(),
+        "non_local" | "non-local" | "nonlocal" => NetworkPolicy::non_local(),
+        other => {
+            return Err(error::base_error(format!(
+                "unknown network preset {other:?} (expected one of \
+                 public_only/none/allow_all/non_local)"
+            )))
+        }
+    })
+}
+
+fn action_from_str(s: &str) -> Result<Action, Error> {
+    match s {
+        "allow" => Ok(Action::Allow),
+        "deny" => Ok(Action::Deny),
+        other => Err(error::base_error(format!(
+            "unknown network action {other:?} (expected allow/deny)"
+        ))),
+    }
+}
+
+fn direction_from_str(s: &str) -> Result<Direction, Error> {
+    match s {
+        "egress" => Ok(Direction::Egress),
+        "ingress" => Ok(Direction::Ingress),
+        "any" => Ok(Direction::Any),
+        other => Err(error::base_error(format!(
+            "unknown rule direction {other:?} (expected egress/ingress/any)"
+        ))),
+    }
+}
+
+fn protocol_from_str(s: &str) -> Result<Protocol, Error> {
+    match s {
+        "tcp" => Ok(Protocol::Tcp),
+        "udp" => Ok(Protocol::Udp),
+        "icmpv4" => Ok(Protocol::Icmpv4),
+        "icmpv6" => Ok(Protocol::Icmpv6),
+        other => Err(error::base_error(format!(
+            "unknown protocol {other:?} (expected tcp/udp/icmpv4/icmpv6)"
+        ))),
+    }
+}
+
+/// Parse a single rule Hash into a core `Rule`.
+fn parse_rule(rd: RHash) -> Result<Rule, Error> {
+    let action = action_from_str(&patch_str(rd, "action")?)?;
+    let direction = match conv::opt_string(rd, "direction")? {
+        Some(s) => direction_from_str(&s)?,
+        None => Direction::Egress,
+    };
+    let kind = conv::opt_string(rd, "destination_kind")?;
+    let raw = conv::opt_string(rd, "destination")?;
+    let destination = parse_destination(kind.as_deref(), raw.as_deref())?;
+
+    let mut protocols = Vec::new();
+    for p in conv::opt_string_vec(rd, "protocols")? {
+        let proto = protocol_from_str(&p)?;
+        if !protocols.contains(&proto) {
+            protocols.push(proto);
+        }
+    }
+
+    let mut ports = Vec::new();
+    for p in conv::opt_string_vec(rd, "ports")? {
+        let range = parse_port_range(&p)?;
+        if !ports.contains(&range) {
+            ports.push(range);
+        }
+    }
+
+    Ok(Rule {
+        direction,
+        destination,
+        protocols,
+        ports,
+        action,
+    })
+}
+
+/// Parse a port string into a `PortRange`. Accepts a single port (`"443"`) or
+/// an inclusive range (`"8000-9000"`).
+fn parse_port_range(raw: &str) -> Result<PortRange, Error> {
+    let invalid = || error::base_error(format!("invalid port {raw:?} (expected N or N-M)"));
+    if let Some((lo, hi)) = raw.split_once('-') {
+        let lo: u16 = lo.trim().parse().map_err(|_| invalid())?;
+        let hi: u16 = hi.trim().parse().map_err(|_| invalid())?;
+        if lo > hi {
+            return Err(error::base_error(format!(
+                "invalid port range {raw:?}: low {lo} exceeds high {hi}"
+            )));
+        }
+        Ok(PortRange::range(lo, hi))
+    } else {
+        let p: u16 = raw.trim().parse().map_err(|_| invalid())?;
+        Ok(PortRange::single(p))
+    }
+}
+
+/// Resolve a destination from an explicit `kind` + raw value, or — when `kind`
+/// is absent — classify the raw shorthand string. Mirrors the Python binding's
+/// `parse_network_destination` / `parse_shorthand_destination`.
+fn parse_destination(kind: Option<&str>, raw: Option<&str>) -> Result<Destination, Error> {
+    let required = |raw: Option<&str>, kind: &str| -> Result<String, Error> {
+        raw.map(str::to_string).ok_or_else(|| {
+            error::base_error(format!(
+                "destination is required for destination kind {kind:?}"
+            ))
+        })
+    };
+    match kind {
+        Some("any") => Ok(Destination::Any),
+        Some("ip") => parse_ip_destination(&required(raw, "ip")?),
+        Some("cidr") => parse_cidr_destination(&required(raw, "cidr")?),
+        Some("domain") => parse_domain_destination(&required(raw, "domain")?),
+        Some("domain_suffix") | Some("domain-suffix") => {
+            parse_domain_suffix_destination(&required(raw, "domain_suffix")?)
+        }
+        Some("group") => parse_group_destination(&required(raw, "group")?),
+        Some(other) => Err(error::base_error(format!(
+            "unknown destination kind {other:?}"
+        ))),
+        None => parse_shorthand_destination(raw),
+    }
+}
+
+fn parse_shorthand_destination(raw: Option<&str>) -> Result<Destination, Error> {
+    let Some(raw) = raw else {
+        return Ok(Destination::Any);
+    };
+    if raw == "*" {
+        return Ok(Destination::Any);
+    }
+    if let Some(rest) = raw.strip_prefix("domain=") {
+        return parse_domain_destination(rest);
+    }
+    if let Some(rest) = raw.strip_prefix("suffix=") {
+        return parse_domain_suffix_destination(rest);
+    }
+    if let Some(dest) = maybe_group_destination(raw) {
+        return Ok(dest);
+    }
+    if raw.starts_with('.') {
+        return parse_domain_suffix_destination(raw);
+    }
+    if raw.contains('/') {
+        return parse_cidr_destination(raw);
+    }
+    if raw.parse::<std::net::IpAddr>().is_ok() {
+        return parse_ip_destination(raw);
+    }
+    parse_domain_destination(raw)
+}
+
+fn parse_ip_destination(raw: &str) -> Result<Destination, Error> {
+    let ip: std::net::IpAddr = raw
+        .parse()
+        .map_err(|e| error::base_error(format!("invalid IP address {raw:?}: {e}")))?;
+    let prefix = if ip.is_ipv4() { 32 } else { 128 };
+    let cidr = ipnetwork::IpNetwork::new(ip, prefix)
+        .map_err(|e| error::base_error(format!("invalid IP address {raw:?}: {e}")))?;
+    Ok(Destination::Cidr(cidr))
+}
+
+fn parse_cidr_destination(raw: &str) -> Result<Destination, Error> {
+    let cidr: ipnetwork::IpNetwork = raw
+        .parse()
+        .map_err(|e| error::base_error(format!("invalid CIDR {raw:?}: {e}")))?;
+    Ok(Destination::Cidr(cidr))
+}
+
+fn parse_domain_destination(raw: &str) -> Result<Destination, Error> {
+    let name = raw
+        .parse()
+        .map_err(|e| error::base_error(format!("invalid domain {raw:?}: {e}")))?;
+    Ok(Destination::Domain(name))
+}
+
+fn parse_domain_suffix_destination(raw: &str) -> Result<Destination, Error> {
+    let name = raw
+        .parse()
+        .map_err(|e| error::base_error(format!("invalid domain suffix {raw:?}: {e}")))?;
+    Ok(Destination::DomainSuffix(name))
+}
+
+fn parse_group_destination(raw: &str) -> Result<Destination, Error> {
+    maybe_group_destination(raw)
+        .ok_or_else(|| error::base_error(format!("unknown destination group {raw:?}")))
+}
+
+fn maybe_group_destination(raw: &str) -> Option<Destination> {
+    let group = match raw {
+        "public" => DestinationGroup::Public,
+        "loopback" => DestinationGroup::Loopback,
+        "private" => DestinationGroup::Private,
+        "link-local" | "link_local" => DestinationGroup::LinkLocal,
+        "metadata" => DestinationGroup::Metadata,
+        "multicast" => DestinationGroup::Multicast,
+        "host" => DestinationGroup::Host,
+        _ => return None,
+    };
+    Some(Destination::Group(group))
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -875,6 +1357,15 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("fs_stat", method!(Sandbox::fs_stat, 1))?;
     class.define_method("fs_copy_from_host", method!(Sandbox::fs_copy_from_host, 2))?;
     class.define_method("fs_copy_to_host", method!(Sandbox::fs_copy_to_host, 2))?;
+
+    class.define_method("ssh_open_client", method!(Sandbox::ssh_open_client, 1))?;
+    class.define_method(
+        "ssh_prepare_server",
+        method!(Sandbox::ssh_prepare_server, 1),
+    )?;
+
+    class.define_method("attach", method!(Sandbox::attach, 3))?;
+    class.define_method("attach_shell", method!(Sandbox::attach_shell, 0))?;
 
     Ok(())
 }

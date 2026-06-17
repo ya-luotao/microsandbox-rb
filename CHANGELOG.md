@@ -6,6 +6,54 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-06-18
+
+Closes the remaining roadmap items, bringing the binding surface to parity with
+the official Python/Node/Go SDKs (still wrapping the same upstream core,
+`v0.5.7`).
+
+### Added
+
+- **Rootfs patches** — `Sandbox.create(patches: [...])` applies modifications to
+  the root filesystem before boot, built with the new `Microsandbox::Patch`
+  factory: `Patch.text`/`file`/`append`/`copy_file`/`copy_dir`/`symlink`/`mkdir`/
+  `remove`. Mirrors the `Patch` factory in the official SDKs. (OverlayFS/bind
+  roots only — not disk images.)
+- **Custom per-rule network policies** — `Sandbox.create(network:)` now accepts,
+  besides the existing preset names, a `Microsandbox::NetworkPolicy` or a Hash
+  describing an ordered allow/deny rule list with per-direction defaults and bulk
+  domain denials. New `Microsandbox::NetworkPolicy` (`public_only`/`none`/
+  `allow_all`/`non_local`/`custom`), `Microsandbox::Rule` (`allow`/`deny`), and
+  `Microsandbox::Destination` (`any`/`ip`/`cidr`/`domain`/`domain_suffix`/
+  `group`, plus shorthand-string classification) factories. Destination
+  classification and rule composition mirror the official binding exactly.
+- **Raw agent client** — `Microsandbox::AgentClient.connect_sandbox`/
+  `connect_path`/`socket_path` open the byte-level transport to a sandbox's
+  `agentd` relay socket: `request`, `stream` (→ `Microsandbox::AgentStream`,
+  `Enumerable` over `Microsandbox::AgentFrame`), `send_frame`, `ready_bytes`,
+  `close`, with the `FLAG_TERMINAL`/`FLAG_SESSION_START`/`FLAG_SHUTDOWN` frame
+  flags. Mirrors the official `AgentClient`.
+- **SSH** — `Sandbox#ssh` returns a `Microsandbox::SshOps` to `open_client`
+  (→ `Microsandbox::SshClient`: `exec` → `Microsandbox::SshOutput`, `attach`,
+  `sftp` → `Microsandbox::SftpClient` with `read`/`write`/`mkdir`/`remove_file`/
+  `remove_dir`/`rename`/`symlink`/`real_path`/`read_link`, `close`) or
+  `prepare_server` (→ `Microsandbox::SshServer`: `serve_connection`, `close`).
+- **Interactive attach** — `Sandbox#attach(command, args, …)` and
+  `Sandbox#attach_shell` couple the host terminal (raw mode, SIGWINCH) to a
+  command (or the default shell) in the sandbox and return its exit code. For
+  CLI use — requires a real TTY.
+- RBS signatures for all of the above.
+
+### Notes
+
+- Network policy: a `preset` and custom `rules:`/`default_egress:`/`default_ingress:`
+  are mutually exclusive (a preset already defines its rules and defaults); a
+  preset may still be layered with `deny_domains:`/`deny_domain_suffixes:`. A
+  hand-written rule Hash accepts the singular `protocol:`/`port:` keys (the
+  spelling the Go/Python `PolicyRule` use) as well as the plural forms. The
+  deny-list-only shorthand (`network: { deny_domains: [...] }`) keeps the rest of
+  the network reachable (permissive defaults), matching the official SDKs.
+
 ## [0.5.8] - 2026-06-17
 
 Closes the `Sandbox`-class lifecycle gap with the official Python/Node/Go SDKs
