@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -50,6 +51,62 @@ jobs:
 
       - name: Run unit specs
         run: bundle exec rake spec
+
+  # Real-microVM integration tests — the round-trip verification that the unit
+  # suite (which stubs the native layer) cannot provide. Boots actual sandboxes
+  # from an OCI image and exercises exec/shell/fs/metrics/logs end-to-end.
+  #
+  # Requires KVM. GitHub-hosted Linux runners expose /dev/kvm (nested virt); the
+  # udev step below grants the runner user access to it. The official repo runs
+  # the equivalent suites on self-hosted KVM runners — if GitHub-hosted KVM
+  # proves insufficient for the heavy core runtime on the first run, point this
+  # job at a self-hosted runner (set `runs-on`) exactly as upstream does.
+  #
+  # Runs on pushes to main and manual dispatch (not on every PR) so external
+  # contributors aren't gated on KVM availability.
+  integration:
+    name: integration (real microVM, KVM)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev gcc make flex bison libelf-dev bc python3-pyelftools
+
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+        with:
+          ruby-version: "3.4"
+          rustup-toolchain: stable
+          bundler-cache: true
+          cargo-cache: true
+
+      - name: Compile native extension
+        run: bundle exec rake compile
+
+      # The core's `prebuilt` build.rs provisions msb + libkrunfw at compile
+      # time; install explicitly too so a missing runtime fails loudly here
+      # rather than silently skipping the integration specs.
+      - name: Ensure runtime installed
+        run: bundle exec ruby -e 'require "microsandbox"; Microsandbox.install unless Microsandbox.installed?; abort("runtime not installed") unless Microsandbox.installed?'
+
+      # Pull from AWS's public ECR mirror of the Docker library rather than
+      # docker.io: anonymous docker.io pulls are rate-limited and fail in CI
+      # with "Not authorized". The ECR mirror needs no auth and isn't throttled.
+      - name: Run integration specs (boots real microVMs)
+        env:
+          MICROSANDBOX_INTEGRATION: "1"
+          MICROSANDBOX_TEST_IMAGE: public.ecr.aws/docker/library/alpine:latest
+        run: bundle exec rspec spec/integration
 
   lint:
     name: rustfmt + clippy

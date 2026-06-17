@@ -8,6 +8,7 @@ module Microsandbox
   def self.installed?: () -> bool
   def self.runtime_path: () -> String
   def self.runtime_path=: (String path) -> void
+  def self.all_sandbox_metrics: () -> Hash[String, Metrics]
 
   class Error < StandardError
     def self.code: () -> String
@@ -24,6 +25,7 @@ module Microsandbox
   class FilesystemError < Error end
   class PathNotFoundError < Error end
   class VolumeNotFoundError < Error end
+  class VolumeAlreadyExistsError < Error end
   class ImageNotFoundError < Error end
   class ImageInUseError < Error end
   class ImagePullFailedError < Error end
@@ -120,35 +122,74 @@ module Microsandbox
     def updated_at: () -> Time?
   end
 
+  class SandboxStopResult
+    def name: () -> String
+    def status: () -> Symbol
+    def exit_code: () -> Integer?
+    def signal: () -> Integer?
+    def source: () -> String?
+    def stopped?: () -> bool
+    def crashed?: () -> bool
+    def observed_at: () -> Time
+  end
+
   class Sandbox
     def self.create: (String name, ?image: String?, ?cpus: Integer?, ?memory: Integer?,
                       ?env: Hash[untyped, untyped]?, ?workdir: String?, ?shell: String?,
                       ?user: String?, ?hostname: String?, ?labels: Hash[untyped, untyped]?,
                       ?scripts: Hash[untyped, untyped]?, ?entrypoint: Array[String]?,
-                      ?ports: Hash[untyped, untyped]?, ?volumes: Hash[untyped, untyped]?,
-                      ?network: untyped?, ?from_snapshot: String?, ?detached: bool,
+                      ?ports: Hash[untyped, untyped]?, ?ports_udp: Hash[untyped, untyped]?,
+                      ?volumes: Hash[untyped, untyped]?, ?network: untyped?, ?from_snapshot: String?,
+                      ?log_level: (String | Symbol)?, ?quiet_logs: bool, ?security: (String | Symbol)?,
+                      ?oci_upper_size: Integer?, ?max_duration: Integer?, ?idle_timeout: Integer?,
+                      ?rlimits: Hash[untyped, untyped]?, ?pull_policy: (String | Symbol)?,
+                      ?secrets: Array[Hash[untyped, untyped]]?, ?detached: bool,
                       ?replace: bool, ?replace_with_timeout: Numeric?)
                       ?{ (Sandbox) -> untyped } -> untyped
     def self.start: (String name, ?detached: bool) -> Sandbox
     def self.get: (String name) -> SandboxInfo
     def self.list: () -> Array[SandboxInfo]
+    def self.list_with: (?labels: Hash[untyped, untyped]) -> Array[SandboxInfo]
     def self.remove: (String name) -> nil
 
     def name: () -> String
     def exec: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
-               ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecOutput
+               ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?,
+               ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
     def shell: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
-                ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecOutput
+                ?timeout: Numeric?, ?tty: bool, ?stdin: String?, ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
     def exec_stream: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
-                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecHandle
+                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?,
+                      ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def shell_stream: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
-                       ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecHandle
+                       ?timeout: Numeric?, ?tty: bool, ?stdin: String?, ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def fs: () -> FS
     def metrics: () -> Metrics
     def logs: (?tail: Integer?, ?since_ms: Numeric?, ?until_ms: Numeric?,
                ?sources: Array[String | Symbol]?) -> Array[LogEntry]
+    def metrics_stream: (?interval: Numeric) -> MetricsStream
+    def log_stream: (?sources: Array[String | Symbol]?, ?since_ms: Numeric?,
+                     ?from_cursor: String?, ?until_ms: Numeric?, ?follow: bool) -> LogStream
     def stop: (?timeout: Numeric?) -> nil
     def kill: (?timeout: Numeric?) -> nil
+    def request_stop: () -> nil
+    def request_kill: () -> nil
+    def request_drain: () -> nil
+    def wait_until_stopped: () -> SandboxStopResult
+    def owns_lifecycle?: () -> bool
+    def detach: () -> nil
+  end
+
+  class LogStream
+    include Enumerable[LogEntry]
+    def each: () { (LogEntry) -> void } -> self
+            | () -> Enumerator[LogEntry, self]
+  end
+
+  class MetricsStream
+    include Enumerable[Metrics]
+    def each: () { (Metrics) -> void } -> self
+            | () -> Enumerator[Metrics, self]
   end
 
   class ExecEvent
@@ -243,5 +284,38 @@ module Microsandbox
     def self.get: (String name) -> VolumeInfo
     def self.list: () -> Array[VolumeInfo]
     def self.remove: (String name) -> nil
+  end
+
+  class SnapshotInfo
+    def digest: () -> String
+    def path: () -> String
+    def name: () -> String?
+    def parent_digest: () -> String?
+    def image_ref: () -> String?
+    def size_bytes: () -> Integer?
+    def format: () -> Symbol?
+    def created_at: () -> Time?
+  end
+
+  class SnapshotVerifyReport
+    def digest: () -> String
+    def path: () -> String
+    def status: () -> Symbol
+    def algorithm: () -> String?
+    def content_digest: () -> String?
+    def verified?: () -> bool
+    def not_recorded?: () -> bool
+  end
+
+  class Snapshot
+    def self.create: (String source_sandbox, ?name: String?, ?path: String?,
+                      ?labels: Hash[untyped, untyped]?, ?force: bool, ?record_integrity: bool) -> SnapshotInfo
+    def self.get: (String name_or_digest) -> SnapshotInfo
+    def self.list: () -> Array[SnapshotInfo]
+    def self.remove: (String name_or_path, ?force: bool) -> nil
+    def self.verify: (String name_or_path) -> SnapshotVerifyReport
+    def self.export: (String name_or_path, String out_path, ?with_parents: bool,
+                      ?with_image: bool, ?plain_tar: bool) -> nil
+    def self.import: (String archive_path, ?dest: String?) -> SnapshotInfo
   end
 end

@@ -5,7 +5,7 @@
 # MICROSANDBOX_TEST_IMAGE), so they require a working runtime and network access
 # for the first image pull.
 RSpec.describe "Sandbox lifecycle", :integration do
-  let(:image) { ENV.fetch("MICROSANDBOX_TEST_IMAGE", "alpine") }
+  let(:image) { default_test_image }
 
   it "creates, execs, and stops via the block form" do
     captured = nil

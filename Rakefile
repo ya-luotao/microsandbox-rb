@@ -3,7 +3,7 @@
 require "bundler/gem_tasks"
 require "rb_sys/extensiontask"
 
-GEMSPEC = Gem::Specification.load("microsandbox.gemspec")
+GEMSPEC = Gem::Specification.load("microsandbox-rb.gemspec")
 
 RbSys::ExtensionTask.new("microsandbox_rb", GEMSPEC) do |ext|
   ext.lib_dir = "lib/microsandbox"

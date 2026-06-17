@@ -2,7 +2,7 @@
 
 source "https://rubygems.org"
 
-# Declare gem dependencies in microsandbox.gemspec
+# Declare gem dependencies in microsandbox-rb.gemspec
 gemspec
 
 group :development do

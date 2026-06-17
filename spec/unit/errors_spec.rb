@@ -18,6 +18,7 @@ RSpec.describe "Microsandbox error hierarchy" do
     "FilesystemError" => "filesystem-error",
     "PathNotFoundError" => "path-not-found",
     "VolumeNotFoundError" => "volume-not-found",
+    "VolumeAlreadyExistsError" => "volume-already-exists",
     "ImageNotFoundError" => "image-not-found",
     "ImageInUseError" => "image-in-use",
     "ImagePullFailedError" => "image-pull-failed",

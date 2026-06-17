@@ -23,6 +23,7 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         ImageNotFound(_) => "ImageNotFoundError",
         ImageInUse(_) => "ImageInUseError",
         VolumeNotFound(_) => "VolumeNotFoundError",
+        VolumeAlreadyExists(_) => "VolumeAlreadyExistsError",
         Io(_) => "IoError",
         MetricsDisabled(_) => "MetricsDisabledError",
         MetricsUnavailable(_) => "MetricsUnavailableError",

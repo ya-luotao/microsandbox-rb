@@ -104,8 +104,16 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
-      - name: Configure RubyGems trusted publishing
-        uses: rubygems/configure-trusted-publisher@v1
+      # Exchange the GitHub OIDC token for short-lived RubyGems credentials.
+      # This is the official trusted-publishing action — NO RUBYGEMS_API_KEY
+      # secret is needed. (`rubygems/release-gem` is the all-in-one wrapper that
+      # runs `rake release`; it builds a single gem and so doesn't fit pushing
+      # the several pre-built per-platform gems this pipeline produces.)
+      - name: Configure RubyGems credentials (OIDC trusted publishing)
+        # Pinned to a full commit SHA (supply-chain hardening for a workflow that
+        # holds publish privileges); the comment tracks the human-readable version.
+        # Bump the SHA when upgrading (e.g. via Dependabot).
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
       - name: Push gems
         run: |
           shopt -s nullglob

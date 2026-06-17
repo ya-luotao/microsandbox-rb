@@ -1,8 +1,8 @@
-# microsandbox (Ruby)
+# microsandbox-rb
 
 Lightweight microVM sandboxes for Ruby — run AI agents and untrusted code with hardware-level isolation.
 
-The `microsandbox` gem provides native bindings to the [microsandbox](https://github.com/superradcompany/microsandbox) runtime via a Rust extension (magnus). It spins up real microVMs (not containers) in under 100 ms, runs standard OCI (Docker) images, and gives you full control over command execution, the guest filesystem, networking, and metrics — all from an idiomatic, **synchronous** Ruby API. There is no daemon to install and no server to connect to: the runtime is embedded directly in your process.
+The `microsandbox-rb` gem provides native bindings to the [microsandbox](https://github.com/superradcompany/microsandbox) runtime via a Rust extension (magnus). It spins up real microVMs (not containers) in under 100 ms, runs standard OCI (Docker) images, and gives you full control over command execution, the guest filesystem, networking, and metrics — all from an idiomatic, **synchronous** Ruby API. There is no daemon to install and no server to connect to: the runtime is embedded directly in your process.
 
 This is an **unofficial, community-maintained** Ruby implementation — not part of the official SDK family ([Rust](https://github.com/superradcompany/microsandbox/tree/main/sdk), TypeScript, Python, Go) — though it wraps the same core engine.
 
@@ -25,15 +25,18 @@ This is an **unofficial, community-maintained** Ruby implementation — not part
 
 ## Installation
 
+The gem is published as **`microsandbox-rb`**, but you still `require "microsandbox"`
+(the `microsandbox` package name was already taken on RubyGems):
+
 ```ruby
 # Gemfile
-gem "microsandbox"
+gem "microsandbox-rb", require: "microsandbox"
 ```
 
 ```bash
 bundle install
 # or
-gem install microsandbox
+gem install microsandbox-rb
 ```
 
 The first build downloads the `msb` runtime and `libkrunfw` firmware into
@@ -276,24 +279,49 @@ bundle exec rake compile
 
 ## Releasing
 
-Releases are automated by `.github/workflows/release.yml`:
+Releases are automated by `.github/workflows/release.yml` via RubyGems
+**Trusted Publishing** (OIDC) — there is no API key to store as a secret.
+
+**One-time setup** (before the first release), create a *pending* trusted
+publisher at <https://rubygems.org/profile/oidc/pending_trusted_publishers>:
+
+| Field | Value |
+|-------|-------|
+| RubyGems gem name | `microsandbox-rb` |
+| Repository owner | `ya-luotao` |
+| Repository name | `microsandbox-rb` |
+| Workflow filename | `release.yml` |
+| Environment | *(leave blank)* |
+
+On the first successful push the pending publisher auto-converts to a permanent
+one bound to the gem.
+
+**Each release:**
 
 1. Bump `Microsandbox::VERSION` (and the `tag = "vX.Y.Z"` on the core-crate
    dependency in `ext/microsandbox/Cargo.toml`) to match the upstream runtime,
    update `CHANGELOG.md`.
-2. Push a `vX.Y.Z` tag. CI builds precompiled, multi-ABI platform gems
-   (`x86_64-linux`, `aarch64-linux`, `arm64-darwin`) with
-   `rake-compiler-dock`, plus the source gem, and publishes them to RubyGems via
-   Trusted Publishing (OIDC — configure the trusted publisher in the RubyGems UI
-   first). Use the workflow's manual `dry_run` dispatch to build artifacts without
-   publishing.
+2. *(Recommended first time)* run the workflow's manual `dry_run` dispatch to
+   build all platform gems without publishing — confirms the `arm64-darwin`
+   cross-build succeeds.
+3. Push a `vX.Y.Z` tag. CI builds precompiled, multi-ABI platform gems
+   (`x86_64-linux`, `aarch64-linux`, `arm64-darwin`) with `rake-compiler-dock`,
+   plus the source gem, and pushes them to RubyGems. The publish job uses
+   `rubygems/configure-rubygems-credentials` (OIDC) with `id-token: write` — no
+   `RUBYGEMS_API_KEY` secret required.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
-section for what's covered today vs. on the roadmap. Covered: sandbox lifecycle,
-`exec`/`shell` (collected and streaming), the full guest filesystem, metrics,
-logs, OCI image-cache management, named volumes, and boot-from-snapshot. Still on
-the roadmap: streaming logs/metrics, snapshot creation, SSH, the raw agent
-client, and fine-grained networking/secrets/patches.
+section for what's covered today vs. on the roadmap. Covered: full sandbox
+lifecycle (including the async `request_stop`/`request_kill`/`request_drain`/
+`wait_until_stopped`/`detach`/`owns_lifecycle?` controls and label-filtered
+`list_with`), `exec`/`shell` (collected and streaming), the full guest
+filesystem, metrics (per-sandbox, `Microsandbox.all_sandbox_metrics`, and
+streaming `metrics_stream`/`log_stream`), logs, OCI image-cache management,
+named volumes, and snapshots (create/list/verify/export/import +
+boot-from-snapshot). Create options span resources, network policy presets,
+`log_level`/`security`/`rlimits`/`pull_policy`/`secrets` and more; `exec`/`shell`
+take per-call `rlimits`. Still on the roadmap: custom per-rule network policies,
+file patches, registry auth, interactive `attach`, SSH, and the raw agent client.
 
 ## License
 
