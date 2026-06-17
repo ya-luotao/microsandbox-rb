@@ -6,7 +6,12 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
-Closes the `Sandbox`-class lifecycle gap with the official Python/Node/Go SDKs.
+## [0.5.8] - 2026-06-17
+
+Closes the `Sandbox`-class lifecycle gap with the official Python/Node/Go SDKs
+and adds private/authenticated registry support plus first-use runtime
+auto-provisioning (the keystone for precompiled gems). Wraps the same upstream
+core (`v0.5.7`); this is a gem-only revision atop it.
 
 ### Added
 
@@ -110,4 +115,6 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.8...HEAD
+[0.5.8]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/superradcompany/microsandbox/releases/tag/v0.5.7

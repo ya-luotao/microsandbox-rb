@@ -4,7 +4,10 @@
 # `microsandbox/microsandbox_rb` and stays hidden behind `require "microsandbox"`.
 name = "microsandbox_rb"
 description = "Ruby SDK native extension for microsandbox — secure, fast microVM-based sandboxing."
-version = "0.5.7"
+# Must equal Microsandbox::VERSION (lib/microsandbox/version.rb) — Native.version
+# returns this via env!("CARGO_PKG_VERSION") and version_spec.rb asserts equality.
+# The core-crate dependency below stays pinned at its own tag (v0.5.7).
+version = "0.5.8"
 authors = ["Super Rad Company <development@superrad.company>"]
 repository = "https://github.com/superradcompany/microsandbox"
 license = "Apache-2.0"
