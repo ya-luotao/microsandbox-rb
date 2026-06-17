@@ -40,4 +40,47 @@ RSpec.describe "Microsandbox runtime helpers" do
       end
     end
   end
+
+  describe ".ensure_runtime!" do
+    # The memoized "ready" flag would leak across examples (and from a real
+    # source-built runtime on the dev box), so reset it around each one.
+    around do |example|
+      Microsandbox.instance_variable_set(:@runtime_ready, nil)
+      example.run
+      Microsandbox.instance_variable_set(:@runtime_ready, nil)
+    end
+
+    it "is a no-op (no install) when the runtime is already present" do
+      allow(Microsandbox).to receive(:installed?).and_return(true)
+      allow(Microsandbox).to receive(:install)
+      Microsandbox.ensure_runtime!
+      expect(Microsandbox).not_to have_received(:install)
+    end
+
+    it "auto-installs once when the runtime is missing" do
+      allow(Microsandbox).to receive(:installed?).and_return(false)
+      allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:warn)
+      Microsandbox.ensure_runtime!
+      Microsandbox.ensure_runtime! # second call should be memoized, not re-install
+      expect(Microsandbox).to have_received(:install).once
+    end
+
+    it "does not auto-install when MICROSANDBOX_NO_AUTO_INSTALL is set" do
+      allow(Microsandbox).to receive(:installed?).and_return(false)
+      allow(Microsandbox).to receive(:install)
+      stub_const("ENV", ENV.to_h.merge("MICROSANDBOX_NO_AUTO_INSTALL" => "1"))
+      Microsandbox.ensure_runtime!
+      expect(Microsandbox).not_to have_received(:install)
+    end
+
+    it "treats MICROSANDBOX_NO_AUTO_INSTALL=0/false as 'not disabled'" do
+      allow(Microsandbox).to receive(:installed?).and_return(false)
+      allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:warn)
+      stub_const("ENV", ENV.to_h.merge("MICROSANDBOX_NO_AUTO_INSTALL" => "false"))
+      Microsandbox.ensure_runtime!
+      expect(Microsandbox).to have_received(:install)
+    end
+  end
 end

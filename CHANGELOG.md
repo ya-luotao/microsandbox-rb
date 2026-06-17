@@ -42,6 +42,25 @@ Closes the `Sandbox`-class lifecycle gap with the official Python/Node/Go SDKs.
 - CI now runs the real-microVM integration suite (`spec/integration`) on a
   KVM-enabled runner, so the Rust↔core round-trip is exercised in automation —
   not just compilation and unit tests.
+- Registry authentication for `Sandbox.create`: `registry_auth: { username:,
+  password: }` (the password may be a token) for private/authenticated
+  registries and to lift Docker Hub's anonymous rate limit, plus
+  `registry_insecure:` (plain HTTP) and `registry_ca_certs:` (a PEM String or
+  Array) for self-hosted registries. Mirrors the Python/Node `registry_auth`
+  surface; without it the core's default resolution (OS keyring, global config,
+  `~/.docker/config.json`) still applies.
+- `Microsandbox.ensure_runtime!` — provisions the `msb` runtime + `libkrunfw` on
+  first use, called automatically by `Sandbox.create`/`start`. This makes
+  **precompiled platform gems** usable without a manual `install` step (a
+  precompiled-gem user never ran the source build, so the runtime is fetched
+  lazily by the running host's arch). Opt out with `MICROSANDBOX_NO_AUTO_INSTALL`.
+
+### Changed
+
+- The `cross-gems` release job now installs `libcap-ng-dev:arm64` via Debian
+  multiarch for the `aarch64-linux` cross-build (the extension links `-lcap-ng`
+  for the target arch). Precompiled gems remain `workflow_dispatch`-only and are
+  promoted to the publish path manually after per-platform validation.
 
 ## [0.5.7] - 2026-06-17
 

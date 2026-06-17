@@ -42,8 +42,14 @@ module Microsandbox
     end
 
     # Download and install the `msb` runtime + `libkrunfw` into
-    # `~/.microsandbox` (idempotent). Usually unnecessary: the native
-    # extension provisions the runtime at build time.
+    # `~/.microsandbox` (idempotent).
+    #
+    # When the gem is built from source, the native extension provisions the
+    # runtime at build time, so this is usually a no-op. Precompiled platform
+    # gems (which skip the local Rust build) do NOT provision it that way, so the
+    # runtime is fetched on first use — see {ensure_runtime!}. Call this
+    # explicitly to provision ahead of time (e.g. while baking a container
+    # image) so the first {Sandbox.create} doesn't pay the download.
     # @return [nil]
     def install
       Native.install
@@ -53,6 +59,32 @@ module Microsandbox
     # @return [Boolean] whether the runtime is installed and resolvable
     def installed?
       Native.installed?
+    end
+
+    # Ensure the `msb` runtime + `libkrunfw` are present, provisioning them on
+    # first use if not. Called automatically by {Sandbox.create}/{Sandbox.start}
+    # so precompiled-gem users (who never ran the source build) get a working
+    # runtime without a manual {install} step.
+    #
+    # The download is attempted at most once per process. Opt out by setting
+    # `MICROSANDBOX_NO_AUTO_INSTALL` (e.g. air-gapped hosts that provision the
+    # runtime out of band); the subsequent operation then surfaces the missing
+    # runtime itself. Already-installed runtimes (e.g. source builds) skip
+    # straight through with only a cheap presence check.
+    # @return [nil]
+    def ensure_runtime!
+      return if @runtime_ready
+      if installed?
+        @runtime_ready = true
+        return
+      end
+      return if auto_install_disabled?
+
+      warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
+           "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip)..."
+      install
+      @runtime_ready = true
+      nil
     end
 
     # @return [String] the resolved path to the `msb` runtime binary
@@ -73,6 +105,15 @@ module Microsandbox
     # @return [Hash{String => Metrics}]
     def all_sandbox_metrics
       Native.all_sandbox_metrics.transform_values { |m| Metrics.new(m) }
+    end
+
+    private
+
+    # Auto-provisioning is on by default; any non-empty, non-"0"/"false" value
+    # of MICROSANDBOX_NO_AUTO_INSTALL disables it.
+    def auto_install_disabled?
+      v = ENV["MICROSANDBOX_NO_AUTO_INSTALL"]
+      !v.nil? && !v.empty? && !%w[0 false no].include?(v.downcase)
     end
   end
 end

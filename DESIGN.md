@@ -76,6 +76,15 @@ SDK-set path (`Microsandbox.runtime_path=`) → config file → workspace build 
 expose the core `setup::install`/`is_installed` for explicit, idempotent
 provisioning (mirrors the Python `install()`/`is_installed()`).
 
+Build-time provisioning only helps the **source gem**, where `build.rs` runs on
+the user's own machine. A **precompiled gem** is built in CI, so its build-time
+download lands on the CI host, not the user's — the user's `~/.microsandbox` is
+empty. `Microsandbox.ensure_runtime!` closes that gap: `Sandbox.create`/`start`
+call it to fetch the runtime on first use (by the *running* host's arch, which is
+always correct), at most once per process. `MICROSANDBOX_NO_AUTO_INSTALL` opts
+out (air-gapped hosts that provision out of band). libkrunfw is `dlopen`'d by
+`msb` at runtime and is never linked into the extension.
+
 ## Core-crate dependency (self-contained)
 
 `ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
@@ -90,14 +99,22 @@ git. The override must never be committed — it would break container builds.
 
 * **Source gem**: compiles the extension via `extconf.rb` (rb-sys
   `create_rust_makefile`); requires a Rust toolchain (MSRV below).
-* **Precompiled platform gems**: built in CI on a `vX.Y.Z` tag
+* **Precompiled platform gems**: built best-effort by the `cross-gems` job
   (`.github/workflows/release.yml`) with `oxidize-rb/cross-gem-action`
   (`rake-compiler-dock`) per `Gem::Platform`, shipping multi-ABI
   `lib/microsandbox/<ruby_abi>/` native artifacts — the same model Node uses with
-  per-platform packages. End users then install with no Rust toolchain. Published
+  per-platform packages. End users then install with no Rust toolchain, and the
+  runtime is fetched on first use (see above). The guest `agentd` is baked into
+  the extension by *target* arch (`filesystem/build.rs` uses
+  `CARGO_CFG_TARGET_ARCH` + `include_bytes!`), so it cross-compiles correctly;
+  the real cross work is linking the *target* native libs — `libcap-ng` on Linux
+  (via Debian multiarch for `aarch64-linux`) and the Hypervisor + Security
+  frameworks on macOS (via osxcross; `arm64-darwin` is the platform still to
+  confirm — if osxcross can't link them, move it to a native `macos-14` runner).
+  The job is gated to `workflow_dispatch` and **not** auto-published on tags:
+  since CI can't boot a microVM to prove a built gem actually works, gems are
+  promoted to the publish path manually after per-platform validation. Published
   to RubyGems via Trusted Publishing (OIDC). See [Releasing](README.md#releasing).
-  Whether the heavy core cross-builds for `arm64-darwin` under osxcross is
-  confirmed on first run; if not, that platform moves to a native macOS runner.
 
 ## Build requirements
 
@@ -120,14 +137,16 @@ API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…), `metrics`,
 **OCI image-cache management** (`Image.get`/`list`/`inspect`/`remove`/`prune`),
 **named volumes** (`Volume.create`/`get`/`list`/`remove` + `volumes:` mounts),
 **snapshots** (`Snapshot.create`/`get`/`list`/`remove`/`verify`/`export`/`import`
-+ `from_snapshot:` boot), `version`/`install`/`installed?`, and
-the typed error hierarchy.
++ `from_snapshot:` boot), `version`/`install`/`installed?`/`ensure_runtime!`,
+**registry auth** (`registry_auth`/`registry_insecure`/`registry_ca_certs` on
+`create`, for private/authenticated registries), and the typed error hierarchy.
 
 Create options now cover `image`, `cpus`, `memory`, `oci_upper_size`, `env`,
 `workdir`, `shell`, `user`, `hostname`, `labels`, `scripts`, `entrypoint`,
 `ports`/`ports_udp`, `volumes`, `network` policy presets
 (`public_only`/`none`/`allow_all`/`non_local`), `log_level`, `quiet_logs`,
-`security`, `max_duration`, `idle_timeout`, `rlimits`, `pull_policy`, `secrets`,
+`security`, `max_duration`, `idle_timeout`, `rlimits`, `pull_policy`,
+`registry_auth`/`registry_insecure`/`registry_ca_certs`, `secrets`,
 `from_snapshot`, `detached`, and `replace`/`replace_with_timeout`. `exec`/`shell`
 add per-call `rlimits`.
 
@@ -135,7 +154,7 @@ add per-call `rlimits`.
 
 The binding is verified at four levels:
 
-1. **Unit** (130 examples) — the Ruby layer's option normalization and value
+1. **Unit** (140 examples) — the Ruby layer's option normalization and value
    objects, with the native layer stubbed.
 2. **Real-microVM integration** (`spec/integration`, opt-in via
    `MICROSANDBOX_INTEGRATION=1`) — boots actual sandboxes and round-trips
@@ -153,7 +172,7 @@ The binding is verified at four levels:
 
 **Roadmap:** custom per-rule network policies (CIDR/domain/group allow-deny
 rules — the presets and secret-host allowances are covered), file patches,
-registry auth, interactive `attach`/`attach_shell` (host-TTY coupled — raw mode,
+interactive `attach`/`attach_shell` (host-TTY coupled — raw mode,
 SIGWINCH), SSH (`SshClient`/`SftpClient`/`SshServer`), and the raw agent client.
 The native layer is structured so these slot in module-by-module, exactly as in
 the Python binding.

@@ -19,6 +19,7 @@ use microsandbox::sandbox::{
     SandboxMetrics, SandboxStatus, SandboxStopResult, SecurityProfile,
 };
 use microsandbox::LogLevel;
+use microsandbox::RegistryAuth;
 use microsandbox_network::policy::NetworkPolicy;
 
 use crate::conv;
@@ -136,6 +137,14 @@ impl Sandbox {
         }
         if let Some(mib) = conv::opt_u32(opts, "oci_upper_size")? {
             b = b.oci_upper_size(mib);
+        }
+        // Registry connection settings, for private / non-default registries:
+        // Basic auth (username + password/token), plain-HTTP `insecure`, and
+        // extra PEM CA roots. The Ruby layer flattens `registry_auth: {...}`
+        // into these keys; mirrors the Python `registry_auth=` and Node
+        // `.registry(r => r.auth(...))` surfaces.
+        if let Some(rc) = parse_registry_config(opts)? {
+            b = b.registry(move |r| rc.apply(r));
         }
         if let Some(secs) = conv::opt::<u64>(opts, "max_duration")? {
             b = b.max_duration(secs);
@@ -500,6 +509,65 @@ fn parse_rlimits(opts: RHash) -> Result<Vec<(RlimitResource, u64, u64)>, Error> 
         out.push((rlimit_resource_from_str(&triple.0)?, triple.1, triple.2));
     }
     Ok(out)
+}
+
+//--------------------------------------------------------------------------------------------------
+// Registry option parsing
+//--------------------------------------------------------------------------------------------------
+
+/// Parsed registry connection settings (auth + transport). Built from the flat
+/// `registry_*` option keys the Ruby layer normalizes `registry_auth:` into.
+struct RegistryConfig {
+    auth: Option<RegistryAuth>,
+    insecure: bool,
+    ca_certs: Vec<String>,
+}
+
+impl RegistryConfig {
+    fn apply(
+        self,
+        mut r: microsandbox::sandbox::RegistryConfigBuilder,
+    ) -> microsandbox::sandbox::RegistryConfigBuilder {
+        if let Some(auth) = self.auth {
+            r = r.auth(auth);
+        }
+        if self.insecure {
+            r = r.insecure();
+        }
+        for pem in self.ca_certs {
+            r = r.ca_certs(pem.into_bytes());
+        }
+        r
+    }
+}
+
+/// Read the `registry_*` options, returning `None` when none are set (so the
+/// default credential-resolution chain in the core is left untouched).
+fn parse_registry_config(opts: RHash) -> Result<Option<RegistryConfig>, Error> {
+    let username = conv::opt_string(opts, "registry_username")?;
+    let password = conv::opt_string(opts, "registry_password")?;
+    let insecure = conv::opt_bool(opts, "registry_insecure")?;
+    let ca_certs = conv::opt_string_vec(opts, "registry_ca_certs")?;
+
+    let auth = match (username, password) {
+        (Some(username), Some(password)) => Some(RegistryAuth::Basic { username, password }),
+        (None, None) => None,
+        // A half-specified credential is a caller bug, not a silent anonymous pull.
+        _ => {
+            return Err(error::base_error(
+                "registry_auth requires both :username and :password",
+            ))
+        }
+    };
+
+    if auth.is_none() && !insecure && ca_certs.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(RegistryConfig {
+        auth,
+        insecure,
+        ca_certs,
+    }))
 }
 
 //--------------------------------------------------------------------------------------------------

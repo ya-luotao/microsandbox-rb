@@ -21,9 +21,9 @@ This is an **unofficial, community-maintained** Ruby implementation — not part
 
 - **Ruby** >= 3.1
 - **Linux** with KVM enabled, or **macOS** on Apple Silicon (M-series)
-- A **Rust** toolchain (stable >= 1.91) — the gem currently installs as a source
-  gem and compiles the native extension on install (precompiled per-platform
-  gems are planned; see [Releasing](#releasing))
+- A **Rust** toolchain (stable >= 1.91) — needed only when installing the source
+  gem (it compiles the native extension on install). Precompiled per-platform
+  gems, where available, require no Rust toolchain; see [Releasing](#releasing)
 
 ## Installation
 
@@ -41,15 +41,22 @@ bundle install
 gem install microsandbox-rb
 ```
 
-Installing compiles the Rust extension, so the first install takes a few minutes
-and needs a Rust toolchain on `PATH`.
+Installing the **source gem** compiles the Rust extension, so the first install
+takes a few minutes and needs a Rust toolchain (`rustc >= 1.91`) on `PATH`. When
+a **precompiled platform gem** is available for your OS/architecture, RubyGems
+picks it automatically and no Rust toolchain is required.
 
-The first build downloads the `msb` runtime and `libkrunfw` firmware into
-`~/.microsandbox`. You can (re)provision them explicitly at any time:
+Either way the `msb` runtime and `libkrunfw` firmware are provisioned into
+`~/.microsandbox` automatically on first use (the first `Sandbox.create`/`start`
+downloads them if missing). To provision ahead of time — e.g. while baking a
+container image, or to avoid the first-call latency — call `install` explicitly:
 
 ```ruby
 Microsandbox.install unless Microsandbox.installed?
 ```
+
+Set `MICROSANDBOX_NO_AUTO_INSTALL` to disable the automatic first-use download
+(e.g. on air-gapped hosts that provision the runtime out of band).
 
 ## Quick start
 
@@ -67,9 +74,9 @@ end
 > **Why `public.ecr.aws/docker/library/...`?** The examples pull from AWS's
 > public mirror of the Docker Library because anonymous **Docker Hub** pulls are
 > rate-limited and often fail with `registry error: Not authorized`. Plain short
-> names like `image: "python"` work too if you aren't rate-limited; registry
-> auth for private registries isn't exposed by the gem yet (on the roadmap), so
-> until then use a public mirror or a pre-pulled image.
+> names like `image: "python"` work too if you aren't rate-limited. For private
+> or authenticated registries (including authenticated Docker Hub), pass
+> `registry_auth:` — see [Private & authenticated registries](#private--authenticated-registries).
 
 ## Usage
 
@@ -205,6 +212,38 @@ report = Microsandbox::Image.prune
 report.bytes_reclaimed
 ```
 
+### Private & authenticated registries
+
+Images are pulled automatically on `create`. For a private registry — or to lift
+Docker Hub's anonymous rate limit — pass `registry_auth:` with a username and a
+password or token:
+
+```ruby
+Microsandbox::Sandbox.create(
+  "private",
+  image: "registry.example.com/team/app:latest",
+  registry_auth: { username: "ci-bot", password: ENV.fetch("REGISTRY_TOKEN") }
+) do |sb|
+  # ...
+end
+```
+
+For self-hosted registries you can also reach the registry over plain HTTP and
+trust a private CA:
+
+```ruby
+Microsandbox::Sandbox.create(
+  "internal",
+  image: "registry.internal:5000/app:latest",
+  registry_insecure: true,                                  # plain HTTP instead of HTTPS
+  registry_ca_certs: File.read("/etc/pki/internal-ca.pem")  # String or Array of PEMs
+)
+```
+
+Without `registry_auth:`, the core's default credential resolution still applies
+(OS keyring, global config, and `~/.docker/config.json`), so an existing
+`docker login` is honored automatically.
+
 ### Named volumes
 
 Persistent storage that outlives individual sandboxes:
@@ -317,15 +356,20 @@ one bound to the gem.
    via `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no
    `RUBYGEMS_API_KEY` secret required.
 
-> **Precompiled per-platform gems** are not on the release path yet — this gem
-> wraps a heavy core crate whose `build.rs` downloads platform-specific `msb` +
-> `libkrunfw` binaries and links `libkrunfw`/keyring, which doesn't
-> cross-compile cleanly through the generic `rake-compiler-dock`/osxcross flow.
-> The `cross-gems` job is gated to manual `workflow_dispatch` so you can iterate
-> on it (`gh workflow run release.yml`) without failing tag releases. Once it
-> produces working gems on all platforms, re-add it to `publish.needs` and drop
-> the `workflow_dispatch` gate. Until then, users install the source gem (which
-> compiles via `rb_sys`).
+> **Precompiled per-platform gems** are built best-effort by the `cross-gems`
+> job, gated to manual `workflow_dispatch` so you can iterate
+> (`gh workflow run release.yml`) without failing tag releases. They are not
+> auto-published on tags yet: a gem that *compiles but can't boot a microVM*
+> would be served to users ahead of the source gem, and CI can't boot a VM to
+> prove otherwise — so promotion is manual after validating the artifact on each
+> platform. A precompiled gem ships the compiled extension (with the guest
+> `agentd` baked in by *target* arch); the host-side `msb` + `libkrunfw` runtime
+> is fetched into `~/.microsandbox` on first use by `Microsandbox.ensure_runtime!`
+> (libkrunfw is `dlopen`'d by `msb` at runtime, never linked into the gem). The
+> real cross-compile work is linking the *target* native libraries — `libcap-ng`
+> on Linux (handled via Debian multiarch in the workflow) and the Hypervisor +
+> Security frameworks on macOS (via osxcross; the one platform left to confirm).
+> Until promoted, users install the source gem (which compiles via `rb_sys`).
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
 section for what's covered today vs. on the roadmap. Covered: full sandbox
@@ -337,8 +381,10 @@ streaming `metrics_stream`/`log_stream`), logs, OCI image-cache management,
 named volumes, and snapshots (create/list/verify/export/import +
 boot-from-snapshot). Create options span resources, network policy presets,
 `log_level`/`security`/`rlimits`/`pull_policy`/`secrets` and more; `exec`/`shell`
-take per-call `rlimits`. Still on the roadmap: custom per-rule network policies,
-file patches, registry auth, interactive `attach`, SSH, and the raw agent client.
+take per-call `rlimits`, and `create` accepts `registry_auth`/`registry_insecure`/
+`registry_ca_certs` for private and authenticated registries. Still on the
+roadmap: custom per-rule network policies, file patches, interactive `attach`,
+SSH, and the raw agent client.
 
 ## License
 

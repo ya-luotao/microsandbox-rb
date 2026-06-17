@@ -6,6 +6,7 @@ module Microsandbox
   def self.version: () -> String
   def self.install: () -> nil
   def self.installed?: () -> bool
+  def self.ensure_runtime!: () -> nil
   def self.runtime_path: () -> String
   def self.runtime_path=: (String path) -> void
   def self.all_sandbox_metrics: () -> Hash[String, Metrics]
@@ -143,6 +144,8 @@ module Microsandbox
                       ?log_level: (String | Symbol)?, ?quiet_logs: bool, ?security: (String | Symbol)?,
                       ?oci_upper_size: Integer?, ?max_duration: Integer?, ?idle_timeout: Integer?,
                       ?rlimits: Hash[untyped, untyped]?, ?pull_policy: (String | Symbol)?,
+                      ?registry_auth: Hash[untyped, untyped]?, ?registry_insecure: bool,
+                      ?registry_ca_certs: (String | Array[String])?,
                       ?secrets: Array[Hash[untyped, untyped]]?, ?detached: bool,
                       ?replace: bool, ?replace_with_timeout: Numeric?)
                       ?{ (Sandbox) -> untyped } -> untyped
