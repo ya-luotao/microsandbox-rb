@@ -54,6 +54,19 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: "3.1,3.2,3.3,3.4"
+          # The core crate links libcap-ng on Linux targets, so the rake-compiler-dock
+          # container needs the dev package before the cross-build (same failure mode
+          # as CI: `cannot find -lcap-ng`). The containers are Debian-based (apt); the
+          # guard keeps the darwin container — which needs nothing — from erroring.
+          # NOTE (validate on first real release): aarch64-linux is cross-compiled, so
+          # the linker resolves libs from the target sysroot, not the host arch. The
+          # host-arch package below covers x86_64-linux; if aarch64 still fails to find
+          # -lcap-ng, enable arm64 multiarch (dpkg --add-architecture arm64) and
+          # install libcap-ng-dev:arm64 here.
+          setup: |
+            if command -v apt-get >/dev/null 2>&1; then
+              apt-get update && apt-get install -y libcap-ng-dev
+            fi
       - uses: actions/upload-artifact@v4
         with:
           name: gem-${{ matrix.platform }}

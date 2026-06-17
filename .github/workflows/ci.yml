@@ -20,12 +20,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The core crate is statically linked into the extension and pulls in
+      # libcap-ng on Linux (via the caps/capng crates), plus the toolchain that
+      # builds libkrunfw from source whenever the prebuilt download is
+      # unavailable. The ubuntu runners don't ship libcap-ng-dev, so the final
+      # link fails with `cannot find -lcap-ng` without this. macOS uses a
+      # different code path and needs none of it. Mirrors the upstream core
+      # crate's documented Linux build dependencies.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev gcc make flex bison libelf-dev bc python3-pyelftools
+
       # The core crate is a pinned git dependency, so the build is self-contained
       # (no adjacent checkout needed). Rust is required to compile the extension.
+      # The repo's rust-toolchain.toml pins `stable`; this keeps the action's
+      # installed toolchain in sync (the input is `rustup-toolchain`, not
+      # `rust-toolchain` — the latter is silently ignored).
       - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
         with:
           ruby-version: ${{ matrix.ruby }}
-          rust-toolchain: stable
+          rustup-toolchain: stable
           bundler-cache: true
           cargo-cache: true
 
@@ -43,7 +59,7 @@ jobs:
       - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
         with:
           ruby-version: "3.4"
-          rust-toolchain: stable
+          rustup-toolchain: stable
           bundler-cache: true
           cargo-cache: true
       - name: rustfmt
