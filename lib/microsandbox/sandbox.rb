@@ -34,6 +34,43 @@ module Microsandbox
     end
   end
 
+  # The terminal observation of a stopped sandbox, returned by
+  # {Sandbox#wait_until_stopped}. Mirrors the official SDKs' `SandboxStopResult`.
+  class SandboxStopResult
+    # @return [String]
+    attr_reader :name
+    # @return [Symbol] :running, :draining, :paused, :stopped, or :crashed
+    attr_reader :status
+    # @return [Integer, nil] process exit code, when observed from an owned child
+    attr_reader :exit_code
+    # @return [Integer, nil] terminating signal, when observed from an owned child
+    attr_reader :signal
+    # @return [String, nil] human description of the observation source
+    attr_reader :source
+
+    def initialize(data)
+      @name = data["name"]
+      @status = data["status"].to_sym
+      @exit_code = data["exit_code"]
+      @signal = data["signal"]
+      @source = data["source"]
+      @observed_at_ms = data["observed_at_ms"]
+    end
+
+    def stopped? = @status == :stopped
+    def crashed? = @status == :crashed
+
+    # @return [Time] when the stopped state was observed
+    def observed_at
+      Time.at(@observed_at_ms / 1000.0)
+    end
+
+    def inspect
+      "#<Microsandbox::SandboxStopResult name=#{@name.inspect} status=#{@status}" \
+        "#{@exit_code ? " exit_code=#{@exit_code}" : ""}#{@signal ? " signal=#{@signal}" : ""}>"
+    end
+  end
+
   # A running sandbox (microVM) — the primary entry point of the SDK.
   #
   # @example Block form (auto-stops on exit)
@@ -70,7 +107,21 @@ module Microsandbox
       # @param scripts [Hash, nil] named scripts to install
       # @param entrypoint [Array<String>, nil] image entrypoint override
       # @param ports [Hash, nil] host_port => guest_port TCP publications
-      # @param network ["public_only", "none", nil] network mode (default public_only)
+      # @param ports_udp [Hash, nil] host_port => guest_port UDP publications
+      # @param network ["public_only", "none", "allow_all", "non_local", nil] network
+      #   policy preset (default public_only)
+      # @param log_level ["error","warn","info","debug","trace", nil] guest log verbosity
+      # @param quiet_logs [Boolean] suppress sandbox process logs
+      # @param security ["default", "restricted", nil] exec security profile
+      # @param oci_upper_size [Integer, nil] writable upper-layer size cap, in MiB
+      # @param max_duration [Integer, nil] hard wall-clock lifetime, in seconds
+      # @param idle_timeout [Integer, nil] stop after this many idle seconds
+      # @param rlimits [Hash, nil] resource limits: { resource => limit } or
+      #   { resource => [soft, hard] } (e.g. { nofile: 65_535 })
+      # @param pull_policy ["always","if-missing","never", nil] image pull behavior
+      # @param secrets [Array<Hash>, nil] placeholder-protected secrets, each
+      #   { env:, value:, host: } — the value is substituted by the TLS proxy only
+      #   for the allowed host (auto-enables TLS interception)
       # @param detached [Boolean] keep running after this process exits
       # @param replace [Boolean] replace an existing sandbox with the same name
       # @param replace_with_timeout [Numeric, nil] replace, waiting up to N seconds
@@ -79,9 +130,11 @@ module Microsandbox
       def create(name,
                  image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
                  shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
-                 entrypoint: nil, ports: nil, volumes: nil, network: nil,
-                 from_snapshot: nil, detached: false, replace: false,
-                 replace_with_timeout: nil)
+                 entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
+                 from_snapshot: nil, log_level: nil, quiet_logs: false, security: nil,
+                 oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
+                 pull_policy: nil, secrets: nil,
+                 detached: false, replace: false, replace_with_timeout: nil)
         opts = {}
         opts["image"] = image.to_s if image
         opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
@@ -96,8 +149,18 @@ module Microsandbox
         opts["scripts"] = stringify(scripts) if scripts
         opts["entrypoint"] = Array(entrypoint).map(&:to_s) if entrypoint
         opts["ports"] = intify_ports(ports) if ports
+        opts["ports_udp"] = intify_ports(ports_udp) if ports_udp
         opts["volumes"] = normalize_volumes(volumes) if volumes
         opts["network"] = network.to_s if network
+        opts["log_level"] = log_level.to_s if log_level
+        opts["quiet_logs"] = true if quiet_logs
+        opts["security"] = security.to_s if security
+        opts["oci_upper_size"] = Integer(oci_upper_size) if oci_upper_size
+        opts["max_duration"] = Integer(max_duration) if max_duration
+        opts["idle_timeout"] = Integer(idle_timeout) if idle_timeout
+        opts["rlimits"] = normalize_rlimits(rlimits) if rlimits
+        opts["pull_policy"] = pull_policy.to_s if pull_policy
+        opts["secrets"] = normalize_secrets(secrets) if secrets
         opts["detached"] = true if detached
         if replace_with_timeout
           opts["replace_with_timeout"] = Float(replace_with_timeout)
@@ -137,6 +200,14 @@ module Microsandbox
         Native::Sandbox.list.map { |info| SandboxInfo.new(info) }
       end
 
+      # List sandboxes carrying all of the given labels (AND-matched).
+      # @param labels [Hash] required key => value labels
+      # @return [Array<SandboxInfo>]
+      def list_with(labels: {})
+        opts = { "labels" => stringify(labels) }
+        Native::Sandbox.list_with(opts).map { |info| SandboxInfo.new(info) }
+      end
+
       # Remove a (stopped) sandbox by name.
       # @return [nil]
       def remove(name)
@@ -152,6 +223,30 @@ module Microsandbox
 
       def intify_ports(ports)
         ports.each_with_object({}) { |(k, v), acc| acc[Integer(k)] = Integer(v) }
+      end
+
+      # Normalize secrets into [env, value, host] triples for the native layer.
+      # Each entry is a Hash { env:, value:, host: } (string or symbol keys).
+      def normalize_secrets(secrets)
+        Array(secrets).map do |spec|
+          env = spec[:env] || spec["env"]
+          value = spec[:value] || spec["value"]
+          host = spec[:host] || spec["host"]
+          unless env && value && host
+            raise ArgumentError, "secret spec needs :env, :value, and :host (got #{spec.inspect})"
+          end
+          [env.to_s, value.to_s, host.to_s]
+        end
+      end
+
+      # Normalize an rlimits Hash into [resource, soft, hard] triples for the
+      # native layer. Each value is either a single limit (soft == hard) or a
+      # [soft, hard] pair. Shared by {Sandbox.create} and {Sandbox#exec}.
+      def normalize_rlimits(rlimits)
+        rlimits.map do |resource, limit|
+          soft, hard = limit.is_a?(Array) ? [limit[0], limit[1]] : [limit, limit]
+          [resource.to_s, Integer(soft), Integer(hard)]
+        end
       end
 
       # Normalize volumes (Hash of guest_path => spec) into [guest, kind, source]
@@ -198,31 +293,31 @@ module Microsandbox
     # @param tty [Boolean] allocate a pseudo-terminal
     # @param stdin [String, nil] data to feed to stdin
     # @return [ExecOutput]
-    def exec(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil)
+    def exec(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecOutput.new(@native.exec(command.to_s, Array(args).map(&:to_s),
-                                  exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)))
+                                  exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
     # Run a shell script (pipes, redirects, etc. allowed) and collect output.
     # @return [ExecOutput]
-    def shell(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil)
+    def shell(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecOutput.new(@native.shell(script.to_s,
-                                   exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)))
+                                   exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
     # Run a command and stream its output as it arrives.
     # @return [ExecHandle]
     # @see ExecHandle
-    def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil)
+    def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.exec_stream(command.to_s, Array(args).map(&:to_s),
-                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)))
+                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
     # Run a shell script and stream its output as it arrives.
     # @return [ExecHandle]
-    def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil)
+    def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.shell_stream(script.to_s,
-                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)))
+                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
     # Guest filesystem operations.
@@ -254,6 +349,34 @@ module Microsandbox
       @native.logs(opts).map { |entry| LogEntry.new(entry) }
     end
 
+    # Stream resource-usage snapshots, one per interval tick, until the sandbox
+    # stops. Requires metrics to be enabled for the sandbox.
+    # @param interval [Numeric] seconds between snapshots
+    # @return [MetricsStream] an {Enumerable} of {Metrics}
+    def metrics_stream(interval: 1.0)
+      MetricsStream.new(@native.metrics_stream(Float(interval)))
+    end
+
+    # Stream captured logs as they appear.
+    #
+    # @param sources [Array<String,Symbol>, nil] filter by source
+    #   ("stdout"/"stderr"/"output"/"system")
+    # @param since_ms [Numeric, nil] start at the first entry at/after this Unix ms
+    # @param from_cursor [String, nil] resume exactly after a prior {LogEntry#cursor}
+    #   (mutually exclusive with since_ms; takes precedence if both given)
+    # @param until_ms [Numeric, nil] stop before any entry at/after this Unix ms
+    # @param follow [Boolean] keep the stream open for new entries past current EOF
+    # @return [LogStream] an {Enumerable} of {LogEntry}
+    def log_stream(sources: nil, since_ms: nil, from_cursor: nil, until_ms: nil, follow: false)
+      opts = {}
+      opts["sources"] = Array(sources).map(&:to_s) if sources
+      opts["since_ms"] = Float(since_ms) if since_ms
+      opts["from_cursor"] = from_cursor.to_s if from_cursor
+      opts["until_ms"] = Float(until_ms) if until_ms
+      opts["follow"] = true if follow
+      LogStream.new(@native.log_stream(opts))
+    end
+
     # Gracefully stop the sandbox (and wait for it to terminate).
     # @param timeout [Numeric, nil] seconds to wait before SIGKILL
     # @return [nil]
@@ -270,13 +393,55 @@ module Microsandbox
       nil
     end
 
+    # Send the graceful-shutdown request and return immediately, without waiting
+    # for the sandbox to terminate. Pair with {#wait_until_stopped}.
+    # @return [nil]
+    def request_stop
+      @native.request_stop
+      nil
+    end
+
+    # Send the force-kill request and return immediately, without waiting.
+    # @return [nil]
+    def request_kill
+      @native.request_kill
+      nil
+    end
+
+    # Request a graceful drain and return immediately, without waiting.
+    # @return [nil]
+    def request_drain
+      @native.request_drain
+      nil
+    end
+
+    # Block until the sandbox is observed in a terminal (non-running) state.
+    # @return [SandboxStopResult]
+    def wait_until_stopped
+      SandboxStopResult.new(@native.wait_until_stopped)
+    end
+
+    # @return [Boolean] whether this handle owns the sandbox process lifecycle
+    #   (i.e. stopping it or dropping the handle terminates the sandbox)
+    def owns_lifecycle?
+      @native.owns_lifecycle
+    end
+
+    # Detach this handle: disarm the stop-on-drop safety net so the sandbox
+    # keeps running after this handle is gone (and after this process exits).
+    # @return [nil]
+    def detach
+      @native.detach
+      nil
+    end
+
     def inspect
       "#<Microsandbox::Sandbox name=#{name.inspect}>"
     end
 
     private
 
-    def exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:)
+    def exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)
       opts = {}
       opts["cwd"] = cwd.to_s if cwd
       opts["user"] = user.to_s if user
@@ -284,6 +449,12 @@ module Microsandbox
       opts["timeout"] = Float(timeout) if timeout
       opts["tty"] = true if tty
       opts["stdin"] = stdin.to_s if stdin
+      if rlimits
+        opts["rlimits"] = rlimits.map do |resource, limit|
+          soft, hard = limit.is_a?(Array) ? [limit[0], limit[1]] : [limit, limit]
+          [resource.to_s, Integer(soft), Integer(hard)]
+        end
+      end
       opts
     end
   end

@@ -33,9 +33,21 @@ permissions:
   contents: read
 
 jobs:
+  # Precompiled per-platform gems — a UX optimization (users skip the Rust
+  # compile). EXPERIMENTAL / not on the release path yet: this gem wraps a heavy
+  # core crate whose build.rs downloads platform-specific msb + libkrunfw and
+  # links libkrunfw/keyring, which doesn't cross-compile cleanly through the
+  # generic rake-compiler-dock/osxcross flow. So this job is gated to manual
+  # `workflow_dispatch` only — tag releases ship the source gem (which installs
+  # everywhere by compiling via rb_sys). Iterate on it with a manual dispatch;
+  # when it produces working gems on all platforms, re-add it to `publish.needs`
+  # and drop the workflow_dispatch gate. The `bundle install` below fixes the
+  # first blocker (Bundler::GemNotFound inside the dock container).
   cross-gems:
     name: gem (${{ matrix.platform }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +62,8 @@ jobs:
           ruby-version: "3.4"
           bundler-cache: true
       - name: Build precompiled gem
-        uses: oxidize-rb/cross-gem-action@v9
+        # v7 is the latest release of this action; pinned to its commit SHA.
+        uses: oxidize-rb/cross-gem-action@80f59339d90789841d772f412fe4a8b201a8cfa2 # v7
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: "3.1,3.2,3.3,3.4"
@@ -67,6 +80,11 @@ jobs:
             if command -v apt-get >/dev/null 2>&1; then
               apt-get update && apt-get install -y libcap-ng-dev
             fi
+            # The dock container runs `bundle exec rake native:<plat> gem`; install
+            # the bundle (rb_sys/rake/rake-compiler) first or it fails with
+            # Bundler::GemNotFound. Skip the dev group (rspec etc. aren't needed to build).
+            bundle config set --local without development
+            bundle install --jobs 4
       - uses: actions/upload-artifact@v4
         with:
           name: gem-${{ matrix.platform }}
@@ -89,7 +107,10 @@ jobs:
 
   publish:
     name: publish to RubyGems
-    needs: [cross-gems, source-gem]
+    # Only the source gem is required to publish; precompiled cross-gems are
+    # best-effort (see cross-gems above) and pushed too if they happened to
+    # build (the gem push loop globs whatever artifacts are present).
+    needs: [source-gem]
     runs-on: ubuntu-latest
     # Real tag pushes only — never on a manual dry run.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -104,8 +125,16 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
-      - name: Configure RubyGems trusted publishing
-        uses: rubygems/configure-trusted-publisher@v1
+      # Exchange the GitHub OIDC token for short-lived RubyGems credentials.
+      # This is the official trusted-publishing action — NO RUBYGEMS_API_KEY
+      # secret is needed. (`rubygems/release-gem` is the all-in-one wrapper that
+      # runs `rake release`; it builds a single gem and so doesn't fit pushing
+      # the several pre-built per-platform gems this pipeline produces.)
+      - name: Configure RubyGems credentials (OIDC trusted publishing)
+        # Pinned to a full commit SHA (supply-chain hardening for a workflow that
+        # holds publish privileges); the comment tracks the human-readable version.
+        # Bump the SHA when upgrading (e.g. via Dependabot).
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
       - name: Push gems
         run: |
           shopt -s nullglob

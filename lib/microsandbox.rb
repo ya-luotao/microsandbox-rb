@@ -18,8 +18,10 @@ require_relative "microsandbox/exec_handle"
 require_relative "microsandbox/fs"
 require_relative "microsandbox/metrics"
 require_relative "microsandbox/log_entry"
+require_relative "microsandbox/streams"
 require_relative "microsandbox/image"
 require_relative "microsandbox/volume"
+require_relative "microsandbox/snapshot"
 require_relative "microsandbox/sandbox"
 
 # Microsandbox — lightweight microVM sandboxes for Ruby.
@@ -64,6 +66,13 @@ module Microsandbox
     # @return [void]
     def runtime_path=(path)
       Native.set_runtime_msb_path(path.to_s)
+    end
+
+    # Latest resource-usage snapshot for every running sandbox, keyed by name.
+    # Mirrors the official `all_sandbox_metrics`/`allSandboxMetrics` helpers.
+    # @return [Hash{String => Metrics}]
+    def all_sandbox_metrics
+      Native.all_sandbox_metrics.transform_values { |m| Metrics.new(m) }
     end
   end
 end

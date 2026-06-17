@@ -128,4 +128,21 @@ RSpec.describe "value objects" do
       expect(info.updated_at).to be_nil
     end
   end
+
+  describe Microsandbox::SandboxStopResult do
+    it "parses status/exit_code/signal and the observation timestamp" do
+      result = described_class.new(
+        "name" => "box", "status" => "crashed", "exit_code" => nil,
+        "signal" => 9, "observed_at_ms" => 1_700_000_000_000, "source" => "owned process handle"
+      )
+      expect(result.name).to eq("box")
+      expect(result.status).to eq(:crashed)
+      expect(result).to be_crashed
+      expect(result).not_to be_stopped
+      expect(result.exit_code).to be_nil
+      expect(result.signal).to eq(9)
+      expect(result.source).to eq("owned process handle")
+      expect(result.observed_at).to be_a(Time)
+    end
+  end
 end

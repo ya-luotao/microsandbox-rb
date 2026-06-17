@@ -27,3 +27,11 @@ end
 def unique_sandbox_name(prefix = "rb-spec")
   "#{prefix}-#{Process.pid}-#{rand(1_000_000)}"
 end
+
+# Default OCI image for integration specs. Defaults to AWS's public ECR mirror
+# of the Docker library: anonymous docker.io pulls are rate-limited (and fail
+# with "Not authorized" in CI / unauthenticated environments), while the ECR
+# mirror needs no auth and isn't throttled. Override with MICROSANDBOX_TEST_IMAGE.
+def default_test_image
+  ENV.fetch("MICROSANDBOX_TEST_IMAGE", "public.ecr.aws/docker/library/alpine:latest")
+end

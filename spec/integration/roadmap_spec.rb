@@ -3,7 +3,7 @@
 # Real microVM integration coverage for streaming exec, images, and volumes.
 # Opt-in via MICROSANDBOX_INTEGRATION=1.
 RSpec.describe "streaming, images, volumes", :integration do
-  let(:image) { ENV.fetch("MICROSANDBOX_TEST_IMAGE", "alpine") }
+  let(:image) { default_test_image }
 
   describe "streaming exec" do
     it "streams stdout events and a terminal exit" do

@@ -46,6 +46,7 @@ module Microsandbox
 
   # Volume / image errors ---------------------------------------------------
   define_error(:VolumeNotFoundError, "volume-not-found")
+  define_error(:VolumeAlreadyExistsError, "volume-already-exists")
   define_error(:ImageNotFoundError, "image-not-found")
   define_error(:ImageInUseError, "image-in-use")
   define_error(:ImagePullFailedError, "image-pull-failed")

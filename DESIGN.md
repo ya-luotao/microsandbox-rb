@@ -108,17 +108,52 @@ git. The override must never be committed — it would break container builds.
 
 ## Implemented surface (v1) vs roadmap
 
-**Implemented:** sandbox lifecycle (`create`/`start`/`get`/`list`/`remove`/
-`stop`/`kill`, block form), `exec`/`shell` with collected `ExecOutput`,
+**Implemented:** sandbox lifecycle (`create`/`start`/`get`/`list`/`list_with`/
+`remove`/`stop`/`kill`, the async `request_stop`/`request_kill`/`request_drain`/
+`wait_until_stopped` (→ `SandboxStopResult`) / `detach` / `owns_lifecycle?`
+controls, block form), `exec`/`shell` with collected `ExecOutput`,
 **streaming** `exec_stream`/`shell_stream` (`ExecHandle` is `Enumerable` over
 `ExecEvent`s, with stdin sink + signal/kill/resize), the full guest filesystem
-API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…), `metrics`, `logs`,
+API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…), `metrics`,
+`Microsandbox.all_sandbox_metrics`, **streaming `metrics_stream`/`log_stream`**
+(`Enumerable` over `Metrics`/`LogEntry`), `logs`,
 **OCI image-cache management** (`Image.get`/`list`/`inspect`/`remove`/`prune`),
 **named volumes** (`Volume.create`/`get`/`list`/`remove` + `volumes:` mounts),
-**boot-from-snapshot** (`from_snapshot:`), `version`/`install`/`installed?`, and
+**snapshots** (`Snapshot.create`/`get`/`list`/`remove`/`verify`/`export`/`import`
++ `from_snapshot:` boot), `version`/`install`/`installed?`, and
 the typed error hierarchy.
 
-**Roadmap:** streaming logs/metrics (`log_stream`, `metrics_stream`), snapshot
-creation/management, SSH, the raw agent client, and fine-grained
-networking/secrets/patches options. The native layer is structured so these slot
-in module-by-module, exactly as in the Python binding.
+Create options now cover `image`, `cpus`, `memory`, `oci_upper_size`, `env`,
+`workdir`, `shell`, `user`, `hostname`, `labels`, `scripts`, `entrypoint`,
+`ports`/`ports_udp`, `volumes`, `network` policy presets
+(`public_only`/`none`/`allow_all`/`non_local`), `log_level`, `quiet_logs`,
+`security`, `max_duration`, `idle_timeout`, `rlimits`, `pull_policy`, `secrets`,
+`from_snapshot`, `detached`, and `replace`/`replace_with_timeout`. `exec`/`shell`
+add per-call `rlimits`.
+
+## Verification
+
+The binding is verified at four levels:
+
+1. **Unit** (130 examples) — the Ruby layer's option normalization and value
+   objects, with the native layer stubbed.
+2. **Real-microVM integration** (`spec/integration`, opt-in via
+   `MICROSANDBOX_INTEGRATION=1`) — boots actual sandboxes and round-trips
+   `exec`/`shell`/`fs`/`metrics`/`logs`/streaming/snapshots. Run locally on
+   macOS Apple Silicon and wired into CI on a KVM runner.
+3. **Cross-SDK behavioral parity** — an identical-operations harness run through
+   this gem and through the **official Go SDK** against the same embedded runtime
+   produces byte-identical observable results (exec exit/stdout/success, env
+   propagation, non-zero-exit handling, fs round-trip + size, metrics). Both wrap
+   the same core crate, so this confirms the binding shapes data identically to
+   the official SDKs.
+4. **Packaged-gem install** — `gem install microsandbox-rb-<v>.gem` compiles the
+   shipped Rust source via `extconf.rb` and the installed gem boots a real
+   microVM, confirming the gem manifest and source-install path are complete.
+
+**Roadmap:** custom per-rule network policies (CIDR/domain/group allow-deny
+rules — the presets and secret-host allowances are covered), file patches,
+registry auth, interactive `attach`/`attach_shell` (host-TTY coupled — raw mode,
+SIGWINCH), SSH (`SshClient`/`SftpClient`/`SshServer`), and the raw agent client.
+The native layer is structured so these slot in module-by-module, exactly as in
+the Python binding.

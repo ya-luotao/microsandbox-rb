@@ -11,15 +11,21 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use magnus::{function, method, prelude::*, Error, RArray, RHash, RModule, RString, Ruby};
-use microsandbox::logs::{LogEntry, LogOptions, LogSource};
-use microsandbox::sandbox::{
-    FsEntry, FsEntryKind, FsMetadata, SandboxHandle, SandboxMetrics, SandboxStatus,
+use microsandbox::logs::{
+    LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
+use microsandbox::sandbox::{
+    FsEntry, FsEntryKind, FsMetadata, PullPolicy, RlimitResource, SandboxFilter, SandboxHandle,
+    SandboxMetrics, SandboxStatus, SandboxStopResult, SecurityProfile,
+};
+use microsandbox::LogLevel;
+use microsandbox_network::policy::NetworkPolicy;
 
 use crate::conv;
 use crate::error;
 use crate::exec::ExecHandle;
 use crate::runtime::{block_on, ruby};
+use crate::stream::{LogStream, MetricsStream};
 
 #[magnus::wrap(class = "Microsandbox::Native::Sandbox", free_immediately, size)]
 pub struct Sandbox {
@@ -104,13 +110,55 @@ impl Sandbox {
         if let Some(net) = conv::opt_string(opts, "network")? {
             match net.as_str() {
                 "none" | "disabled" | "disable" | "airgapped" => b = b.disable_network(),
-                "public" | "public_only" | "all" | "default" => {}
+                // Default policy is public-only, so no builder call is needed.
+                "public" | "public_only" | "default" => {}
+                "all" | "allow_all" => b = b.network(|n| n.policy(NetworkPolicy::allow_all())),
+                "non_local" | "nonlocal" => b = b.network(|n| n.policy(NetworkPolicy::non_local())),
                 other => {
                     return Err(error::base_error(format!(
-                        "unknown network mode {other:?} (expected \"public_only\" or \"none\")"
+                        "unknown network mode {other:?} (expected one of \
+                         public_only/none/allow_all/non_local)"
                     )))
                 }
             }
+        }
+        if let Some(level) = conv::opt_string(opts, "log_level")? {
+            b = b.log_level(log_level_from_str(&level)?);
+        }
+        if conv::opt_bool(opts, "quiet_logs")? {
+            b = b.quiet_logs();
+        }
+        if let Some(profile) = conv::opt_string(opts, "security")? {
+            b = b.security(security_profile_from_str(&profile)?);
+        }
+        if let Some(policy) = conv::opt_string(opts, "pull_policy")? {
+            b = b.pull_policy(pull_policy_from_str(&policy)?);
+        }
+        if let Some(mib) = conv::opt_u32(opts, "oci_upper_size")? {
+            b = b.oci_upper_size(mib);
+        }
+        if let Some(secs) = conv::opt::<u64>(opts, "max_duration")? {
+            b = b.max_duration(secs);
+        }
+        if let Some(secs) = conv::opt::<u64>(opts, "idle_timeout")? {
+            b = b.idle_timeout(secs);
+        }
+        for (host, guest) in conv::opt_port_map(opts, "ports_udp")? {
+            b = b.port_udp(host, guest);
+        }
+        for (resource, soft, hard) in parse_rlimits(opts)? {
+            b = b.rlimit_range(resource, soft, hard);
+        }
+        // secrets: normalized by the Ruby layer to [env_var, value, allowed_host]
+        // triples. Uses the placeholder-based `secret_env` shorthand, which also
+        // auto-enables TLS interception (required for value substitution).
+        for spec in conv::opt::<Vec<Vec<String>>>(opts, "secrets")?.unwrap_or_default() {
+            if spec.len() != 3 {
+                return Err(error::base_error(
+                    "invalid secret spec (expected [env, value, host])",
+                ));
+            }
+            b = b.secret_env(spec[0].clone(), spec[1].clone(), spec[2].clone());
         }
         if conv::opt_bool(opts, "detached")? {
             b = b.detached(true);
@@ -145,6 +193,17 @@ impl Sandbox {
     /// All sandboxes as metadata hashes.
     fn list() -> Result<RArray, Error> {
         let handles = block_on(microsandbox::Sandbox::list()).map_err(error::to_ruby)?;
+        rhash_array(handles.iter().map(handle_to_hash))
+    }
+
+    /// Sandboxes filtered by required `key=value` labels (AND-matched). `opts`
+    /// carries a string→string `labels` map.
+    fn list_with(opts: RHash) -> Result<RArray, Error> {
+        let mut filter = SandboxFilter::new();
+        for (k, v) in conv::opt_string_map(opts, "labels")? {
+            filter = filter.label(k, v);
+        }
+        let handles = block_on(microsandbox::Sandbox::list_with(filter)).map_err(error::to_ruby)?;
         rhash_array(handles.iter().map(handle_to_hash))
     }
 
@@ -220,6 +279,44 @@ impl Sandbox {
         .map_err(error::to_ruby)
     }
 
+    /// Send the graceful-shutdown request and return without waiting.
+    fn request_stop(&self) -> Result<(), Error> {
+        block_on(self.inner.request_stop()).map_err(error::to_ruby)
+    }
+
+    /// Send the force-kill request and return without waiting.
+    fn request_kill(&self) -> Result<(), Error> {
+        block_on(self.inner.request_kill()).map_err(error::to_ruby)
+    }
+
+    /// Send the drain request and return without waiting.
+    fn request_drain(&self) -> Result<(), Error> {
+        block_on(self.inner.request_drain()).map_err(error::to_ruby)
+    }
+
+    /// Block until the sandbox is observed in a terminal state; returns a
+    /// stop-result Hash (name, status, exit_code, signal, observed_at_ms, source).
+    fn wait_until_stopped(&self) -> Result<RHash, Error> {
+        let result = block_on(self.inner.wait_until_stopped()).map_err(error::to_ruby)?;
+        Ok(stop_result_to_hash(&result))
+    }
+
+    /// Whether this handle owns the sandbox process lifecycle (a synchronous,
+    /// local predicate — no runtime round-trip).
+    fn owns_lifecycle(&self) -> bool {
+        self.inner.owns_lifecycle()
+    }
+
+    /// Disarm the SIGTERM safety net so the sandbox keeps running after this
+    /// handle is dropped. The core `detach` consumes the value; the core
+    /// `Sandbox` is `Clone` (Arc-backed, sharing the same process handle), so
+    /// detaching a clone disarms the shared handle just the same.
+    fn detach(&self) -> Result<(), Error> {
+        let inner = self.inner.clone();
+        block_on(inner.detach());
+        Ok(())
+    }
+
     /// Latest metrics snapshot as a Hash.
     fn metrics(&self) -> Result<RHash, Error> {
         let m = block_on(self.inner.metrics()).map_err(error::to_ruby)?;
@@ -232,6 +329,26 @@ impl Sandbox {
         let log_opts = parse_log_options(opts)?;
         let entries = block_on(self.inner.logs(&log_opts)).map_err(error::to_ruby)?;
         rhash_array(entries.iter().map(log_entry_to_hash))
+    }
+
+    /// Stream metrics snapshots at `interval` seconds. Returns a MetricsStream
+    /// to pull snapshots from.
+    fn metrics_stream(&self, interval: f64) -> MetricsStream {
+        let dur = Duration::from_secs_f64(if interval <= 0.0 { 1.0 } else { interval });
+        // `metrics_stream` is synchronous but builds a `tokio::time::interval`,
+        // which panics ("no reactor running") unless constructed inside the
+        // runtime context — so build it under `block_on`. (`log_stream` is async
+        // and already runs inside `block_on`, so it needs no such wrapper.)
+        let stream = block_on(async { self.inner.metrics_stream(dur) });
+        MetricsStream::from_stream(stream)
+    }
+
+    /// Stream captured logs as they appear. `opts`: sources, since_ms,
+    /// from_cursor, until_ms, follow. Returns a LogStream.
+    fn log_stream(&self, opts: RHash) -> Result<LogStream, Error> {
+        let log_opts = parse_log_stream_options(opts)?;
+        let stream = block_on(self.inner.log_stream(&log_opts)).map_err(error::to_ruby)?;
+        Ok(LogStream::from_stream(stream))
     }
 
     //----------------------------------------------------------------------
@@ -311,6 +428,81 @@ impl Sandbox {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Enum / rlimit parsing (string conventions mirror the Python/Go SDKs)
+//--------------------------------------------------------------------------------------------------
+
+fn log_level_from_str(s: &str) -> Result<LogLevel, Error> {
+    match s {
+        "error" => Ok(LogLevel::Error),
+        "warn" => Ok(LogLevel::Warn),
+        "info" => Ok(LogLevel::Info),
+        "debug" => Ok(LogLevel::Debug),
+        "trace" => Ok(LogLevel::Trace),
+        other => Err(error::base_error(format!(
+            "unknown log level {other:?} (expected error/warn/info/debug/trace)"
+        ))),
+    }
+}
+
+fn pull_policy_from_str(s: &str) -> Result<PullPolicy, Error> {
+    match s {
+        "always" => Ok(PullPolicy::Always),
+        "if-missing" | "if_missing" => Ok(PullPolicy::IfMissing),
+        "never" => Ok(PullPolicy::Never),
+        other => Err(error::base_error(format!(
+            "unknown pull policy {other:?} (expected always/if-missing/never)"
+        ))),
+    }
+}
+
+fn security_profile_from_str(s: &str) -> Result<SecurityProfile, Error> {
+    match s {
+        "default" => Ok(SecurityProfile::Default),
+        "restricted" => Ok(SecurityProfile::Restricted),
+        other => Err(error::base_error(format!(
+            "unknown security profile {other:?} (expected default/restricted)"
+        ))),
+    }
+}
+
+fn rlimit_resource_from_str(s: &str) -> Result<RlimitResource, Error> {
+    use RlimitResource::*;
+    Ok(match s {
+        "cpu" => Cpu,
+        "fsize" => Fsize,
+        "data" => Data,
+        "stack" => Stack,
+        "core" => Core,
+        "rss" => Rss,
+        "nproc" => Nproc,
+        "nofile" => Nofile,
+        "memlock" => Memlock,
+        "as" => As,
+        "locks" => Locks,
+        "sigpending" => Sigpending,
+        "msgqueue" => Msgqueue,
+        "nice" => Nice,
+        "rtprio" => Rtprio,
+        "rttime" => Rttime,
+        other => {
+            return Err(error::base_error(format!(
+                "unknown rlimit resource {other:?}"
+            )))
+        }
+    })
+}
+
+/// Parse the `rlimits` option — normalized by the Ruby layer to
+/// `[[resource, soft, hard], …]` triples — into core (resource, soft, hard).
+fn parse_rlimits(opts: RHash) -> Result<Vec<(RlimitResource, u64, u64)>, Error> {
+    let mut out = Vec::new();
+    for triple in conv::opt::<Vec<(String, u64, u64)>>(opts, "rlimits")?.unwrap_or_default() {
+        out.push((rlimit_resource_from_str(&triple.0)?, triple.1, triple.2));
+    }
+    Ok(out)
+}
+
+//--------------------------------------------------------------------------------------------------
 // Exec option parsing
 //--------------------------------------------------------------------------------------------------
 
@@ -322,6 +514,7 @@ struct ExecOpts {
     timeout: Option<Duration>,
     tty: bool,
     stdin: Option<Vec<u8>>,
+    rlimits: Vec<(RlimitResource, u64, u64)>,
 }
 
 impl ExecOpts {
@@ -335,6 +528,7 @@ impl ExecOpts {
             timeout: conv::opt_f64(opts, "timeout")?.map(Duration::from_secs_f64),
             tty: conv::opt_bool(opts, "tty")?,
             stdin,
+            rlimits: parse_rlimits(opts)?,
         })
     }
 
@@ -362,6 +556,9 @@ impl ExecOpts {
         }
         if let Some(stdin) = self.stdin {
             b = b.stdin_bytes(stdin);
+        }
+        for (resource, soft, hard) in self.rlimits {
+            b = b.rlimit_range(resource, soft, hard);
         }
         b
     }
@@ -430,7 +627,7 @@ fn fs_metadata_to_hash(meta: &FsMetadata) -> RHash {
     hash
 }
 
-fn metrics_to_hash(m: &SandboxMetrics) -> RHash {
+pub(crate) fn metrics_to_hash(m: &SandboxMetrics) -> RHash {
     let hash = ruby().hash_new();
     let _ = hash.aset("cpu_percent", m.cpu_percent as f64);
     let _ = hash.aset("vcpu_time_ns", m.vcpu_time_ns);
@@ -455,6 +652,17 @@ fn sandbox_status_str(status: SandboxStatus) -> &'static str {
         SandboxStatus::Stopped => "stopped",
         SandboxStatus::Crashed => "crashed",
     }
+}
+
+fn stop_result_to_hash(result: &SandboxStopResult) -> RHash {
+    let hash = ruby().hash_new();
+    let _ = hash.aset("name", result.name.clone());
+    let _ = hash.aset("status", sandbox_status_str(result.status));
+    let _ = hash.aset("exit_code", result.exit_code);
+    let _ = hash.aset("signal", result.signal);
+    let _ = hash.aset("observed_at_ms", result.observed_at.timestamp_millis());
+    let _ = hash.aset("source", result.source.clone());
+    hash
 }
 
 fn handle_to_hash(handle: &SandboxHandle) -> RHash {
@@ -513,7 +721,28 @@ fn parse_log_options(opts: RHash) -> Result<LogOptions, Error> {
     })
 }
 
-fn log_entry_to_hash(entry: &LogEntry) -> RHash {
+fn parse_log_stream_options(opts: RHash) -> Result<LogStreamOptions, Error> {
+    // `from_cursor` takes precedence over `since_ms` (the two are mutually
+    // exclusive in the official SDKs); absent both, start at the beginning.
+    let start = if let Some(cursor) = conv::opt_string(opts, "from_cursor")? {
+        let parsed: LogCursor = cursor
+            .parse()
+            .map_err(|_| error::base_error(format!("invalid log cursor {cursor:?}")))?;
+        LogStreamStart::From(parsed)
+    } else if let Some(since) = conv::opt_f64(opts, "since_ms")?.and_then(ms_to_datetime) {
+        LogStreamStart::Since(since)
+    } else {
+        LogStreamStart::Beginning
+    };
+    Ok(LogStreamOptions {
+        sources: parse_log_sources(opts)?,
+        start,
+        until: conv::opt_f64(opts, "until_ms")?.and_then(ms_to_datetime),
+        follow: conv::opt_bool(opts, "follow")?,
+    })
+}
+
+pub(crate) fn log_entry_to_hash(entry: &LogEntry) -> RHash {
     let source = match entry.source {
         LogSource::Stdout => "stdout",
         LogSource::Stderr => "stderr",
@@ -541,6 +770,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_singleton_method("start", function!(Sandbox::start, 2))?;
     class.define_singleton_method("get", function!(Sandbox::get, 1))?;
     class.define_singleton_method("list", function!(Sandbox::list, 0))?;
+    class.define_singleton_method("list_with", function!(Sandbox::list_with, 1))?;
     class.define_singleton_method("remove", function!(Sandbox::remove, 1))?;
 
     class.define_method("name", method!(Sandbox::name, 0))?;
@@ -550,8 +780,19 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("shell_stream", method!(Sandbox::shell_stream, 2))?;
     class.define_method("stop", method!(Sandbox::stop, 1))?;
     class.define_method("kill", method!(Sandbox::kill, 1))?;
+    class.define_method("request_stop", method!(Sandbox::request_stop, 0))?;
+    class.define_method("request_kill", method!(Sandbox::request_kill, 0))?;
+    class.define_method("request_drain", method!(Sandbox::request_drain, 0))?;
+    class.define_method(
+        "wait_until_stopped",
+        method!(Sandbox::wait_until_stopped, 0),
+    )?;
+    class.define_method("owns_lifecycle", method!(Sandbox::owns_lifecycle, 0))?;
+    class.define_method("detach", method!(Sandbox::detach, 0))?;
     class.define_method("metrics", method!(Sandbox::metrics, 0))?;
+    class.define_method("metrics_stream", method!(Sandbox::metrics_stream, 1))?;
     class.define_method("logs", method!(Sandbox::logs, 1))?;
+    class.define_method("log_stream", method!(Sandbox::log_stream, 1))?;
 
     class.define_method("fs_read", method!(Sandbox::fs_read, 1))?;
     class.define_method("fs_read_text", method!(Sandbox::fs_read_text, 1))?;

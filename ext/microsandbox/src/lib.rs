@@ -14,13 +14,28 @@ mod exec;
 mod image;
 mod runtime;
 mod sandbox;
+mod snapshot;
+mod stream;
 mod volume;
 
-use magnus::{function, prelude::*, Error, Ruby};
+use magnus::{function, prelude::*, Error, RHash, Ruby};
 
 /// Gem/runtime version string.
 fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Latest metrics for every running sandbox, as a `{ name => metrics_hash }`
+/// Ruby Hash. Mirrors the official `all_sandbox_metrics` / `allSandboxMetrics`
+/// helpers (Python/Node/Go).
+fn all_sandbox_metrics() -> Result<RHash, Error> {
+    let map =
+        runtime::block_on(microsandbox::sandbox::all_sandbox_metrics()).map_err(error::to_ruby)?;
+    let hash = runtime::ruby().hash_new();
+    for (name, metrics) in &map {
+        hash.aset(name.as_str(), sandbox::metrics_to_hash(metrics))?;
+    }
+    Ok(hash)
 }
 
 /// Download and install the `msb` runtime + `libkrunfw` into `~/.microsandbox`.
@@ -56,9 +71,12 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     native.define_singleton_method("installed?", function!(is_installed, 0))?;
     native.define_singleton_method("set_runtime_msb_path", function!(set_runtime_msb_path, 1))?;
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
+    native.define_singleton_method("all_sandbox_metrics", function!(all_sandbox_metrics, 0))?;
 
     sandbox::define(ruby, &native)?;
     exec::define(ruby, &native)?;
+    stream::define(ruby, &native)?;
+    snapshot::define(ruby, &native)?;
     image::define(ruby, &native)?;
     volume::define(ruby, &native)?;
 
