@@ -1,0 +1,32 @@
+# Ruby
+/.bundle/
+/vendor/bundle/
+/pkg/
+/tmp/
+/doc/
+/.yardoc/
+*.gem
+.rspec_status
+Gemfile.lock
+
+# Compiled native extension artifacts
+*.bundle
+*.so
+*.dll
+*.o
+*.a
+/lib/microsandbox/microsandbox.bundle
+/lib/microsandbox/microsandbox.so
+
+# Rust / Cargo native extension build output
+/ext/microsandbox/target/
+/target/
+
+# Local-only Cargo path overrides for developing against an adjacent
+# microsandbox checkout (see .cargo/config.toml.example). Must NOT be committed:
+# the path override would break CI / release container builds.
+/.cargo/config.toml
+
+# Editor / OS
+.DS_Store
+*.swp

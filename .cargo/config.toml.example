@@ -1,0 +1,17 @@
+# Local development override.
+#
+# The native extension depends on the `microsandbox` core crate via a pinned git
+# tag (see ext/microsandbox/Cargo.toml) so the gem builds anywhere. If you have
+# the microsandbox repo checked out as a SIBLING directory of this gem, copy this
+# file to `.cargo/config.toml` (gitignored) to build against that local checkout
+# instead of fetching from git — faster, and reflects local runtime changes.
+#
+#   cp .cargo/config.toml.example .cargo/config.toml
+#
+# `paths` overrides any dependency whose name + version matches a crate found at
+# the listed path. Paths are relative to this gem's root.
+
+paths = [
+  "../microsandbox/crates/microsandbox",
+  "../microsandbox/crates/network",
+]

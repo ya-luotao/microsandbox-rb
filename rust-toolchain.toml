@@ -1,0 +1,5 @@
+# The microsandbox core crate uses Rust edition 2024 and pulls in dependencies
+# (e.g. smoltcp) that require a recent compiler. Stable >= 1.91 is the minimum
+# supported Rust version (MSRV) for building this gem from source.
+[toolchain]
+channel = "stable"

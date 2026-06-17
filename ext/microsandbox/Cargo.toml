@@ -1,0 +1,45 @@
+[package]
+# Distinct from the core `microsandbox` package: Cargo refuses two packages with
+# the same name in one lockfile. The native artifact is loaded internally as
+# `microsandbox/microsandbox_rb` and stays hidden behind `require "microsandbox"`.
+name = "microsandbox_rb"
+description = "Ruby SDK native extension for microsandbox — secure, fast microVM-based sandboxing."
+version = "0.5.7"
+authors = ["Super Rad Company <development@superrad.company>"]
+repository = "https://github.com/superradcompany/microsandbox"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[lib]
+# Produces libmicrosandbox_rb.{dylib,so}; rb-sys renames it to
+# microsandbox/microsandbox_rb.{bundle,so}. The magnus #[init] entrypoint is
+# therefore Init_microsandbox_rb (matches the loaded basename).
+name = "microsandbox_rb"
+crate-type = ["cdylib"]
+
+[dependencies]
+magnus = "0.8"
+# Low-level Ruby C API — used directly for rb_thread_call_without_gvl (GVL release
+# during blocking sandbox calls). Kept in lock-step with magnus's own rb-sys.
+rb-sys = "0.9"
+
+# The microsandbox core runtime, wrapped via FFI exactly like the official
+# Python (pyo3) and Node (napi) SDKs. Pinned to the matching upstream tag so the
+# gem is self-contained and buildable anywhere (CI, release containers, end-user
+# source installs) without an adjacent checkout. For local development against a
+# sibling checkout, use the `paths` override in `.cargo/config.toml` (see
+# `.cargo/config.toml.example`). "ssh" matches the feature set the Python/Node
+# SDKs ship with; default features add "prebuilt" (provisions msb + libkrunfw at
+# build time), "net", and "keyring".
+microsandbox = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.7", default-features = true, features = ["ssh"] }
+microsandbox-network = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.7" }
+
+# Async core bridged to Ruby's synchronous API via a blocking tokio runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+futures = "0.3"
+
+# Shared (de)serialization + value types used across the binding surface.
+serde_json = "1"
+chrono = "0.4"
+ipnetwork = { version = "0.21", features = ["serde"] }

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+cd "$(dirname "$0")/.."
+
+bundle install
+
+# Build the native extension (debug profile) so `bundle exec rspec` can load it.
+bundle exec rake compile

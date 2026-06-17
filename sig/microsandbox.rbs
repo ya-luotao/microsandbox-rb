@@ -1,0 +1,247 @@
+# Type signatures for the public microsandbox Ruby API.
+
+module Microsandbox
+  VERSION: String
+
+  def self.version: () -> String
+  def self.install: () -> nil
+  def self.installed?: () -> bool
+  def self.runtime_path: () -> String
+  def self.runtime_path=: (String path) -> void
+
+  class Error < StandardError
+    def self.code: () -> String
+    def code: () -> String
+  end
+
+  class InvalidConfigError < Error end
+  class SandboxNotFoundError < Error end
+  class SandboxNotRunningError < Error end
+  class SandboxAlreadyExistsError < Error end
+  class SandboxStillRunningError < Error end
+  class ExecTimeoutError < Error end
+  class ExecFailedError < Error end
+  class FilesystemError < Error end
+  class PathNotFoundError < Error end
+  class VolumeNotFoundError < Error end
+  class ImageNotFoundError < Error end
+  class ImageInUseError < Error end
+  class ImagePullFailedError < Error end
+  class NetworkPolicyError < Error end
+  class SecretViolationError < Error end
+  class TlsError < Error end
+  class IoError < Error end
+  class MetricsDisabledError < Error end
+  class MetricsUnavailableError < Error end
+  class UnsupportedOperationError < Error end
+
+  class ExecOutput
+    def initialize: (Hash[String, untyped] data) -> void
+    def exit_code: () -> Integer
+    def success?: () -> bool
+    def failure?: () -> bool
+    def stdout: () -> String
+    def stderr: () -> String
+    def stdout_bytes: () -> String
+    def stderr_bytes: () -> String
+    def to_s: () -> String
+  end
+
+  class FsEntry
+    def path: () -> String
+    def name: () -> String
+    def type: () -> Symbol
+    def size: () -> Integer
+    def mode: () -> Integer
+    def modified: () -> Time?
+    def file?: () -> bool
+    def directory?: () -> bool
+    def symlink?: () -> bool
+  end
+
+  class FsMetadata
+    def type: () -> Symbol
+    def size: () -> Integer
+    def mode: () -> Integer
+    def readonly?: () -> bool
+    def file?: () -> bool
+    def directory?: () -> bool
+    def symlink?: () -> bool
+    def modified: () -> Time?
+    def created: () -> Time?
+  end
+
+  class FS
+    def read: (String path) -> String
+    def read_text: (String path) -> String
+    def write: (String path, String data) -> nil
+    def list: (String path) -> Array[FsEntry]
+    def mkdir: (String path) -> nil
+    def remove: (String path) -> nil
+    def remove_dir: (String path) -> nil
+    def copy: (String src, String dst) -> nil
+    def rename: (String src, String dst) -> nil
+    def exists?: (String path) -> bool
+    def stat: (String path) -> FsMetadata
+    def copy_from_host: (String host_path, String guest_path) -> nil
+    def copy_to_host: (String guest_path, String host_path) -> nil
+  end
+
+  class Metrics
+    def cpu_percent: () -> Float
+    def vcpu_time_ns: () -> Integer
+    def memory_bytes: () -> Integer
+    def memory_available_bytes: () -> Integer?
+    def memory_host_resident_bytes: () -> Integer?
+    def memory_limit_bytes: () -> Integer
+    def disk_read_bytes: () -> Integer
+    def disk_write_bytes: () -> Integer
+    def net_rx_bytes: () -> Integer
+    def net_tx_bytes: () -> Integer
+    def uptime_secs: () -> Float
+    def timestamp: () -> Time
+  end
+
+  class LogEntry
+    def source: () -> Symbol
+    def session_id: () -> Integer?
+    def cursor: () -> String
+    def data: () -> String
+    def text: () -> String
+    def timestamp: () -> Time
+  end
+
+  class SandboxInfo
+    def name: () -> String
+    def status: () -> Symbol
+    def running?: () -> bool
+    def stopped?: () -> bool
+    def created_at: () -> Time?
+    def updated_at: () -> Time?
+  end
+
+  class Sandbox
+    def self.create: (String name, ?image: String?, ?cpus: Integer?, ?memory: Integer?,
+                      ?env: Hash[untyped, untyped]?, ?workdir: String?, ?shell: String?,
+                      ?user: String?, ?hostname: String?, ?labels: Hash[untyped, untyped]?,
+                      ?scripts: Hash[untyped, untyped]?, ?entrypoint: Array[String]?,
+                      ?ports: Hash[untyped, untyped]?, ?volumes: Hash[untyped, untyped]?,
+                      ?network: untyped?, ?from_snapshot: String?, ?detached: bool,
+                      ?replace: bool, ?replace_with_timeout: Numeric?)
+                      ?{ (Sandbox) -> untyped } -> untyped
+    def self.start: (String name, ?detached: bool) -> Sandbox
+    def self.get: (String name) -> SandboxInfo
+    def self.list: () -> Array[SandboxInfo]
+    def self.remove: (String name) -> nil
+
+    def name: () -> String
+    def exec: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
+               ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecOutput
+    def shell: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
+                ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecOutput
+    def exec_stream: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
+                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecHandle
+    def shell_stream: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
+                       ?timeout: Numeric?, ?tty: bool, ?stdin: String?) -> ExecHandle
+    def fs: () -> FS
+    def metrics: () -> Metrics
+    def logs: (?tail: Integer?, ?since_ms: Numeric?, ?until_ms: Numeric?,
+               ?sources: Array[String | Symbol]?) -> Array[LogEntry]
+    def stop: (?timeout: Numeric?) -> nil
+    def kill: (?timeout: Numeric?) -> nil
+  end
+
+  class ExecEvent
+    def type: () -> Symbol
+    def pid: () -> Integer?
+    def code: () -> Integer?
+    def data: () -> String?
+    def text: () -> String?
+    def started?: () -> bool
+    def stdout?: () -> bool
+    def stderr?: () -> bool
+    def exited?: () -> bool
+    def failed?: () -> bool
+    def stdin_error?: () -> bool
+  end
+
+  class ExitStatus
+    def exit_code: () -> Integer
+    def success?: () -> bool
+    def failure?: () -> bool
+  end
+
+  class ExecStdin
+    def write: (untyped data) -> self
+    def close: () -> nil
+  end
+
+  class ExecHandle
+    include Enumerable[ExecEvent]
+    def id: () -> String
+    def each: () { (ExecEvent) -> void } -> self
+            | () -> Enumerator[ExecEvent, self]
+    def wait: () -> ExitStatus
+    def collect: () -> ExecOutput
+    def signal: (Integer sig) -> nil
+    def kill: () -> nil
+    def resize: (Integer rows, Integer cols) -> nil
+    def stdin: () -> ExecStdin?
+  end
+
+  class ImageInfo
+    def reference: () -> String
+    def size_bytes: () -> Integer?
+    def manifest_digest: () -> String?
+    def architecture: () -> String?
+    def os: () -> String?
+    def layer_count: () -> Integer
+    def created_at: () -> Time?
+    def last_used_at: () -> Time?
+  end
+
+  class ImageDetail
+    def handle: () -> ImageInfo
+    def config: () -> Hash[String, untyped]?
+    def layers: () -> Array[Hash[String, untyped]]
+    def reference: () -> String
+  end
+
+  class ImagePruneReport
+    def image_refs_removed: () -> Integer
+    def manifests_removed: () -> Integer
+    def layers_removed: () -> Integer
+    def fsmeta_removed: () -> Integer
+    def vmdk_removed: () -> Integer
+    def bytes_reclaimed: () -> Integer?
+  end
+
+  class Image
+    def self.list: () -> Array[ImageInfo]
+    def self.get: (String reference) -> ImageInfo
+    def self.inspect: (?String? reference) -> (ImageDetail | String)
+    def self.remove: (String reference, ?force: bool) -> nil
+    def self.prune: () -> ImagePruneReport
+  end
+
+  class VolumeInfo
+    def name: () -> String
+    def path: () -> String?
+    def kind: () -> Symbol?
+    def quota_mib: () -> Integer?
+    def used_bytes: () -> Integer?
+    def capacity_bytes: () -> Integer?
+    def disk_format: () -> String?
+    def disk_fstype: () -> String?
+    def labels: () -> Hash[String, String]
+    def created_at: () -> Time?
+  end
+
+  class Volume
+    def self.create: (String name, ?kind: String, ?size_mib: Integer?, ?quota_mib: Integer?,
+                      ?labels: Hash[untyped, untyped]?) -> VolumeInfo
+    def self.get: (String name) -> VolumeInfo
+    def self.list: () -> Array[VolumeInfo]
+    def self.remove: (String name) -> nil
+  end
+end

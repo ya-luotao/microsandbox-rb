@@ -1,0 +1,16 @@
+# Workspace root for the Ruby native extension. rb-sys (RbSys::ExtensionTask)
+# runs `cargo metadata` from here to locate the cdylib crate. The microsandbox
+# core crate is pulled in as an external path dependency by the member crate
+# (it lives in its own workspace in the adjacent checkout).
+[workspace]
+resolver = "2"
+members = ["ext/microsandbox"]
+
+[profile.release]
+# Loaded into the Ruby process: keep unwinding (NOT panic = "abort") so magnus
+# converts Rust panics into Ruby exceptions at the FFI boundary rather than
+# aborting the host. Default opt-level 3.
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
