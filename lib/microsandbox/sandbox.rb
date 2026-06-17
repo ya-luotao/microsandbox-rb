@@ -383,14 +383,14 @@ module Microsandbox
     # @see ExecHandle
     def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.exec_stream(command.to_s, Array(args).map(&:to_s),
-                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
+                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
     end
 
     # Run a shell script and stream its output as it arrives.
     # @return [ExecHandle]
     def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.shell_stream(script.to_s,
-                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
+                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
     end
 
     # Attach an interactive terminal to a command in the sandbox.
@@ -562,7 +562,7 @@ module Microsandbox
 
     private
 
-    def exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)
+    def exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: false)
       opts = {}
       opts["cwd"] = cwd.to_s if cwd
       opts["user"] = user.to_s if user
@@ -570,11 +570,21 @@ module Microsandbox
       opts["timeout"] = Float(timeout) if timeout
       opts["tty"] = true if tty
       # `stdin: :pipe` opens a streaming stdin pipe — write to it via
-      # {ExecHandle#stdin} and close to send EOF. Any other truthy value is fed
-      # as a fixed byte buffer (closed automatically). nil means no stdin.
+      # {ExecHandle#stdin} and close to send EOF. It is only meaningful for the
+      # streaming variants (which return an ExecHandle); a blocking exec/shell
+      # collects to completion and has nowhere to hand back the sink, so a piped
+      # process that reads stdin would block forever waiting for EOF. Reject it
+      # there. Any other truthy value is fed as a fixed byte buffer (closed
+      # automatically). nil means no stdin.
       case stdin
       when nil then nil
-      when :pipe then opts["stdin_pipe"] = true
+      when :pipe
+        unless pipe_ok
+          raise ArgumentError,
+                "stdin: :pipe is only valid for exec_stream/shell_stream — a blocking " \
+                "exec/shell cannot expose a writable stdin sink; pass a String to feed bytes"
+        end
+        opts["stdin_pipe"] = true
       else opts["stdin"] = stdin.to_s
       end
       if rlimits

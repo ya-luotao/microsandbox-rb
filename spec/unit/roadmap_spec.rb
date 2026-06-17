@@ -155,5 +155,15 @@ RSpec.describe "streaming exec, images, volumes" do
       expect(handle).to be_a(Microsandbox::ExecHandle)
       expect(native).to have_received(:exec_stream).with("ls", ["-l"], hash_including("tty" => true))
     end
+
+    it "passes stdin: :pipe through to native exec_stream as stdin_pipe" do
+      stream = instance_double(Microsandbox::Native::ExecHandle)
+      allow(native).to receive(:exec_stream).and_return(stream)
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+      sb.exec_stream("cat", [], stdin: :pipe)
+      expect(native).to have_received(:exec_stream).with(
+        "cat", [], hash_including("stdin_pipe" => true)
+      )
+    end
   end
 end

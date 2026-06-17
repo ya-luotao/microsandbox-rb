@@ -196,16 +196,10 @@ RSpec.describe Microsandbox::Sandbox do
       expect(out).to be_a(Microsandbox::ExecOutput)
     end
 
-    it "maps stdin: :pipe to stdin_pipe and omits stdin bytes" do
+    it "rejects stdin: :pipe on blocking exec (there is no sink to write to)" do
       sb = Microsandbox::Sandbox.create("box", image: "x")
-      sb.exec("cat", stdin: :pipe)
-
-      expect(native).to have_received(:exec).with(
-        "cat", [], hash_including("stdin_pipe" => true)
-      )
-      expect(native).to have_received(:exec).with(
-        "cat", [], hash_excluding("stdin")
-      )
+      expect { sb.exec("cat", stdin: :pipe) }.to raise_error(ArgumentError, /pipe/)
+      expect(native).not_to have_received(:exec)
     end
 
     it "passes a stdin string as bytes, not a pipe" do
