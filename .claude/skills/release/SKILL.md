@@ -1,0 +1,45 @@
+---
+name: release
+description: Cut a release of the microsandbox-rb gem — walk the version lock-step SOP and tag vX.Y.Z to trigger the OIDC publish. Usage: /release <version> (e.g. /release 0.5.10). User-triggered only.
+disable-model-invocation: true
+---
+
+Cut a release for version `$ARGUMENTS` (e.g. `0.5.10`). If no version was given, ask for it before
+doing anything. This has side effects (commits, tags, triggers publishing) — confirm the target
+version with the user before pushing the tag.
+
+## Steps
+
+1. **Confirm a clean tree on `main`** (or the intended release branch) and that CI is green.
+
+2. **Bump the gem version in BOTH files (they must match — `version_spec.rb` enforces it):**
+   - `lib/microsandbox/version.rb` → `VERSION = "$ARGUMENTS"`
+   - `ext/microsandbox/Cargo.toml` `[package]` → `version = "$ARGUMENTS"`
+
+3. **Upstream runtime tag — only if this release adopts a new upstream runtime.** This is a
+   SEPARATE axis from the gem version. If adopting a new runtime, update the `tag = "vX.Y.Z"` for
+   BOTH `microsandbox` and `microsandbox-network` git deps in `ext/microsandbox/Cargo.toml` to the
+   same tag, then `bundle exec rake compile` to refresh `Cargo.lock`. Otherwise leave the deps
+   untouched.
+
+4. **Update `CHANGELOG.md`** (Keep-a-Changelog) — move Unreleased items under a new
+   `## [$ARGUMENTS] - <date>` heading.
+
+5. **Verify locally** before tagging: run the `verify-local` skill (cargo fmt --check, clippy
+   -D warnings, rake spec). Do not proceed if anything fails.
+
+6. **Commit** the version + changelog bump with a conventional message, e.g.
+   `chore(release): v$ARGUMENTS`.
+
+7. **Tag and push** — this is what triggers the publish, so confirm with the user first:
+   ```sh
+   git tag v$ARGUMENTS && git push origin main v$ARGUMENTS
+   ```
+
+8. **Publishing happens in CI.** `.github/workflows/release.yml` builds the source gem and pushes
+   to RubyGems via Trusted Publishing (OIDC) on the `v*` tag. There is no API key to handle.
+   Precompiled platform gems are NOT published by this tag flow — they require manual
+   `workflow_dispatch` and per-platform validation. Mention this if the user expected fat gems.
+
+Report what you changed and the tag you pushed, and link the user to the Actions run if `gh` is
+available (`gh run list --workflow=release.yml`).
