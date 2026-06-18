@@ -43,7 +43,7 @@ module Microsandbox
     end
 
     def inspect
-      "#<Microsandbox::SnapshotInfo digest=#{@digest.inspect}#{@name ? " name=#{@name.inspect}" : ""}>"
+      "#<Microsandbox::SnapshotInfo digest=#{@digest.inspect}#{" name=#{@name.inspect}" if @name}>"
     end
   end
 
@@ -142,7 +142,7 @@ module Microsandbox
       # @param dest [String, nil] explicit destination directory
       # @return [SnapshotInfo]
       def import(archive_path, dest: nil)
-        SnapshotInfo.new(Native::Snapshot.import(archive_path.to_s, dest && dest.to_s))
+        SnapshotInfo.new(Native::Snapshot.import(archive_path.to_s, dest&.to_s))
       end
 
       private

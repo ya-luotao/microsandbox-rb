@@ -60,15 +60,15 @@ RSpec.describe Microsandbox::Patch do
         "box", image: "alpine",
         patches: [
           Microsandbox::Patch.mkdir("/opt/app"),
-          Microsandbox::Patch.text("/opt/app/c.txt", "hi", mode: 0o600),
+          Microsandbox::Patch.text("/opt/app/c.txt", "hi", mode: 0o600)
         ]
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "patches" => [
-            { "kind" => "mkdir", "path" => "/opt/app" },
-            { "kind" => "text", "path" => "/opt/app/c.txt", "content" => "hi", "replace" => false, "mode" => 0o600 },
+            {"kind" => "mkdir", "path" => "/opt/app"},
+            {"kind" => "text", "path" => "/opt/app/c.txt", "content" => "hi", "replace" => false, "mode" => 0o600}
           ]
         )
       )
@@ -77,10 +77,10 @@ RSpec.describe Microsandbox::Patch do
     it "stringifies keys of a hand-written symbol-keyed patch hash" do
       Microsandbox::Sandbox.create(
         "box", image: "alpine",
-        patches: [{ kind: "remove", path: "/etc/motd" }]
+        patches: [{kind: "remove", path: "/etc/motd"}]
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
-        "box", hash_including("patches" => [{ "kind" => "remove", "path" => "/etc/motd" }])
+        "box", hash_including("patches" => [{"kind" => "remove", "path" => "/etc/motd"}])
       )
     end
 
@@ -93,7 +93,7 @@ RSpec.describe Microsandbox::Patch do
     it "omits patches when none are given" do
       Microsandbox::Sandbox.create("box", image: "alpine")
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
-        "box", { "image" => "alpine" }
+        "box", {"image" => "alpine"}
       )
     end
   end

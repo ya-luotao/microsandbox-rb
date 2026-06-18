@@ -26,8 +26,8 @@ RSpec.describe "raw agent client" do
 
     it "is Enumerable and yields frames until recv returns nil" do
       allow(native).to receive(:stream_next).and_return(
-        { "id" => 1, "flags" => 0, "body" => "a".b },
-        { "id" => 1, "flags" => 1, "body" => "b".b },
+        {"id" => 1, "flags" => 0, "body" => "a".b},
+        {"id" => 1, "flags" => 1, "body" => "b".b},
         nil
       )
       bodies = stream.map(&:body)

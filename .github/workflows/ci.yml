@@ -117,7 +117,7 @@ jobs:
         run: bundle exec rspec spec/integration
 
   lint:
-    name: rustfmt + clippy
+    name: lint (rustfmt + clippy + standardrb)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -132,3 +132,6 @@ jobs:
         run: cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml
       - name: clippy
         run: cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings
+      # Ruby lint/format for the lib/ + spec/ layer (StandardRB, zero-config).
+      - name: standardrb
+        run: bundle exec standardrb

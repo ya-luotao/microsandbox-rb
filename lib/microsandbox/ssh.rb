@@ -218,7 +218,7 @@ module Microsandbox
     # @yieldparam client [SshClient]
     # @return [SshClient, Object]
     def open_client(user: "root", term: nil, sftp: true)
-      opts = { "user" => user.to_s, "sftp" => sftp ? true : false }
+      opts = {"user" => user.to_s, "sftp" => sftp ? true : false}
       opts["term"] = term.to_s if term
       client = SshClient.new(@native.ssh_open_client(opts))
       return client unless block_given?
@@ -237,7 +237,7 @@ module Microsandbox
     # @param sftp [Boolean] enable the SFTP subsystem (default true)
     # @return [SshServer]
     def prepare_server(host_key_path: nil, authorized_keys_path: nil, user: nil, sftp: true)
-      opts = { "sftp" => sftp ? true : false }
+      opts = {"sftp" => sftp ? true : false}
       opts["host_key_path"] = host_key_path.to_s if host_key_path
       opts["authorized_keys_path"] = authorized_keys_path.to_s if authorized_keys_path
       opts["user"] = user.to_s if user

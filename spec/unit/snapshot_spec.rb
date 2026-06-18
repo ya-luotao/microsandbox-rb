@@ -8,12 +8,12 @@ RSpec.describe Microsandbox::Snapshot do
       allow(Microsandbox::Native::Snapshot).to receive(:create).and_return(
         "digest" => "sha256:abc", "path" => "/snaps/x", "size_bytes" => 2048
       )
-      info = described_class.create("box", name: "snap1", labels: { kind: :base },
-                                    force: true, record_integrity: true)
+      info = described_class.create("box", name: "snap1", labels: {kind: :base},
+        force: true, record_integrity: true)
       expect(Microsandbox::Native::Snapshot).to have_received(:create).with(
         "box",
-        hash_including("name" => "snap1", "labels" => { "kind" => "base" },
-                       "force" => true, "record_integrity" => true)
+        hash_including("name" => "snap1", "labels" => {"kind" => "base"},
+          "force" => true, "record_integrity" => true)
       )
       expect(info).to be_a(Microsandbox::SnapshotInfo)
       expect(info.digest).to eq("sha256:abc")
@@ -34,8 +34,8 @@ RSpec.describe Microsandbox::Snapshot do
   describe ".list / .get" do
     it "wraps handles in SnapshotInfo with parsed format and timestamp" do
       allow(Microsandbox::Native::Snapshot).to receive(:list).and_return(
-        [{ "digest" => "sha256:d", "path" => "/p", "name" => "s", "image_ref" => "alpine",
-           "format" => "qcow2", "size_bytes" => 10, "created_at_ms" => 1_700_000_000_000 }]
+        [{"digest" => "sha256:d", "path" => "/p", "name" => "s", "image_ref" => "alpine",
+          "format" => "qcow2", "size_bytes" => 10, "created_at_ms" => 1_700_000_000_000}]
       )
       info = described_class.list.first
       expect(info.name).to eq("s")

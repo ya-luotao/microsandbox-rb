@@ -67,7 +67,7 @@ module Microsandbox
 
     def inspect
       "#<Microsandbox::SandboxStopResult name=#{@name.inspect} status=#{@status}" \
-        "#{@exit_code ? " exit_code=#{@exit_code}" : ""}#{@signal ? " signal=#{@signal}" : ""}>"
+        "#{" exit_code=#{@exit_code}" if @exit_code}#{" signal=#{@signal}" if @signal}>"
     end
   end
 
@@ -143,15 +143,15 @@ module Microsandbox
       # @yieldparam sandbox [Sandbox]
       # @return [Sandbox, Object] the sandbox, or the block's return value
       def create(name,
-                 image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
-                 shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
-                 entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
-                 patches: nil,
-                 from_snapshot: nil, log_level: nil, quiet_logs: false, security: nil,
-                 oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
-                 pull_policy: nil, registry_auth: nil, registry_insecure: false,
-                 registry_ca_certs: nil, secrets: nil,
-                 detached: false, replace: false, replace_with_timeout: nil)
+        image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
+        shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
+        entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
+        patches: nil,
+        from_snapshot: nil, log_level: nil, quiet_logs: false, security: nil,
+        oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
+        pull_policy: nil, registry_auth: nil, registry_insecure: false,
+        registry_ca_certs: nil, secrets: nil,
+        detached: false, replace: false, replace_with_timeout: nil)
         Microsandbox.ensure_runtime!
         opts = {}
         opts["image"] = image.to_s if image
@@ -206,7 +206,7 @@ module Microsandbox
       # @return [Sandbox]
       def start(name, detached: false)
         Microsandbox.ensure_runtime!
-        new(Native::Sandbox.start(name.to_s, { "detached" => detached }))
+        new(Native::Sandbox.start(name.to_s, {"detached" => detached}))
       end
 
       # Fetch metadata for a sandbox by name.
@@ -225,7 +225,7 @@ module Microsandbox
       # @param labels [Hash] required key => value labels
       # @return [Array<SandboxInfo>]
       def list_with(labels: {})
-        opts = { "labels" => stringify(labels) }
+        opts = {"labels" => stringify(labels)}
         Native::Sandbox.list_with(opts).map { |info| SandboxInfo.new(info) }
       end
 
@@ -256,7 +256,7 @@ module Microsandbox
           unless username && password
             # Report only the keys given, never the values — auth carries secrets.
             raise ArgumentError,
-                  "registry_auth needs :username and :password (got keys: #{auth.keys.inspect})"
+              "registry_auth needs :username and :password (got keys: #{auth.keys.inspect})"
           end
           opts["registry_username"] = username.to_s
           opts["registry_password"] = password.to_s
@@ -364,14 +364,14 @@ module Microsandbox
     # @return [ExecOutput]
     def exec(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecOutput.new(@native.exec(command.to_s, Array(args).map(&:to_s),
-                                  exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
+        exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
     # Run a shell script (pipes, redirects, etc. allowed) and collect output.
     # @return [ExecOutput]
     def shell(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecOutput.new(@native.shell(script.to_s,
-                                   exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
+        exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
     # Run a command and stream its output as it arrives.
@@ -383,14 +383,14 @@ module Microsandbox
     # @see ExecHandle
     def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.exec_stream(command.to_s, Array(args).map(&:to_s),
-                                         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
+        exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
     end
 
     # Run a shell script and stream its output as it arrives.
     # @return [ExecHandle]
     def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.shell_stream(script.to_s,
-                                          exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
+        exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
     end
 
     # Attach an interactive terminal to a command in the sandbox.
@@ -581,8 +581,8 @@ module Microsandbox
       when :pipe
         unless pipe_ok
           raise ArgumentError,
-                "stdin: :pipe is only valid for exec_stream/shell_stream — a blocking " \
-                "exec/shell cannot expose a writable stdin sink; pass a String to feed bytes"
+            "stdin: :pipe is only valid for exec_stream/shell_stream — a blocking " \
+            "exec/shell cannot expose a writable stdin sink; pass a String to feed bytes"
         end
         opts["stdin_pipe"] = true
       else opts["stdin"] = stdin.to_s

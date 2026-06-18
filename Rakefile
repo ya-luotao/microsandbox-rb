@@ -24,5 +24,13 @@ rescue LoadError
   # rspec not installed (e.g. production install); skip test tasks.
 end
 
+begin
+  require "standard/rake"
+  # Adds `rake standard` (lint) and `rake standard:fix` (autocorrect) for the
+  # Ruby layer (lib/, spec/). Rust formatting/linting stays with cargo fmt/clippy.
+rescue LoadError
+  # standard not installed (e.g. production install); skip lint task.
+end
+
 task spec: :compile
 task default: %i[compile spec]

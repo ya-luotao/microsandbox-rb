@@ -71,11 +71,11 @@ RSpec.describe "streaming, images, volumes", :integration do
       Microsandbox::Volume.create(vol)
       begin
         Microsandbox::Sandbox.create(unique_sandbox_name, image: image,
-                                     volumes: { "/data" => { named: vol } }) do |sb|
+          volumes: {"/data" => {named: vol}}) do |sb|
           sb.fs.write("/data/persisted.txt", "across-boots")
         end
         Microsandbox::Sandbox.create(unique_sandbox_name, image: image,
-                                     volumes: { "/data" => { named: vol } }) do |sb|
+          volumes: {"/data" => {named: vol}}) do |sb|
           expect(sb.fs.read_text("/data/persisted.txt")).to eq("across-boots")
         end
       ensure

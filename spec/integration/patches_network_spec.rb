@@ -14,7 +14,7 @@ RSpec.describe "patches and network", :integration do
           Microsandbox::Patch.mkdir("/opt/app"),
           Microsandbox::Patch.text("/opt/app/config.txt", "base\n"),
           Microsandbox::Patch.append("/opt/app/config.txt", "appended\n"),
-          Microsandbox::Patch.symlink("/opt/app/config.txt", "/opt/app/link.txt"),
+          Microsandbox::Patch.symlink("/opt/app/config.txt", "/opt/app/link.txt")
         ]
       ) do |sb|
         out = sb.shell("test -d /opt/app && cat /opt/app/config.txt && cat /opt/app/link.txt")
@@ -32,7 +32,7 @@ RSpec.describe "patches and network", :integration do
           unique_sandbox_name, image: image,
           patches: [
             Microsandbox::Patch.copy_file(host_file, "/etc/staged.toml", mode: 0o644),
-            Microsandbox::Patch.remove("/etc/motd"),
+            Microsandbox::Patch.remove("/etc/motd")
           ]
         ) do |sb|
           expect(sb.fs.read_text("/etc/staged.toml")).to eq("staged = true\n")
@@ -74,7 +74,7 @@ RSpec.describe "patches and network", :integration do
     it "accepts a preset base plus a bulk domain denial" do
       Microsandbox::Sandbox.create(
         unique_sandbox_name, image: image,
-        network: { preset: :public_only, deny_domains: ["example.com"] }
+        network: {preset: :public_only, deny_domains: ["example.com"]}
       ) do |sb|
         # The sandbox still boots and runs; the deny rule is enforced by the proxy.
         expect(sb.shell("echo ok").stdout).to include("ok")

@@ -34,9 +34,9 @@ RSpec.describe "streaming exec, images, volumes" do
 
     it "is Enumerable and yields events until recv returns nil" do
       allow(native).to receive(:recv).and_return(
-        { "type" => "started", "pid" => 1 },
-        { "type" => "stdout", "data" => "hi".b },
-        { "type" => "exited", "code" => 0 },
+        {"type" => "started", "pid" => 1},
+        {"type" => "stdout", "data" => "hi".b},
+        {"type" => "exited", "code" => 0},
         nil
       )
       types = handle.map(&:type)
@@ -79,7 +79,7 @@ RSpec.describe "streaming exec, images, volumes" do
   describe Microsandbox::Image do
     it "maps list/get/remove/prune through the native layer" do
       allow(Microsandbox::Native::Image).to receive(:list).and_return(
-        [{ "reference" => "alpine", "layer_count" => 1 }]
+        [{"reference" => "alpine", "layer_count" => 1}]
       )
       allow(Microsandbox::Native::Image).to receive(:remove)
       allow(Microsandbox::Native::Image).to receive(:prune).and_return(
@@ -107,9 +107,9 @@ RSpec.describe "streaming exec, images, volumes" do
     end
 
     it "normalizes create options" do
-      info = Microsandbox::Volume.create("v", kind: :disk, size_mib: 256, quota_mib: 512, labels: { a: 1 })
+      info = Microsandbox::Volume.create("v", kind: :disk, size_mib: 256, quota_mib: 512, labels: {a: 1})
       expect(Microsandbox::Native::Volume).to have_received(:create).with(
-        "v", hash_including("kind" => "disk", "size_mib" => 256, "quota_mib" => 512, "labels" => { "a" => "1" })
+        "v", hash_including("kind" => "disk", "size_mib" => 256, "quota_mib" => 512, "labels" => {"a" => "1"})
       )
       expect(info).to be_a(Microsandbox::VolumeInfo)
       expect(info.name).to eq("v")
@@ -130,7 +130,7 @@ RSpec.describe "streaming exec, images, volumes" do
       Microsandbox::Sandbox.create(
         "box",
         from_snapshot: "snap-1",
-        volumes: { "/data" => "/host/data", "/cache" => { named: "cache-vol" } }
+        volumes: {"/data" => "/host/data", "/cache" => {named: "cache-vol"}}
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
@@ -143,7 +143,7 @@ RSpec.describe "streaming exec, images, volumes" do
 
     it "raises on a malformed volume spec" do
       expect do
-        Microsandbox::Sandbox.create("box", image: "x", volumes: { "/data" => { wrong: 1 } })
+        Microsandbox::Sandbox.create("box", image: "x", volumes: {"/data" => {wrong: 1}})
       end.to raise_error(ArgumentError, /:bind or :named/)
     end
 

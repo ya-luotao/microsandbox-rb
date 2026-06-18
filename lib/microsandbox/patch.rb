@@ -31,7 +31,7 @@ module Microsandbox
     # @param replace [Boolean] allow shadowing a path already in the rootfs
     # @return [Hash]
     def text(path, content, mode: nil, replace: false)
-      h = { "kind" => "text", "path" => path.to_s, "content" => content.to_s, "replace" => replace ? true : false }
+      h = {"kind" => "text", "path" => path.to_s, "content" => content.to_s, "replace" => replace ? true : false}
       h["mode"] = Integer(mode) unless mode.nil?
       h
     end
@@ -43,7 +43,7 @@ module Microsandbox
     # @param replace [Boolean]
     # @return [Hash]
     def file(path, content, mode: nil, replace: false)
-      h = { "kind" => "file", "path" => path.to_s, "content" => content.to_s, "replace" => replace ? true : false }
+      h = {"kind" => "file", "path" => path.to_s, "content" => content.to_s, "replace" => replace ? true : false}
       h["mode"] = Integer(mode) unless mode.nil?
       h
     end
@@ -52,7 +52,7 @@ module Microsandbox
     # lower image layer is copied up first, then appended.
     # @return [Hash]
     def append(path, content)
-      { "kind" => "append", "path" => path.to_s, "content" => content.to_s }
+      {"kind" => "append", "path" => path.to_s, "content" => content.to_s}
     end
 
     # Copy a host file into the rootfs.
@@ -62,7 +62,7 @@ module Microsandbox
     # @param replace [Boolean]
     # @return [Hash]
     def copy_file(src, dst, mode: nil, replace: false)
-      h = { "kind" => "copy_file", "src" => src.to_s, "dst" => dst.to_s, "replace" => replace ? true : false }
+      h = {"kind" => "copy_file", "src" => src.to_s, "dst" => dst.to_s, "replace" => replace ? true : false}
       h["mode"] = Integer(mode) unless mode.nil?
       h
     end
@@ -70,13 +70,13 @@ module Microsandbox
     # Copy a host directory (recursively) into the rootfs.
     # @return [Hash]
     def copy_dir(src, dst, replace: false)
-      { "kind" => "copy_dir", "src" => src.to_s, "dst" => dst.to_s, "replace" => replace ? true : false }
+      {"kind" => "copy_dir", "src" => src.to_s, "dst" => dst.to_s, "replace" => replace ? true : false}
     end
 
     # Create a symlink at +link+ pointing to +target+.
     # @return [Hash]
     def symlink(target, link, replace: false)
-      { "kind" => "symlink", "target" => target.to_s, "link" => link.to_s, "replace" => replace ? true : false }
+      {"kind" => "symlink", "target" => target.to_s, "link" => link.to_s, "replace" => replace ? true : false}
     end
 
     # Create a directory (idempotent — no error if it already exists).
@@ -84,7 +84,7 @@ module Microsandbox
     # @param mode [Integer, nil] directory mode (e.g. 0o755)
     # @return [Hash]
     def mkdir(path, mode: nil)
-      h = { "kind" => "mkdir", "path" => path.to_s }
+      h = {"kind" => "mkdir", "path" => path.to_s}
       h["mode"] = Integer(mode) unless mode.nil?
       h
     end
@@ -92,7 +92,7 @@ module Microsandbox
     # Remove a file or directory (idempotent — no error if absent).
     # @return [Hash]
     def remove(path)
-      { "kind" => "remove", "path" => path.to_s }
+      {"kind" => "remove", "path" => path.to_s}
     end
   end
 end

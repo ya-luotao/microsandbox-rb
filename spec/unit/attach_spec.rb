@@ -13,14 +13,14 @@ RSpec.describe "Sandbox#attach" do
       allow(native).to receive(:attach).and_return(0)
       code = sandbox.attach(
         "bash", ["-l"],
-        cwd: "/app", user: "app", env: { FOO: 1 },
-        detach_keys: "ctrl-p,ctrl-q", rlimits: { nofile: [1024, 2048] }
+        cwd: "/app", user: "app", env: {FOO: 1},
+        detach_keys: "ctrl-p,ctrl-q", rlimits: {nofile: [1024, 2048]}
       )
       expect(code).to eq(0)
       expect(native).to have_received(:attach).with(
         "bash", ["-l"],
         {
-          "cwd" => "/app", "user" => "app", "env" => { "FOO" => "1" },
+          "cwd" => "/app", "user" => "app", "env" => {"FOO" => "1"},
           "detach_keys" => "ctrl-p,ctrl-q", "rlimits" => [["nofile", 1024, 2048]]
         }
       )
