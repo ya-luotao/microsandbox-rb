@@ -24,6 +24,12 @@ them. Our deepest thanks to the maintainers and community. 🙏
 - **Agents** — [Agent Skills](https://github.com/superradcompany/skills) · [MCP server](https://github.com/superradcompany/microsandbox-mcp)
 - **Community** — [Discord](https://discord.gg/T95Y3XnEAK)
 
+> **Not affiliated.** This gem is an independent, community-maintained project.
+> It is **not** built, endorsed, or supported by Super Rad Company or the
+> microsandbox team. Please don't direct questions about this gem to the
+> upstream project — open an issue here instead. **Contributions are very
+> welcome — PRs welcome!** See [Contributing](#contributing).
+
 ## Features
 
 - **Hardware isolation** — each sandbox is a real VM with its own Linux kernel
@@ -399,6 +405,15 @@ export/import + boot-from-snapshot), **rootfs patches** (`Microsandbox::Patch`),
 `exec`/`shell` take per-call `rlimits`, and `create` accepts
 `registry_auth`/`registry_insecure`/`registry_ca_certs` for private and
 authenticated registries.
+
+## Contributing
+
+This is a community-maintained gem and **contributions are very welcome** —
+bug reports, fixes, docs, and feature work alike. Open an
+[issue](https://github.com/ya-luotao/microsandbox-rb/issues) or send a
+[pull request](https://github.com/ya-luotao/microsandbox-rb/pulls); PRs target
+`main`. Before pushing, run the local gate (Rust `fmt`/`clippy`, `standardrb`,
+and unit specs) — see [Development](#development).
 
 ## License
 
