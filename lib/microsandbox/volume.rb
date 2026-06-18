@@ -7,7 +7,7 @@ module Microsandbox
   # (`kind`, `used_bytes`, …) are populated when returned from {Volume.get}/{Volume.list}.
   class VolumeInfo
     attr_reader :name, :path, :quota_mib, :used_bytes, :capacity_bytes,
-                :disk_format, :disk_fstype, :labels
+      :disk_format, :disk_fstype, :labels
 
     def initialize(data)
       @name = data["name"]
@@ -33,7 +33,7 @@ module Microsandbox
     end
 
     def inspect
-      "#<Microsandbox::VolumeInfo name=#{@name.inspect}#{@kind ? " kind=#{@kind}" : ""}>"
+      "#<Microsandbox::VolumeInfo name=#{@name.inspect}#{" kind=#{@kind}" if @kind}>"
     end
   end
 
@@ -49,7 +49,7 @@ module Microsandbox
       # @param labels [Hash, nil]
       # @return [VolumeInfo]
       def create(name, kind: "dir", size_mib: nil, quota_mib: nil, labels: nil)
-        opts = { "kind" => kind.to_s }
+        opts = {"kind" => kind.to_s}
         opts["size_mib"] = Integer(size_mib) if size_mib
         opts["quota_mib"] = Integer(quota_mib) if quota_mib
         opts["labels"] = labels.each_with_object({}) { |(k, v), a| a[k.to_s] = v.to_s } if labels

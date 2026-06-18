@@ -22,19 +22,19 @@ module Microsandbox
 
     # @return [String, nil] {#data} decoded as UTF-8 (lenient)
     def text
-      @data && @data.dup.force_encoding(Encoding::UTF_8)
+      @data&.dup&.force_encoding(Encoding::UTF_8)
     end
 
-    def started?      = @type == :started
-    def stdout?       = @type == :stdout
-    def stderr?       = @type == :stderr
-    def exited?       = @type == :exited
-    def failed?       = @type == :failed
-    def stdin_error?  = @type == :stdin_error
+    def started? = @type == :started
+    def stdout? = @type == :stdout
+    def stderr? = @type == :stderr
+    def exited? = @type == :exited
+    def failed? = @type == :failed
+    def stdin_error? = @type == :stdin_error
 
     def inspect
-      "#<Microsandbox::ExecEvent type=#{@type}#{@pid ? " pid=#{@pid}" : ""}" \
-        "#{@code ? " code=#{@code}" : ""}#{@data ? " data=#{@data.bytesize}B" : ""}>"
+      "#<Microsandbox::ExecEvent type=#{@type}#{" pid=#{@pid}" if @pid}" \
+        "#{" code=#{@code}" if @code}#{" data=#{@data.bytesize}B" if @data}>"
     end
   end
 

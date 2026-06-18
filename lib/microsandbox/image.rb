@@ -56,7 +56,7 @@ module Microsandbox
   # The result of {Image.prune}.
   class ImagePruneReport
     attr_reader :image_refs_removed, :manifests_removed, :layers_removed,
-                :fsmeta_removed, :vmdk_removed, :bytes_reclaimed
+      :fsmeta_removed, :vmdk_removed, :bytes_reclaimed
 
     def initialize(data)
       @image_refs_removed = data["image_refs_removed"]

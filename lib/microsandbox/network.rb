@@ -16,23 +16,23 @@ module Microsandbox
     module_function
 
     # Match any destination.
-    def any = { "destination_kind" => "any" }
+    def any = {"destination_kind" => "any"}
 
     # A single IP address (stored as a /32 or /128).
-    def ip(value) = { "destination_kind" => "ip", "destination" => value.to_s }
+    def ip(value) = {"destination_kind" => "ip", "destination" => value.to_s}
 
     # An IP network in CIDR notation (e.g. "10.0.0.0/8").
-    def cidr(value) = { "destination_kind" => "cidr", "destination" => value.to_s }
+    def cidr(value) = {"destination_kind" => "cidr", "destination" => value.to_s}
 
     # An exact domain name (matched against the resolved-hostname cache / SNI).
-    def domain(value) = { "destination_kind" => "domain", "destination" => value.to_s }
+    def domain(value) = {"destination_kind" => "domain", "destination" => value.to_s}
 
     # A domain suffix — matches the apex and any subdomain (e.g. ".internal").
-    def domain_suffix(value) = { "destination_kind" => "domain_suffix", "destination" => value.to_s }
+    def domain_suffix(value) = {"destination_kind" => "domain_suffix", "destination" => value.to_s}
 
     # A predefined group: :public, :loopback, :private, :link_local, :metadata,
     # :multicast, or :host.
-    def group(value) = { "destination_kind" => "group", "destination" => value.to_s.tr("_", "-") }
+    def group(value) = {"destination_kind" => "group", "destination" => value.to_s.tr("_", "-")}
   end
 
   # Factory for a single network-policy **rule**. A rule pairs an action
@@ -64,7 +64,7 @@ module Microsandbox
 
     # @api private
     def build(action, destination, direction, protocol, protocols, port, ports)
-      rule = { "action" => action, "direction" => direction.to_s }
+      rule = {"action" => action, "direction" => direction.to_s}
       rule.merge!(normalize_destination(destination))
       protos = (Array(protocols) + Array(protocol)).compact.map(&:to_s)
       rule["protocols"] = protos unless protos.empty?
@@ -78,7 +78,7 @@ module Microsandbox
       case dest
       when nil then {}
       when Hash then dest.each_with_object({}) { |(k, v), a| a[k.to_s] = v }
-      when String, Symbol then { "destination" => dest.to_s }
+      when String, Symbol then {"destination" => dest.to_s}
       else raise ArgumentError, "invalid rule destination: #{dest.inspect}"
       end
     end
@@ -149,7 +149,7 @@ module Microsandbox
       # @param deny_domain_suffixes [Array<String>] domain suffixes to deny
       # @return [NetworkPolicy]
       def custom(default_egress: :deny, default_ingress: :allow, rules: [],
-                 deny_domains: [], deny_domain_suffixes: [])
+        deny_domains: [], deny_domain_suffixes: [])
         h = {}
         h["default_egress"] = action_str(default_egress) unless default_egress.nil?
         h["default_ingress"] = action_str(default_ingress) unless default_ingress.nil?
@@ -163,12 +163,12 @@ module Microsandbox
       def coerce(network)
         case network
         when NetworkPolicy then network.to_h
-        when String, Symbol then { "preset" => canonical_preset(network) }
+        when String, Symbol then {"preset" => canonical_preset(network)}
         when Hash then from_hash(network)
         else
           raise ArgumentError,
-                "network: expects a preset name, a Microsandbox::NetworkPolicy, or a Hash " \
-                "(got #{network.class})"
+            "network: expects a preset name, a Microsandbox::NetworkPolicy, or a Hash " \
+            "(got #{network.class})"
         end
       end
 
@@ -186,11 +186,11 @@ module Microsandbox
         if sym.key?(:preset)
           if sym.key?(:rules) || sym.key?(:default_egress) || sym.key?(:default_ingress)
             raise ArgumentError,
-                  "network preset: cannot be combined with rules:/default_egress:/" \
-                  "default_ingress: (the preset already defines its rules and defaults); " \
-                  "only deny_domains:/deny_domain_suffixes: may be layered on a preset"
+              "network preset: cannot be combined with rules:/default_egress:/" \
+              "default_ingress: (the preset already defines its rules and defaults); " \
+              "only deny_domains:/deny_domain_suffixes: may be layered on a preset"
           end
-          h = { "preset" => canonical_preset(sym[:preset]) }
+          h = {"preset" => canonical_preset(sym[:preset])}
           add_deny_lists(h, sym[:deny_domains], sym[:deny_domain_suffixes])
           h
         elsif sym.key?(:rules) || sym.key?(:default_egress) || sym.key?(:default_ingress)
@@ -213,7 +213,7 @@ module Microsandbox
           ds = Array(sym[:deny_domain_suffixes]).map(&:to_s)
           return {} if dd.empty? && ds.empty?
 
-          h = { "default_egress" => "allow", "default_ingress" => "allow" }
+          h = {"default_egress" => "allow", "default_ingress" => "allow"}
           add_deny_lists(h, dd, ds)
           h
         end
@@ -233,8 +233,8 @@ module Microsandbox
         key = name.to_s.downcase
         PRESET_ALIASES[key] ||
           raise(ArgumentError,
-                "unknown network preset #{name.inspect} " \
-                "(expected one of public_only/none/allow_all/non_local)")
+            "unknown network preset #{name.inspect} " \
+            "(expected one of public_only/none/allow_all/non_local)")
       end
 
       def action_str(action)

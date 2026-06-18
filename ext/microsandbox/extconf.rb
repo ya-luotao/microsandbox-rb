@@ -13,12 +13,16 @@ MSRV = Gem::Version.new("1.91")
 rustc_version = begin
   out = `rustc --version 2>/dev/null`
   out[/\d+\.\d+(\.\d+)?/] && Gem::Version.new(out[/\d+\.\d+(\.\d+)?/])
-rescue StandardError
+rescue
   nil
 end
 
 if rustc_version && rustc_version < MSRV
-  which_rustc = (`which rustc 2>/dev/null`.strip rescue "")
+  which_rustc = begin
+    `which rustc 2>/dev/null`.strip
+  rescue
+    ""
+  end
   abort(<<~MSG)
 
     [microsandbox-rb] Rust #{rustc_version} is too old — the embedded core requires rustc >= #{MSRV}.

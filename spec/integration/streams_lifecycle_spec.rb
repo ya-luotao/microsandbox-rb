@@ -18,18 +18,22 @@ RSpec.describe "lifecycle controls + streaming", :integration do
       ensure
         # The sandbox is already stopped by wait_until_stopped; a best-effort
         # kill here just guards against an early failure leaving it running.
-        sb.kill rescue Microsandbox::Error
+        begin
+          sb.kill
+        rescue
+          Microsandbox::Error
+        end
       end
     end
 
     it "filters sandboxes by label via list_with" do
       name = unique_sandbox_name
-      sb = Microsandbox::Sandbox.create(name, image: image, labels: { role: "rb-itest" })
+      sb = Microsandbox::Sandbox.create(name, image: image, labels: {role: "rb-itest"})
       begin
-        names = Microsandbox::Sandbox.list_with(labels: { role: "rb-itest" }).map(&:name)
+        names = Microsandbox::Sandbox.list_with(labels: {role: "rb-itest"}).map(&:name)
         expect(names).to include(name)
         # A non-matching filter must exclude it.
-        other = Microsandbox::Sandbox.list_with(labels: { role: "nope" }).map(&:name)
+        other = Microsandbox::Sandbox.list_with(labels: {role: "nope"}).map(&:name)
         expect(other).not_to include(name)
       ensure
         sb.stop

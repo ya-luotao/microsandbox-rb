@@ -30,9 +30,9 @@ module Microsandbox
       @modified_ms && Time.at(@modified_ms / 1000.0)
     end
 
-    def file?       = @type == :file
-    def directory?  = @type == :directory
-    def symlink?    = @type == :symlink
+    def file? = @type == :file
+    def directory? = @type == :directory
+    def symlink? = @type == :symlink
 
     def inspect
       "#<Microsandbox::FsEntry path=#{@path.inspect} type=#{@type} size=#{@size}>"
@@ -57,10 +57,10 @@ module Microsandbox
       @created_ms = data["created_ms"]
     end
 
-    def readonly?   = @readonly
-    def file?       = @type == :file
-    def directory?  = @type == :directory
-    def symlink?    = @type == :symlink
+    def readonly? = @readonly
+    def file? = @type == :file
+    def directory? = @type == :directory
+    def symlink? = @type == :symlink
 
     # @return [Time, nil] last-modified time, if known
     def modified

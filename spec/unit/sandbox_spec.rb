@@ -18,8 +18,8 @@ RSpec.describe Microsandbox::Sandbox do
       Microsandbox::Sandbox.create(
         "box",
         image: "python", cpus: 2, memory: 1024,
-        env: { FOO: 1, "BAR" => :baz }, workdir: "/app",
-        labels: { team: "core" }, ports: { "8080" => 80 },
+        env: {:FOO => 1, "BAR" => :baz}, workdir: "/app",
+        labels: {team: "core"}, ports: {"8080" => 80},
         network: :public_only, entrypoint: %w[/bin/sh -c]
       )
 
@@ -30,9 +30,9 @@ RSpec.describe Microsandbox::Sandbox do
           "cpus" => 2,
           "memory" => 1024,
           "workdir" => "/app",
-          "env" => { "FOO" => "1", "BAR" => "baz" },
-          "labels" => { "team" => "core" },
-          "ports" => { 8080 => 80 },
+          "env" => {"FOO" => "1", "BAR" => "baz"},
+          "labels" => {"team" => "core"},
+          "ports" => {8080 => 80},
           "network" => "public_only",
           "entrypoint" => ["/bin/sh", "-c"]
         )
@@ -42,7 +42,7 @@ RSpec.describe Microsandbox::Sandbox do
     it "omits unspecified options" do
       Microsandbox::Sandbox.create("box", image: "alpine")
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
-        "box", { "image" => "alpine" }
+        "box", {"image" => "alpine"}
       )
     end
 
@@ -54,7 +54,7 @@ RSpec.describe Microsandbox::Sandbox do
     it "flattens registry_auth into registry_username/registry_password" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
-        registry_auth: { username: "alice", password: "s3cr3t" }
+        registry_auth: {username: "alice", password: "s3cr3t"}
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
@@ -65,7 +65,7 @@ RSpec.describe Microsandbox::Sandbox do
     it "accepts string-keyed registry_auth and passes insecure + ca_certs through" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
-        registry_auth: { "username" => "bob", "password" => "tok" },
+        registry_auth: {"username" => "bob", "password" => "tok"},
         registry_insecure: true,
         registry_ca_certs: "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----"
       )
@@ -97,14 +97,14 @@ RSpec.describe Microsandbox::Sandbox do
 
     it "raises on a half-specified registry_auth (missing password)" do
       expect do
-        Microsandbox::Sandbox.create("box", image: "x", registry_auth: { username: "alice" })
+        Microsandbox::Sandbox.create("box", image: "x", registry_auth: {username: "alice"})
       end.to raise_error(ArgumentError, /:username and :password/)
     end
 
     it "maps pull_policy and normalizes secrets into [env, value, host] triples" do
       Microsandbox::Sandbox.create(
         "box", image: "x", pull_policy: "never",
-        secrets: [{ env: "OPENAI_API_KEY", value: "sk-123", host: "api.openai.com" }]
+        secrets: [{env: "OPENAI_API_KEY", value: "sk-123", host: "api.openai.com"}]
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
@@ -117,7 +117,7 @@ RSpec.describe Microsandbox::Sandbox do
 
     it "raises on a malformed secret spec" do
       expect do
-        Microsandbox::Sandbox.create("box", image: "x", secrets: [{ env: "X" }])
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X"}])
       end.to raise_error(ArgumentError, /:env, :value, and :host/)
     end
 
@@ -132,14 +132,14 @@ RSpec.describe Microsandbox::Sandbox do
       Microsandbox::Sandbox.create(
         "box", image: "x", log_level: :debug, quiet_logs: true, security: "restricted",
         oci_upper_size: 2048, max_duration: 600, idle_timeout: 120,
-        ports_udp: { "53" => 53 }, rlimits: { nofile: 1024, cpu: [10, 20] }
+        ports_udp: {"53" => 53}, rlimits: {nofile: 1024, cpu: [10, 20]}
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "log_level" => "debug", "quiet_logs" => true, "security" => "restricted",
           "oci_upper_size" => 2048, "max_duration" => 600, "idle_timeout" => 120,
-          "ports_udp" => { 53 => 53 },
+          "ports_udp" => {53 => 53},
           "rlimits" => [["nofile", 1024, 1024], ["cpu", 10, 20]]
         )
       )
@@ -180,18 +180,18 @@ RSpec.describe Microsandbox::Sandbox do
 
   describe "#exec option mapping" do
     let(:exec_result) do
-      { "exit_code" => 0, "success" => true, "stdout" => "".b, "stderr" => "".b }
+      {"exit_code" => 0, "success" => true, "stdout" => "".b, "stderr" => "".b}
     end
 
     before { allow(native).to receive(:exec).and_return(exec_result) }
 
     it "passes command, args, and a normalized options hash" do
       sb = Microsandbox::Sandbox.create("box", image: "x")
-      out = sb.exec("ls", ["-l", :foo], cwd: "/tmp", env: { A: 1 }, timeout: 5, tty: true, stdin: "in")
+      out = sb.exec("ls", ["-l", :foo], cwd: "/tmp", env: {A: 1}, timeout: 5, tty: true, stdin: "in")
 
       expect(native).to have_received(:exec).with(
         "ls", ["-l", "foo"],
-        hash_including("cwd" => "/tmp", "env" => { "A" => "1" }, "timeout" => 5.0, "tty" => true, "stdin" => "in")
+        hash_including("cwd" => "/tmp", "env" => {"A" => "1"}, "timeout" => 5.0, "tty" => true, "stdin" => "in")
       )
       expect(out).to be_a(Microsandbox::ExecOutput)
     end
@@ -222,7 +222,7 @@ RSpec.describe Microsandbox::Sandbox do
 
     it "normalizes per-exec rlimits into [resource, soft, hard] triples" do
       sb = Microsandbox::Sandbox.create("box", image: "x")
-      sb.exec("ls", [], rlimits: { nofile: 256, as: [1000, 2000] })
+      sb.exec("ls", [], rlimits: {nofile: 256, as: [1000, 2000]})
       expect(native).to have_received(:exec).with(
         "ls", [], hash_including("rlimits" => [["nofile", 256, 256], ["as", 1000, 2000]])
       )
@@ -232,7 +232,7 @@ RSpec.describe Microsandbox::Sandbox do
   describe "#shell option mapping" do
     before do
       allow(native).to receive(:shell).and_return(
-        { "exit_code" => 0, "success" => true, "stdout" => "".b, "stderr" => "".b }
+        {"exit_code" => 0, "success" => true, "stdout" => "".b, "stderr" => "".b}
       )
     end
 
@@ -320,14 +320,14 @@ RSpec.describe Microsandbox::Sandbox do
       native_stream = instance_double(Microsandbox::Native::LogStream)
       allow(native).to receive(:log_stream).and_return(native_stream)
       allow(native_stream).to receive(:recv).and_return(
-        { "timestamp_ms" => 1_700_000_000_000, "source" => "stdout",
-          "session_id" => 1, "cursor" => "abc", "data" => "hi".b },
+        {"timestamp_ms" => 1_700_000_000_000, "source" => "stdout",
+         "session_id" => 1, "cursor" => "abc", "data" => "hi".b},
         nil
       )
       stream = sb.log_stream(sources: [:stdout, "stderr"], since_ms: 1000, until_ms: 2000, follow: true)
       expect(native).to have_received(:log_stream).with(
         hash_including("sources" => %w[stdout stderr], "since_ms" => 1000.0,
-                       "until_ms" => 2000.0, "follow" => true)
+          "until_ms" => 2000.0, "follow" => true)
       )
       entries = stream.to_a
       expect(entries.first).to be_a(Microsandbox::LogEntry)
@@ -348,11 +348,11 @@ RSpec.describe Microsandbox::Sandbox do
   describe ".list_with" do
     it "normalizes label filters into a string-keyed labels hash" do
       allow(Microsandbox::Native::Sandbox).to receive(:list_with).and_return(
-        [{ "name" => "box", "status" => "running" }]
+        [{"name" => "box", "status" => "running"}]
       )
-      infos = Microsandbox::Sandbox.list_with(labels: { team: :core })
+      infos = Microsandbox::Sandbox.list_with(labels: {team: :core})
       expect(Microsandbox::Native::Sandbox).to have_received(:list_with).with(
-        "labels" => { "team" => "core" }
+        "labels" => {"team" => "core"}
       )
       expect(infos.first).to be_a(Microsandbox::SandboxInfo)
       expect(infos.first.name).to eq("box")

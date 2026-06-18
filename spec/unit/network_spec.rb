@@ -70,8 +70,8 @@ RSpec.describe "network policy" do
         "default_egress" => "deny",
         "default_ingress" => "allow",
         "rules" => [
-          { "action" => "allow", "direction" => "egress",
-            "destination" => "api.openai.com", "protocols" => ["tcp"], "ports" => ["443"] },
+          {"action" => "allow", "direction" => "egress",
+           "destination" => "api.openai.com", "protocols" => ["tcp"], "ports" => ["443"]}
         ],
         "deny_domain_suffixes" => [".ads.example"]
       )
@@ -91,19 +91,19 @@ RSpec.describe "network policy" do
       # spelling Go/Python's PolicyRule use) must not be dropped — that would widen
       # an `allow tcp/443` rule into an all-protocol/all-port allow.
       policy = described_class.custom(
-        rules: [{ action: "allow", destination: "1.1.1.1", protocol: "tcp", port: "443" }]
+        rules: [{action: "allow", destination: "1.1.1.1", protocol: "tcp", port: "443"}]
       )
       expect(policy.to_h["rules"]).to eq(
-        [{ "action" => "allow", "destination" => "1.1.1.1", "protocols" => ["tcp"], "ports" => ["443"] }]
+        [{"action" => "allow", "destination" => "1.1.1.1", "protocols" => ["tcp"], "ports" => ["443"]}]
       )
     end
 
     it "accepts a typed Destination hash inside a hand-written rule" do
       policy = described_class.custom(
-        rules: [{ action: "deny", destination: Microsandbox::Destination.group(:metadata) }]
+        rules: [{action: "deny", destination: Microsandbox::Destination.group(:metadata)}]
       )
       expect(policy.to_h["rules"]).to eq(
-        [{ "action" => "deny", "destination_kind" => "group", "destination" => "metadata" }]
+        [{"action" => "deny", "destination_kind" => "group", "destination" => "metadata"}]
       )
     end
   end
@@ -135,7 +135,7 @@ RSpec.describe "network policy" do
         hash_including(
           "network_policy" => hash_including(
             "default_egress" => "deny",
-            "rules" => [{ "action" => "deny", "direction" => "egress", "destination" => "evil.com" }]
+            "rules" => [{"action" => "deny", "direction" => "egress", "destination" => "evil.com"}]
           )
         )
       )
@@ -144,14 +144,14 @@ RSpec.describe "network policy" do
     it "routes a plain Hash to network_policy" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
-        network: { default_egress: :deny, rules: [{ action: "allow", destination: "1.1.1.1" }] }
+        network: {default_egress: :deny, rules: [{action: "allow", destination: "1.1.1.1"}]}
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "network_policy" => hash_including(
             "default_egress" => "deny",
-            "rules" => [{ "action" => "allow", "destination" => "1.1.1.1" }]
+            "rules" => [{"action" => "allow", "destination" => "1.1.1.1"}]
           )
         )
       )
@@ -160,19 +160,19 @@ RSpec.describe "network policy" do
     it "routes a preset-plus-deny-domains hash to network_policy without injecting defaults" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
-        network: { preset: :public_only, deny_domains: ["evil.com"] }
+        network: {preset: :public_only, deny_domains: ["evil.com"]}
       )
       # Crucially: no default_egress/default_ingress is injected, so the native
       # layer applies the preset's own defaults (regression: injected defaults
       # used to clobber the preset, turning allow_all into deny-all egress).
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
-        hash_including("network_policy" => { "preset" => "public_only", "deny_domains" => ["evil.com"] })
+        hash_including("network_policy" => {"preset" => "public_only", "deny_domains" => ["evil.com"]})
       )
     end
 
     it "routes a bare preset Hash to the legacy network key (preset defaults preserved)" do
-      Microsandbox::Sandbox.create("box", image: "x", network: { preset: :allow_all })
+      Microsandbox::Sandbox.create("box", image: "x", network: {preset: :allow_all})
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box", hash_including("network" => "allow_all")
       )
@@ -183,17 +183,17 @@ RSpec.describe "network policy" do
 
     it "rejects combining a preset with custom rules or defaults" do
       expect do
-        Microsandbox::Sandbox.create("box", image: "x", network: { preset: :public_only, rules: [] })
+        Microsandbox::Sandbox.create("box", image: "x", network: {preset: :public_only, rules: []})
       end.to raise_error(ArgumentError, /preset:.*cannot be combined/)
       expect do
-        Microsandbox::Sandbox.create("box", image: "x", network: { preset: :none, default_ingress: :deny })
+        Microsandbox::Sandbox.create("box", image: "x", network: {preset: :none, default_ingress: :deny})
       end.to raise_error(ArgumentError, /preset:.*cannot be combined/)
     end
 
     it "treats a deny-list-only hash as permissive (block listed domains, allow the rest)" do
       # Regression: { deny_domains: [...] } with no preset/defaults must keep the
       # rest of the network reachable, not deny all unmatched egress.
-      Microsandbox::Sandbox.create("box", image: "x", network: { deny_domains: ["evil.com"] })
+      Microsandbox::Sandbox.create("box", image: "x", network: {deny_domains: ["evil.com"]})
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
@@ -213,7 +213,7 @@ RSpec.describe "network policy" do
 
     it "still omits network entirely when not given" do
       Microsandbox::Sandbox.create("box", image: "x")
-      expect(Microsandbox::Native::Sandbox).to have_received(:create).with("box", { "image" => "x" })
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with("box", {"image" => "x"})
     end
   end
 end

@@ -5,8 +5,9 @@ RSpec.describe "Microsandbox error hierarchy" do
     expect(Microsandbox::Error.ancestors).to include(StandardError)
   end
 
-  # Mirrors sdk/python/microsandbox/errors.py
-  EXPECTED_CODES = {
+  # Mirrors sdk/python/microsandbox/errors.py. A local (not a constant) so it can
+  # drive example-group generation below without leaking a constant from the block.
+  expected_codes = {
     "Error" => "microsandbox-error",
     "InvalidConfigError" => "invalid-config",
     "SandboxNotFoundError" => "sandbox-not-found",
@@ -29,9 +30,9 @@ RSpec.describe "Microsandbox error hierarchy" do
     "MetricsDisabledError" => "metrics-disabled",
     "MetricsUnavailableError" => "metrics-unavailable",
     "UnsupportedOperationError" => "unsupported-operation"
-  }.freeze
+  }
 
-  EXPECTED_CODES.each do |name, code|
+  expected_codes.each do |name, code|
     describe "Microsandbox::#{name}" do
       let(:klass) { Microsandbox.const_get(name) }
 
@@ -52,7 +53,7 @@ RSpec.describe "Microsandbox error hierarchy" do
 
   it "defines exactly the expected error classes" do
     defined = Microsandbox.constants.grep(/Error\z/).map(&:to_s).sort
-    expect(defined).to match_array(EXPECTED_CODES.keys.sort)
+    expect(defined).to match_array(expected_codes.keys.sort)
   end
 
   it "carries the message like a normal exception" do

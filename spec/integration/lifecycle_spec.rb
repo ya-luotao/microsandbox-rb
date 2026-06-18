@@ -55,7 +55,7 @@ RSpec.describe "Sandbox lifecycle", :integration do
 
   it "passes environment variables and honors cwd" do
     Microsandbox::Sandbox.create(unique_sandbox_name, image: image) do |sb|
-      out = sb.exec("sh", ["-c", "echo $GREETING"], env: { "GREETING" => "hi-env" })
+      out = sb.exec("sh", ["-c", "echo $GREETING"], env: {"GREETING" => "hi-env"})
       expect(out.stdout.strip).to eq("hi-env")
 
       out2 = sb.exec("pwd", [], cwd: "/tmp")

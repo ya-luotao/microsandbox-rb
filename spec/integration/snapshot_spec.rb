@@ -26,8 +26,16 @@ RSpec.describe "snapshots + pull policy", :integration do
         expect(sb2.fs.read_text("/root/marker.txt")).to eq(marker)
       end
     ensure
-      Microsandbox::Snapshot.remove(snap, force: true) rescue Microsandbox::Error
-      Microsandbox::Sandbox.remove(src) rescue Microsandbox::Error
+      begin
+        Microsandbox::Snapshot.remove(snap, force: true)
+      rescue
+        Microsandbox::Error
+      end
+      begin
+        Microsandbox::Sandbox.remove(src)
+      rescue
+        Microsandbox::Error
+      end
     end
   end
 
