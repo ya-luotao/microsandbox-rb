@@ -152,6 +152,12 @@ module Microsandbox
         pull_policy: nil, registry_auth: nil, registry_insecure: false,
         registry_ca_certs: nil, secrets: nil,
         detached: false, replace: false, replace_with_timeout: nil)
+        # A sandbox boots from exactly one rootfs source. The core would reject a
+        # contradictory pair, but only after a runtime round-trip; fail fast and
+        # clearly here (the Python SDK validates this the same way).
+        if image && from_snapshot
+          raise ArgumentError, "provide either image: or from_snapshot:, not both"
+        end
         Microsandbox.ensure_runtime!
         opts = {}
         opts["image"] = image.to_s if image
@@ -183,7 +189,7 @@ module Microsandbox
         opts["secrets"] = normalize_secrets(secrets) if secrets
         opts["detached"] = true if detached
         if replace_with_timeout
-          opts["replace_with_timeout"] = Float(replace_with_timeout)
+          opts["replace_with_timeout"] = coerce_duration(replace_with_timeout, "replace_with_timeout")
         elsif replace
           opts["replace"] = true
         end
@@ -237,6 +243,19 @@ module Microsandbox
       end
 
       private
+
+      # Coerce a seconds value to a finite, non-negative Float. Rejects negatives,
+      # NaN, and infinities *here* (a clean ArgumentError) rather than letting them
+      # reach the native layer, where `Duration::from_secs_f64` panics across the
+      # FFI boundary on exactly those inputs. Shared by every duration option.
+      def coerce_duration(value, label)
+        seconds = Float(value)
+        unless seconds.finite? && seconds >= 0
+          raise ArgumentError,
+            "#{label} must be a finite, non-negative number of seconds (got #{value.inspect})"
+        end
+        seconds
+      end
 
       def stringify(hash)
         hash.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v.to_s }
@@ -475,7 +494,7 @@ module Microsandbox
     # @param interval [Numeric] seconds between snapshots
     # @return [MetricsStream] an {Enumerable} of {Metrics}
     def metrics_stream(interval: 1.0)
-      MetricsStream.new(@native.metrics_stream(Float(interval)))
+      MetricsStream.new(@native.metrics_stream(coerce_duration(interval, "interval")))
     end
 
     # Stream captured logs as they appear.
@@ -502,7 +521,7 @@ module Microsandbox
     # @param timeout [Numeric, nil] seconds to wait before SIGKILL
     # @return [nil]
     def stop(timeout: nil)
-      @native.stop(timeout && Float(timeout))
+      @native.stop(timeout && coerce_duration(timeout, "timeout"))
       nil
     end
 
@@ -510,7 +529,7 @@ module Microsandbox
     # @param timeout [Numeric, nil] seconds to wait
     # @return [nil]
     def kill(timeout: nil)
-      @native.kill(timeout && Float(timeout))
+      @native.kill(timeout && coerce_duration(timeout, "timeout"))
       nil
     end
 
@@ -562,12 +581,18 @@ module Microsandbox
 
     private
 
+    # Instance-side shim for the shared, class-private duration validator (used
+    # by #exec/#shell timeouts, #stop/#kill, and #metrics_stream).
+    def coerce_duration(value, label)
+      self.class.send(:coerce_duration, value, label)
+    end
+
     def exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: false)
       opts = {}
       opts["cwd"] = cwd.to_s if cwd
       opts["user"] = user.to_s if user
       opts["env"] = env.each_with_object({}) { |(k, v), a| a[k.to_s] = v.to_s } if env
-      opts["timeout"] = Float(timeout) if timeout
+      opts["timeout"] = coerce_duration(timeout, "timeout") if timeout
       opts["tty"] = true if tty
       # `stdin: :pipe` opens a streaming stdin pipe — write to it via
       # {ExecHandle#stdin} and close to send EOF. It is only meaningful for the

@@ -145,6 +145,27 @@ RSpec.describe Microsandbox::Sandbox do
       )
     end
 
+    it "raises when both image: and from_snapshot: are given" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", from_snapshot: "snap")
+      end.to raise_error(ArgumentError, /either image: or from_snapshot:/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "accepts from_snapshot: on its own" do
+      Microsandbox::Sandbox.create("box", from_snapshot: "snap")
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("from_snapshot" => "snap")
+      )
+    end
+
+    it "rejects a negative replace_with_timeout before any runtime round-trip" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", replace_with_timeout: -1)
+      end.to raise_error(ArgumentError, /replace_with_timeout must be a finite, non-negative/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
     it "prefers replace_with_timeout over replace" do
       Microsandbox::Sandbox.create("box", image: "x", replace: true, replace_with_timeout: 5)
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
@@ -251,6 +272,54 @@ RSpec.describe Microsandbox::Sandbox do
       sb.kill
       expect(native).to have_received(:stop).with(3.0)
       expect(native).to have_received(:kill).with(nil)
+    end
+  end
+
+  describe "duration validation" do
+    subject(:sb) { Microsandbox::Sandbox.create("box", image: "x") }
+
+    before do
+      allow(native).to receive(:exec).and_return(
+        {"exit_code" => 0, "success" => true, "stdout" => "".b, "stderr" => "".b}
+      )
+      allow(native).to receive(:kill)
+      allow(native).to receive(:metrics_stream)
+    end
+
+    # The native layer's Duration::from_secs_f64 panics on these; they must be
+    # caught in Ruby as a clean ArgumentError, never reaching the binding.
+    [-1, -0.5, Float::INFINITY, -Float::INFINITY, Float::NAN].each do |bad|
+      it "rejects #{bad.inspect} as an exec timeout without calling the native layer" do
+        expect { sb.exec("sleep", ["1"], timeout: bad) }
+          .to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+        expect(native).not_to have_received(:exec)
+      end
+
+      it "rejects #{bad.inspect} as a stop timeout" do
+        expect { sb.stop(timeout: bad) }
+          .to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+      end
+
+      it "rejects #{bad.inspect} as a metrics_stream interval" do
+        expect { sb.metrics_stream(interval: bad) }
+          .to raise_error(ArgumentError, /interval must be a finite, non-negative/)
+        expect(native).not_to have_received(:metrics_stream)
+      end
+    end
+
+    # Valid durations (including 0 and integers) still flow through unchanged.
+    it "accepts 0, integers, and positive floats" do
+      sb.exec("true", [], timeout: 0)
+      sb.exec("true", [], timeout: 5)
+      sb.exec("true", [], timeout: 1.5)
+      expect(native).to have_received(:exec).with("true", [], hash_including("timeout" => 0.0))
+      expect(native).to have_received(:exec).with("true", [], hash_including("timeout" => 5.0))
+      expect(native).to have_received(:exec).with("true", [], hash_including("timeout" => 1.5))
+    end
+
+    it "leaves a nil timeout absent (no coercion)" do
+      sb.exec("true")
+      expect(native).to have_received(:exec).with("true", [], hash_excluding("timeout"))
     end
   end
 

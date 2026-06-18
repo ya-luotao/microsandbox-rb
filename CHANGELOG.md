@@ -6,6 +6,18 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reject invalid durations with a clear `ArgumentError`** — negative, `NaN`,
+  and infinite values passed to `timeout:` (`exec`/`shell`), `stop`/`kill`
+  timeouts, `replace_with_timeout:`, and `metrics_stream(interval:)` are now
+  rejected in Ruby before reaching the native layer, where they would otherwise
+  panic across the FFI boundary (`Duration::from_secs_f64` panics on exactly
+  those inputs).
+- **Reject contradictory `image:` + `from_snapshot:`** — `Sandbox.create` now
+  raises `ArgumentError` when both are given (a sandbox boots from exactly one
+  rootfs source), failing fast instead of after a runtime round-trip.
+
 ## [0.5.9] - 2026-06-18
 
 Closes the remaining roadmap items, bringing the binding surface to parity with
