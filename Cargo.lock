@@ -3249,7 +3249,7 @@ dependencies = [
 
 [[package]]
 name = "microsandbox_rb"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "chrono",
  "futures",

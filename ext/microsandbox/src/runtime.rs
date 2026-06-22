@@ -9,7 +9,8 @@
 use std::ffi::c_void;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::Mutex;
 
 use magnus::Ruby;
 use tokio::runtime::Runtime;
@@ -21,17 +22,60 @@ pub fn ruby() -> Ruby {
     Ruby::get().expect("microsandbox: not on a Ruby thread")
 }
 
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+// The process-wide tokio runtime, guarded by the pid it was built under. A
+// multi-threaded runtime owns worker + I/O-driver threads, and `fork(2)` copies
+// ONLY the calling thread — so a child that inherits this runtime has a runtime
+// whose threads are gone: `block_on` can still drive the current thread, but the
+// background I/O that keeps e.g. the agent-relay connection alive never runs, so
+// connections stall/drop mid-use. This is hit in practice by forking job servers
+// (Solid Queue, Resque) and clustered web servers (Puma workers).
+//
+// Fix: store the runtime behind a leaked raw pointer tagged with the building
+// pid. If `runtime()` is called in a process whose pid differs (we forked), build
+// a FRESH runtime for this process and swap the pointer. The stale runtime is
+// LEAKED, never dropped — dropping a tokio runtime whose worker threads vanished
+// across fork can hang on the shutdown thread-join. One runtime is leaked per
+// process that uses the SDK (bounded; equivalent to the old set-once behavior in
+// the common no-fork case).
+static RUNTIME_PTR: AtomicPtr<Runtime> = AtomicPtr::new(std::ptr::null_mut());
+static RUNTIME_PID: AtomicU32 = AtomicU32::new(0);
+static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
 
-/// The process-wide multi-threaded tokio runtime, built on first use.
+fn build_runtime() -> Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("microsandbox-rb")
+        .build()
+        .expect("microsandbox: failed to build tokio runtime")
+}
+
+/// The multi-threaded tokio runtime for THIS process, built on first use and
+/// rebuilt after a `fork(2)` (fork-safe — see the note above).
 pub fn runtime() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("microsandbox-rb")
-            .build()
-            .expect("microsandbox: failed to build tokio runtime")
-    })
+    let cur = std::process::id();
+    let ptr = RUNTIME_PTR.load(Ordering::Acquire);
+    if !ptr.is_null() && RUNTIME_PID.load(Ordering::Acquire) == cur {
+        // SAFETY: ptr was produced by Box::leak (valid for 'static) and matches
+        // this process's pid, so its runtime threads are live in this process.
+        return unsafe { &*ptr };
+    }
+
+    let _guard = RUNTIME_LOCK
+        .lock()
+        .expect("microsandbox: runtime lock poisoned");
+    // Re-check under the lock (another thread may have just built it).
+    let ptr = RUNTIME_PTR.load(Ordering::Acquire);
+    if !ptr.is_null() && RUNTIME_PID.load(Ordering::Acquire) == cur {
+        return unsafe { &*ptr };
+    }
+
+    // Build a fresh runtime for this process and publish it. The previous pointer
+    // (if any) belonged to a parent process and is intentionally leaked, not
+    // dropped (its threads are gone post-fork; Drop would block on join).
+    let rt: &'static Runtime = Box::leak(Box::new(build_runtime()));
+    RUNTIME_PTR.store(rt as *const Runtime as *mut Runtime, Ordering::Release);
+    RUNTIME_PID.store(cur, Ordering::Release);
+    rt
 }
 
 /// Run `f` with the Ruby GVL released.
