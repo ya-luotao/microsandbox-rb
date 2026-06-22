@@ -387,8 +387,10 @@ module Microsandbox
       end
 
       # Normalize volumes (Hash of guest_path => spec) into [guest, kind, source]
-      # triples for the native layer. A spec is a host path String (bind mount),
-      # or a Hash { bind: "/host" } / { named: "volume-name" }.
+      # triples (or [guest, kind, source, options] quads) for the native layer. A
+      # spec is a host path String (read-write bind mount), or a Hash
+      # { bind: "/host" } / { named: "volume-name" } optionally carrying mount
+      # options: { bind: "/host", ro: true } / { named: "v", options: %w[ro noexec] }.
       def normalize_volumes(volumes)
         volumes.map do |guest, spec|
           guest = guest.to_s
@@ -396,17 +398,37 @@ module Microsandbox
           when String
             [guest, "bind", spec]
           when Hash
-            if (named = spec[:named] || spec["named"])
-              [guest, "named", named.to_s]
-            elsif (bind = spec[:bind] || spec["bind"])
-              [guest, "bind", bind.to_s]
-            else
-              raise ArgumentError, "volume spec for #{guest.inspect} needs :bind or :named"
-            end
+            triple =
+              if (named = spec[:named] || spec["named"])
+                [guest, "named", named.to_s]
+              elsif (bind = spec[:bind] || spec["bind"])
+                [guest, "bind", bind.to_s]
+              else
+                raise ArgumentError, "volume spec for #{guest.inspect} needs :bind or :named"
+              end
+            # Optional 4th element: comma-joined mount options. Omitted when empty
+            # so existing [guest,kind,source] consumers and the common read-write
+            # case are byte-for-byte unchanged.
+            opts = mount_options(spec)
+            opts.empty? ? triple : triple + [opts.join(",")]
           else
             raise ArgumentError, "invalid volume spec for #{guest.inspect}: #{spec.inspect}"
           end
         end
+      end
+
+      # Collect mount options from a volume spec Hash. `ro:`/`readonly:` makes the
+      # mount read-only (host virtiofs rejects writes + guest kernel returns EROFS);
+      # `noexec:`/`nosuid:`/`nodev:` set the matching flags; an explicit `options:`
+      # array passes through verbatim. Unknown options are rejected natively.
+      def mount_options(spec)
+        opts = []
+        opts << "ro" if spec[:ro] || spec["ro"] || spec[:readonly] || spec["readonly"]
+        opts << "noexec" if spec[:noexec] || spec["noexec"]
+        opts << "nosuid" if spec[:nosuid] || spec["nosuid"]
+        opts << "nodev" if spec[:nodev] || spec["nodev"]
+        Array(spec[:options] || spec["options"]).each { |o| opts << o.to_s }
+        opts.uniq
       end
 
       # Normalize a list of patches (each a Hash from the {Patch} factory, or a

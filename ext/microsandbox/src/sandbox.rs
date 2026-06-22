@@ -89,9 +89,11 @@ impl Sandbox {
         for (host, guest) in conv::opt_port_map(opts, "ports")? {
             b = b.port(host, guest);
         }
-        // volumes: normalized by the Ruby layer to [guest, kind, source] triples.
+        // volumes: normalized by the Ruby layer to [guest, kind, source] triples,
+        // or [guest, kind, source, options] quads where options is a comma-joined
+        // list (ro/readonly, rw, noexec, nosuid, nodev).
         for spec in conv::opt::<Vec<Vec<String>>>(opts, "volumes")?.unwrap_or_default() {
-            if spec.len() != 3 {
+            if spec.len() < 3 || spec.len() > 4 {
                 return Err(error::base_error("invalid volume mount spec"));
             }
             let (guest, kind, source) = (spec[0].clone(), spec[1].clone(), spec[2].clone());
@@ -103,12 +105,43 @@ impl Sandbox {
                     )))
                 }
             }
+            // Validate options up front (the volume closure cannot return an error).
+            let mount_opts: Vec<String> = spec
+                .get(3)
+                .map(|s| {
+                    s.split(',')
+                        .map(|o| o.trim().to_string())
+                        .filter(|o| !o.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for opt in &mount_opts {
+                match opt.as_str() {
+                    "ro" | "readonly" | "rw" | "noexec" | "nosuid" | "nodev" => {}
+                    other => {
+                        return Err(error::base_error(format!(
+                            "unknown volume mount option {other:?} \
+                             (expected ro/rw/noexec/nosuid/nodev)"
+                        )))
+                    }
+                }
+            }
             b = b.volume(guest, move |m| {
-                if kind == "named" {
+                let mut m = if kind == "named" {
                     m.named(source)
                 } else {
                     m.bind(source)
+                };
+                for opt in &mount_opts {
+                    m = match opt.as_str() {
+                        "ro" | "readonly" => m.readonly(),
+                        "noexec" => m.noexec(),
+                        "nosuid" => m.nosuid(),
+                        "nodev" => m.nodev(),
+                        _ => m, // "rw" — default; already validated above
+                    };
                 }
+                m
             });
         }
         // patches: rootfs modifications applied before boot. The Ruby layer

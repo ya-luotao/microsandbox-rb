@@ -6,6 +6,20 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-06-23
+
+### Added
+
+- **Read-only / mount-option passthrough for volumes.** A volume spec Hash may
+  now carry `ro:`/`readonly:`, `noexec:`, `nosuid:`, `nodev:`, or an explicit
+  `options:` array, e.g. `volumes: { "/repos" => { bind: "/host/repos", ro: true } }`.
+  The Ruby layer appends a 4th comma-joined options element to the normalized
+  mount triple and the native ext applies the matching `MountBuilder` flags. RO is
+  enforced both host-side (virtiofs rejects writes) and guest-side (kernel returns
+  `EROFS`). Previously the gem could only request read-write mounts, so callers had
+  to fake read-only with host `chmod -R a-w`. Backward compatible: String specs and
+  option-less Hash specs serialize to the exact same 3-element triple as before.
+
 ## [0.5.10] - 2026-06-22
 
 ### Added
