@@ -121,16 +121,32 @@ sb = Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/a
 begin
   # ...
 ensure
-  sb.stop          # graceful (sb.stop(timeout: 5) to bound the wait)
-  # sb.kill        # force (SIGKILL)
+  sb.stop          # graceful (SIGTERM→SIGKILL escalation, 10s default)
+  # sb.stop_and_wait # graceful, then wait → ExitStatus(#exit_code, #success?)
+  # sb.kill          # force (SIGKILL); sb.drain for a graceful drain
 end
 
-# Inspect / manage existing sandboxes
-Microsandbox::Sandbox.list            # => [Microsandbox::SandboxInfo, ...]
-Microsandbox::Sandbox.get("box")      # => Microsandbox::SandboxInfo
+# Inspect / manage existing sandboxes. `get`/`list` return a controllable
+# SandboxHandle (the live `stop`/`kill`/`drain`/`wait` live on the object from
+# `create`/`start`; fine-grained control lives on the handle).
+Microsandbox::Sandbox.list            # => [Microsandbox::SandboxHandle, ...]
+h = Microsandbox::Sandbox.get("box")  # => Microsandbox::SandboxHandle
+h.status                              # :running, :stopped, :created, ...
+h.stop_with_timeout(5)                # custom escalation timeout
+h.request_stop                        # fire-and-return; pair with #wait_until_stopped
+h.request_kill
+h.request_drain
+h.wait_until_stopped                  # => Microsandbox::SandboxStopResult
 Microsandbox::Sandbox.start("box")    # restart a stopped sandbox
 Microsandbox::Sandbox.remove("box")   # remove a stopped sandbox
 ```
+
+> **v0.5.8 lifecycle change.** Upstream split the lifecycle into the live
+> `Sandbox` and a controllable `SandboxHandle`, and the gem mirrors it. The live
+> `Sandbox#stop`/`#kill` no longer take a `timeout:`; `#request_stop`/
+> `#request_kill`/`#request_drain`/`#wait_until_stopped` and a custom stop timeout
+> now live on the `SandboxHandle` from `Sandbox.get`. `Sandbox.get`/`.list` return
+> a `SandboxHandle` (was a read-only `SandboxInfo`, kept as a deprecated alias).
 
 ### Configuration
 
@@ -332,7 +348,31 @@ Microsandbox.installed?            # => true/false
 Microsandbox.install               # download + install the runtime (idempotent)
 Microsandbox.runtime_path          # => "/Users/you/.microsandbox/bin/msb"
 Microsandbox.runtime_path = "/opt/microsandbox/bin/msb"  # override
+Microsandbox.libkrunfw_path = "/opt/microsandbox/lib/libkrunfw.dylib"  # override (set-once)
 ```
+
+### Backend routing
+
+As of v0.5.8 every operation runs through a backend. The default is the local
+libkrun backend; without any configuration nothing changes. A backend can be
+selected programmatically or via the environment:
+
+```ruby
+Microsandbox.default_backend_kind          # => :local (or :cloud)
+Microsandbox.set_default_backend(:cloud, url: "https://api.example.com", api_key: ENV["MSB_API_KEY"])
+# or a named profile from ~/.microsandbox/config.json:
+Microsandbox.set_default_backend(:cloud, profile: "prod")
+
+# Scoped override (restored afterward, even on error):
+Microsandbox.with_backend(:local) { Microsandbox::Sandbox.create("box", image: "alpine") { |sb| ... } }
+```
+
+Resolution order when no backend is set programmatically: `MSB_BACKEND`
+(`local`/`cloud`) → `MSB_API_URL` + `MSB_API_KEY` → `MSB_PROFILE` → the
+`active_profile` in `~/.microsandbox/config.json` (path overridable via
+`MSB_CONFIG_PATH`) → local. The cloud backend currently supports a subset of
+operations (create/start/stop/remove/get/list, one-shot exec, follow log
+streaming); unsupported operations raise `Microsandbox::UnsupportedError`.
 
 ## Development
 
@@ -390,9 +430,12 @@ or credential setup is needed.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
 section. The binding now covers the full official-SDK surface: sandbox
-lifecycle (including the async `request_stop`/`request_kill`/`request_drain`/
-`wait_until_stopped`/`detach`/`owns_lifecycle?` controls and label-filtered
-`list_with`), `exec`/`shell` (collected and streaming), interactive `attach`/
+lifecycle (the live `Sandbox` `stop`/`stop_and_wait`/`kill`/`drain`/`wait`/
+`status`/`detach`/`owns_lifecycle?`, plus the `SandboxHandle` controls
+`stop_with_timeout`/`request_stop`/`request_kill`/`request_drain`/
+`wait_until_stopped` from `Sandbox.get`, and label-filtered `list_with`),
+backend routing (`set_default_backend`/`with_backend`/`default_backend_kind`),
+`exec`/`shell` (collected and streaming), interactive `attach`/
 `attach_shell`, the full guest filesystem, metrics (per-sandbox,
 `Microsandbox.all_sandbox_metrics`, and streaming `metrics_stream`/`log_stream`),
 logs, OCI image-cache management, named volumes, snapshots (create/list/verify/

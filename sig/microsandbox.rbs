@@ -9,7 +9,12 @@ module Microsandbox
   def self.ensure_runtime!: () -> nil
   def self.runtime_path: () -> String
   def self.runtime_path=: (String path) -> void
+  def self.libkrunfw_path=: (String path) -> void
   def self.all_sandbox_metrics: () -> Hash[String, Metrics]
+
+  def self.set_default_backend: (String | Symbol kind, ?url: String?, ?api_key: String?, ?profile: String?) -> void
+  def self.with_backend: [T] (String | Symbol kind, ?url: String?, ?api_key: String?, ?profile: String?) { () -> T } -> T
+  def self.default_backend_kind: () -> Symbol
 
   class Error < StandardError
     def self.code: () -> String
@@ -37,6 +42,8 @@ module Microsandbox
   class MetricsDisabledError < Error end
   class MetricsUnavailableError < Error end
   class UnsupportedOperationError < Error end
+  class CloudHttpError < Error end
+  class UnsupportedError < Error end
 
   class ExecOutput
     def initialize: (Hash[String, untyped] data) -> void
@@ -114,14 +121,25 @@ module Microsandbox
     def timestamp: () -> Time
   end
 
-  class SandboxInfo
+  class SandboxHandle
     def name: () -> String
     def status: () -> Symbol
     def running?: () -> bool
     def stopped?: () -> bool
     def created_at: () -> Time?
     def updated_at: () -> Time?
+    def stop: () -> nil
+    def stop_with_timeout: (Numeric timeout) -> nil
+    def kill: () -> nil
+    def kill_with_timeout: (Numeric timeout) -> nil
+    def request_stop: () -> nil
+    def request_kill: () -> nil
+    def request_drain: () -> nil
+    def wait_until_stopped: () -> SandboxStopResult
   end
+
+  # Deprecated alias for SandboxHandle (was a read-only metadata type pre-v0.5.8).
+  SandboxInfo: singleton(SandboxHandle)
 
   class SandboxStopResult
     def name: () -> String
@@ -151,9 +169,9 @@ module Microsandbox
                       ?replace: bool, ?replace_with_timeout: Numeric?)
                       ?{ (Sandbox) -> untyped } -> untyped
     def self.start: (String name, ?detached: bool) -> Sandbox
-    def self.get: (String name) -> SandboxInfo
-    def self.list: () -> Array[SandboxInfo]
-    def self.list_with: (?labels: Hash[untyped, untyped]) -> Array[SandboxInfo]
+    def self.get: (String name) -> SandboxHandle
+    def self.list: () -> Array[SandboxHandle]
+    def self.list_with: (?labels: Hash[untyped, untyped]) -> Array[SandboxHandle]
     def self.remove: (String name) -> nil
 
     def name: () -> String
@@ -179,12 +197,12 @@ module Microsandbox
     def metrics_stream: (?interval: Numeric) -> MetricsStream
     def log_stream: (?sources: Array[String | Symbol]?, ?since_ms: Numeric?,
                      ?from_cursor: String?, ?until_ms: Numeric?, ?follow: bool) -> LogStream
-    def stop: (?timeout: Numeric?) -> nil
-    def kill: (?timeout: Numeric?) -> nil
-    def request_stop: () -> nil
-    def request_kill: () -> nil
-    def request_drain: () -> nil
-    def wait_until_stopped: () -> SandboxStopResult
+    def stop: () -> nil
+    def stop_and_wait: () -> ExitStatus
+    def kill: () -> nil
+    def drain: () -> nil
+    def wait: () -> ExitStatus
+    def status: () -> Symbol
     def owns_lifecycle?: () -> bool
     def detach: () -> nil
   end

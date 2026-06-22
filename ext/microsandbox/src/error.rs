@@ -28,6 +28,12 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         MetricsDisabled(_) => "MetricsDisabledError",
         MetricsUnavailable(_) => "MetricsUnavailableError",
         AgentClient(AgentClientError::UnsupportedOperation { .. }) => "UnsupportedOperationError",
+        // Backend routing (v0.5.8 / PR #754). `Unsupported` is reachable on the
+        // local backend too (e.g. `Volume::path` on a cloud volume, snapshot
+        // ops), so it must map even for local-only use. Distinct from the agent
+        // client's `UnsupportedOperation` above.
+        CloudHttp { .. } => "CloudHttpError",
+        Unsupported { .. } => "UnsupportedError",
         _ => "Error",
     }
 }

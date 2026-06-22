@@ -104,6 +104,57 @@ module Microsandbox
       Native.set_runtime_msb_path(path.to_s)
     end
 
+    # Override the `libkrunfw` shared-library path (SDK tier of the resolver,
+    # below the `MSB_LIBKRUNFW_PATH` environment variable). Process-level and
+    # set-once: a second call is silently ignored, and the env var still wins.
+    # Mirrors {runtime_path=} for libkrunfw.
+    # @param path [String]
+    # @return [void]
+    def libkrunfw_path=(path)
+      Native.set_runtime_libkrunfw_path(path.to_s)
+    end
+
+    # Install a process-wide default backend (v0.5.8 backend routing). Without a
+    # call to this, operations use a local libkrun backend; the env/profile
+    # ladder (`MSB_BACKEND`, `MSB_API_URL`+`MSB_API_KEY`, `MSB_PROFILE`,
+    # `~/.microsandbox/config.json`) is resolved lazily on first use. Call once
+    # at startup, before any sandbox operations.
+    #
+    # @param kind ["local","cloud", Symbol] backend kind
+    # @param url [String, nil] cloud control-plane URL (cloud, unless `profile:`)
+    # @param api_key [String, nil] cloud API key (cloud, unless `profile:`)
+    # @param profile [String, nil] named profile from `~/.microsandbox/config.json`
+    # @return [void]
+    def set_default_backend(kind, url: nil, api_key: nil, profile: nil)
+      Native.set_default_backend(kind.to_s, url&.to_s, api_key&.to_s, profile&.to_s)
+    end
+
+    # Run the given block with a temporary default backend, restoring the
+    # previous one afterward (even on error). NOTE: the swap is process-wide
+    # while the block runs, not fiber/thread-local — concurrent threads observe
+    # the temporary backend. Mirrors the official SDKs' scoped-backend helper.
+    #
+    # @param kind ["local","cloud", Symbol]
+    # @param url [String, nil]
+    # @param api_key [String, nil]
+    # @param profile [String, nil]
+    # @yield with the temporary backend installed
+    # @return [Object] the block's return value
+    def with_backend(kind, url: nil, api_key: nil, profile: nil)
+      token = Native.push_default_backend(kind.to_s, url&.to_s, api_key&.to_s, profile&.to_s)
+      begin
+        yield
+      ensure
+        Native.pop_default_backend(token)
+      end
+    end
+
+    # @return [Symbol] the active default backend kind, :local or :cloud.
+    #   The first call resolves the env/profile/config ladder.
+    def default_backend_kind
+      Native.default_backend_kind.to_sym
+    end
+
     # Latest resource-usage snapshot for every running sandbox, keyed by name.
     # Mirrors the official `all_sandbox_metrics`/`allSandboxMetrics` helpers.
     # @return [Hash{String => Metrics}]

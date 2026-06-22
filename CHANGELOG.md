@@ -6,14 +6,64 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
+Adopts the upstream **microsandbox `v0.5.8`** runtime (was `v0.5.7`), whose
+backend-routing rewrite (upstream PR #754) both adds new surface and reshapes the
+sandbox lifecycle.
+
+### Changed
+
+- **BREAKING — sandbox lifecycle split (mirrors the official Python/Node SDKs).**
+  Upstream `v0.5.8` split the lifecycle across a live `Sandbox` and a lightweight
+  `SandboxHandle`. The gem follows suit:
+  - The live `Microsandbox::Sandbox` (from `Sandbox.create`/`Sandbox.start`) now
+    exposes `#stop`, `#stop_and_wait`, `#kill`, `#drain`, `#wait`, `#status`,
+    `#detach`, and `#owns_lifecycle?`. `#stop` and `#kill` **no longer take a
+    `timeout:`** keyword; `#stop` performs the graceful SIGTERM→SIGKILL
+    escalation (10s default) the official SDKs use.
+  - `#request_stop`, `#request_kill`, `#request_drain`, `#wait_until_stopped`,
+    and a custom stop/kill timeout have **moved off** the live `Sandbox` onto the
+    controllable `Microsandbox::SandboxHandle` (see Added).
+- **BREAKING — `Sandbox.get`/`.list`/`.list_with` now return a controllable
+  `Microsandbox::SandboxHandle`** instead of a read-only `SandboxInfo`. The
+  handle keeps the same metadata accessors (`name`, `status`, `created_at`,
+  `updated_at`, `running?`, `stopped?`). `Microsandbox::SandboxInfo` remains as a
+  deprecated constant alias for `SandboxHandle`.
+- `SandboxStatus` gained two values, `:created` and `:starting` (cloud-only
+  today), so `#status` may now return them.
+
+### Added
+
+- **Backend routing** — `Microsandbox.set_default_backend(kind, url:, api_key:,
+  profile:)`, `Microsandbox.with_backend(kind, …) { … }` (a scoped, restoring
+  override), and `Microsandbox.default_backend_kind`. Without configuration the
+  runtime resolves a backend lazily from `MSB_BACKEND`, `MSB_API_URL` +
+  `MSB_API_KEY`, `MSB_PROFILE`, and `~/.microsandbox/config.json` (honoring
+  `MSB_CONFIG_PATH`). The cloud backend supports a documented subset
+  (create/start/stop/remove/get/list, one-shot exec, follow log streaming);
+  unsupported operations raise `UnsupportedError`.
+- **`Microsandbox::SandboxHandle`** — the controllable handle returned by
+  `Sandbox.get`/`.list`/`.list_with`: `#stop`, `#stop_with_timeout(secs)`,
+  `#kill`, `#kill_with_timeout(secs)`, `#request_stop`, `#request_kill`,
+  `#request_drain`, `#wait_until_stopped` (→ `SandboxStopResult`), plus the
+  metadata accessors. Mirrors the official SDKs' `SandboxHandle`.
+- **`Sandbox#stop_and_wait` / `Sandbox#wait`** — return a `Microsandbox::ExitStatus`
+  (`#exit_code`, `#success?`). **`Sandbox#drain`** triggers a graceful drain.
+  **`Sandbox#status`** fetches the live status from the backend.
+- **`Microsandbox.libkrunfw_path=`** — overrides the `libkrunfw` shared-library
+  path (SDK tier of the resolver; `MSB_LIBKRUNFW_PATH` still wins). Mirrors
+  `runtime_path=`.
+- **`Microsandbox::CloudHttpError`** (`cloud-http`) and
+  **`Microsandbox::UnsupportedError`** (`unsupported`) — distinct from the
+  existing `UnsupportedOperationError`.
+
 ### Fixed
 
 - **Reject invalid durations with a clear `ArgumentError`** — negative, `NaN`,
-  and infinite values passed to `timeout:` (`exec`/`shell`), `stop`/`kill`
-  timeouts, `replace_with_timeout:`, and `metrics_stream(interval:)` are now
-  rejected in Ruby before reaching the native layer, where they would otherwise
-  panic across the FFI boundary (`Duration::from_secs_f64` panics on exactly
-  those inputs).
+  and infinite values passed to `timeout:` (`exec`/`shell`),
+  `SandboxHandle#stop_with_timeout`/`#kill_with_timeout`, `replace_with_timeout:`,
+  and `metrics_stream(interval:)` are rejected in Ruby before reaching the native
+  layer, where they would otherwise panic across the FFI boundary
+  (`Duration::from_secs_f64` panics on exactly those inputs).
 - **Reject contradictory `image:` + `from_snapshot:`** — `Sandbox.create` now
   raises `ArgumentError` when both are given (a sandbox boots from exactly one
   rootfs source), failing fast instead of after a runtime round-trip.

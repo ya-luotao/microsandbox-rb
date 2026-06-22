@@ -8,6 +8,7 @@
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::image::{Image, ImageDetail, ImageHandle, ImagePruneReport};
 
+use crate::backend::local_backend;
 use crate::error;
 use crate::runtime::{block_on, ruby};
 
@@ -76,12 +77,20 @@ fn report_to_hash(report: ImagePruneReport) -> RHash {
 }
 
 fn get(reference: String) -> Result<RHash, Error> {
-    let handle = block_on(Image::get(&reference)).map_err(error::to_ruby)?;
+    let handle = block_on(async {
+        let backend = local_backend()?;
+        Image::get(backend.as_local().expect("checked local"), &reference).await
+    })
+    .map_err(error::to_ruby)?;
     Ok(handle_to_hash(&handle))
 }
 
 fn list() -> Result<RArray, Error> {
-    let handles = block_on(Image::list()).map_err(error::to_ruby)?;
+    let handles = block_on(async {
+        let backend = local_backend()?;
+        Image::list(backend.as_local().expect("checked local")).await
+    })
+    .map_err(error::to_ruby)?;
     let arr = ruby().ary_new();
     for h in handles.iter() {
         arr.push(handle_to_hash(h))?;
@@ -90,16 +99,33 @@ fn list() -> Result<RArray, Error> {
 }
 
 fn inspect(reference: String) -> Result<RHash, Error> {
-    let detail = block_on(Image::inspect(&reference)).map_err(error::to_ruby)?;
+    let detail = block_on(async {
+        let backend = local_backend()?;
+        Image::inspect(backend.as_local().expect("checked local"), &reference).await
+    })
+    .map_err(error::to_ruby)?;
     Ok(detail_to_hash(detail))
 }
 
 fn remove(reference: String, force: bool) -> Result<(), Error> {
-    block_on(Image::remove(&reference, force)).map_err(error::to_ruby)
+    block_on(async {
+        let backend = local_backend()?;
+        Image::remove(
+            backend.as_local().expect("checked local"),
+            &reference,
+            force,
+        )
+        .await
+    })
+    .map_err(error::to_ruby)
 }
 
 fn prune() -> Result<RHash, Error> {
-    let report = block_on(Image::prune()).map_err(error::to_ruby)?;
+    let report = block_on(async {
+        let backend = local_backend()?;
+        Image::prune(backend.as_local().expect("checked local")).await
+    })
+    .map_err(error::to_ruby)?;
     Ok(report_to_hash(report))
 }
 

@@ -6,12 +6,15 @@ RSpec.describe "lifecycle controls + streaming", :integration do
   let(:image) { default_test_image }
 
   describe "async lifecycle" do
-    it "owns_lifecycle? is true and wait_until_stopped reports a terminal result" do
+    it "owns_lifecycle? is true and a handle's wait_until_stopped reports a terminal result" do
       sb = Microsandbox::Sandbox.create(unique_sandbox_name, image: image)
       begin
         expect(sb.owns_lifecycle?).to be(true)
-        sb.request_stop
-        result = sb.wait_until_stopped
+        # The fine-grained request_*/wait_until_stopped controls live on the
+        # controllable SandboxHandle (v0.5.8 lifecycle split), not the live object.
+        handle = Microsandbox::Sandbox.get(sb.name)
+        handle.request_stop
+        result = handle.wait_until_stopped
         expect(result).to be_a(Microsandbox::SandboxStopResult)
         expect(result.status).to be_a(Symbol)
         expect(result.observed_at).to be_a(Time)

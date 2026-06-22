@@ -264,14 +264,40 @@ RSpec.describe Microsandbox::Sandbox do
     end
   end
 
-  describe "#stop / #kill" do
-    it "forwards optional float timeouts" do
+  describe "live lifecycle (#stop / #stop_and_wait / #kill / #drain / #wait / #status)" do
+    subject(:sb) { Microsandbox::Sandbox.create("box", image: "x") }
+
+    before do
       allow(native).to receive(:kill)
-      sb = Microsandbox::Sandbox.create("box", image: "x")
-      sb.stop(timeout: 3)
-      sb.kill
-      expect(native).to have_received(:stop).with(3.0)
-      expect(native).to have_received(:kill).with(nil)
+      allow(native).to receive(:drain)
+      allow(native).to receive(:stop_and_wait).and_return("exit_code" => 0, "success" => true)
+      allow(native).to receive(:wait).and_return("exit_code" => 137, "success" => false)
+      allow(native).to receive(:status).and_return("running")
+    end
+
+    it "forwards the high-level lifecycle calls (no timeout args on the live handle)" do
+      expect(sb.stop).to be_nil
+      expect(sb.kill).to be_nil
+      expect(sb.drain).to be_nil
+      expect(native).to have_received(:stop).with(no_args)
+      expect(native).to have_received(:kill).with(no_args)
+      expect(native).to have_received(:drain).with(no_args)
+    end
+
+    it "wraps #stop_and_wait and #wait in an ExitStatus" do
+      done = sb.stop_and_wait
+      expect(done).to be_a(Microsandbox::ExitStatus)
+      expect(done).to be_success
+      expect(done.exit_code).to eq(0)
+
+      killed = sb.wait
+      expect(killed).to be_a(Microsandbox::ExitStatus)
+      expect(killed).to be_failure
+      expect(killed.exit_code).to eq(137)
+    end
+
+    it "exposes the live #status as a Symbol" do
+      expect(sb.status).to eq(:running)
     end
   end
 
@@ -295,8 +321,11 @@ RSpec.describe Microsandbox::Sandbox do
         expect(native).not_to have_received(:exec)
       end
 
-      it "rejects #{bad.inspect} as a stop timeout" do
-        expect { sb.stop(timeout: bad) }
+      it "rejects #{bad.inspect} as a handle stop_with_timeout" do
+        handle = Microsandbox::SandboxHandle.new(
+          instance_double(Microsandbox::Native::SandboxHandle)
+        )
+        expect { handle.stop_with_timeout(bad) }
           .to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
       end
 
@@ -323,23 +352,12 @@ RSpec.describe Microsandbox::Sandbox do
     end
   end
 
-  describe "async lifecycle controls" do
+  describe "live owns_lifecycle? / detach" do
     subject(:sb) { Microsandbox::Sandbox.create("box", image: "x") }
 
-    it "forwards request_stop/request_kill/request_drain and detach, returning nil" do
-      allow(native).to receive(:request_stop)
-      allow(native).to receive(:request_kill)
-      allow(native).to receive(:request_drain)
+    it "forwards detach, returning nil" do
       allow(native).to receive(:detach)
-
-      expect(sb.request_stop).to be_nil
-      expect(sb.request_kill).to be_nil
-      expect(sb.request_drain).to be_nil
       expect(sb.detach).to be_nil
-
-      expect(native).to have_received(:request_stop)
-      expect(native).to have_received(:request_kill)
-      expect(native).to have_received(:request_drain)
       expect(native).to have_received(:detach)
     end
 
@@ -347,13 +365,41 @@ RSpec.describe Microsandbox::Sandbox do
       allow(native).to receive(:owns_lifecycle).and_return(true)
       expect(sb.owns_lifecycle?).to be(true)
     end
+  end
+
+  describe "SandboxHandle fine-grained lifecycle (from Sandbox.get/list)" do
+    let(:native_handle) { instance_double(Microsandbox::Native::SandboxHandle) }
+    subject(:handle) { Microsandbox::SandboxHandle.new(native_handle) }
+
+    it "forwards request_stop/request_kill/request_drain, returning nil" do
+      allow(native_handle).to receive(:request_stop)
+      allow(native_handle).to receive(:request_kill)
+      allow(native_handle).to receive(:request_drain)
+
+      expect(handle.request_stop).to be_nil
+      expect(handle.request_kill).to be_nil
+      expect(handle.request_drain).to be_nil
+
+      expect(native_handle).to have_received(:request_stop)
+      expect(native_handle).to have_received(:request_kill)
+      expect(native_handle).to have_received(:request_drain)
+    end
+
+    it "forwards stop_with_timeout/kill_with_timeout with coerced floats" do
+      allow(native_handle).to receive(:stop_with_timeout)
+      allow(native_handle).to receive(:kill_with_timeout)
+      handle.stop_with_timeout(3)
+      handle.kill_with_timeout(1.5)
+      expect(native_handle).to have_received(:stop_with_timeout).with(3.0)
+      expect(native_handle).to have_received(:kill_with_timeout).with(1.5)
+    end
 
     it "wraps wait_until_stopped in a SandboxStopResult" do
-      allow(native).to receive(:wait_until_stopped).and_return(
+      allow(native_handle).to receive(:wait_until_stopped).and_return(
         "name" => "box", "status" => "stopped", "exit_code" => 0,
         "signal" => nil, "observed_at_ms" => 1_700_000_000_000, "source" => "owned process handle"
       )
-      result = sb.wait_until_stopped
+      result = handle.wait_until_stopped
       expect(result).to be_a(Microsandbox::SandboxStopResult)
       expect(result).to be_stopped
       expect(result.exit_code).to eq(0)
@@ -416,15 +462,16 @@ RSpec.describe Microsandbox::Sandbox do
 
   describe ".list_with" do
     it "normalizes label filters into a string-keyed labels hash" do
-      allow(Microsandbox::Native::Sandbox).to receive(:list_with).and_return(
-        [{"name" => "box", "status" => "running"}]
+      native_handle = instance_double(
+        Microsandbox::Native::SandboxHandle, name: "box", status: "running"
       )
-      infos = Microsandbox::Sandbox.list_with(labels: {team: :core})
+      allow(Microsandbox::Native::Sandbox).to receive(:list_with).and_return([native_handle])
+      handles = Microsandbox::Sandbox.list_with(labels: {team: :core})
       expect(Microsandbox::Native::Sandbox).to have_received(:list_with).with(
         "labels" => {"team" => "core"}
       )
-      expect(infos.first).to be_a(Microsandbox::SandboxInfo)
-      expect(infos.first.name).to eq("box")
+      expect(handles.first).to be_a(Microsandbox::SandboxHandle)
+      expect(handles.first.name).to eq("box")
     end
   end
 end

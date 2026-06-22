@@ -33,9 +33,22 @@ RSpec.describe "Microsandbox runtime helpers" do
     end
   end
 
+  describe ".libkrunfw_path=" do
+    it "is callable and forwards to the native set-once setter" do
+      # Process-level + set-once at the core; MSB_LIBKRUNFW_PATH still wins. We
+      # only assert the binding is wired (no VM boots in unit tests, so the value
+      # is inert here).
+      expect(Microsandbox.libkrunfw_path = "/custom/path/to/libkrunfw.dylib").to eq("/custom/path/to/libkrunfw.dylib")
+    end
+  end
+
   describe "Native module" do
     it "exposes the expected module functions" do
-      %i[version install installed? set_runtime_msb_path resolved_msb_path].each do |m|
+      %i[
+        version install installed? set_runtime_msb_path set_runtime_libkrunfw_path
+        resolved_msb_path set_default_backend push_default_backend pop_default_backend
+        default_backend_kind
+      ].each do |m|
         expect(Microsandbox::Native).to respond_to(m)
       end
     end
