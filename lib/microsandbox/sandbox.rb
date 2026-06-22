@@ -22,6 +22,10 @@ module Microsandbox
     #   :stopped, or :crashed (a snapshot, captured when this handle was fetched)
     def status = @native.status.to_sym
 
+    # Whether the fetch-time {#status} snapshot is `:running` / `:stopped`.
+    # Like {#status}, these do NOT refresh: to observe a state change after
+    # {#request_stop}/{#request_kill}/{#request_drain}, use {#wait_until_stopped}
+    # or re-fetch the handle with {Sandbox.get}.
     def running? = status == :running
     def stopped? = status == :stopped
 
@@ -102,11 +106,14 @@ module Microsandbox
 
   # @deprecated since v0.5.8. {Sandbox.get}/{Sandbox.list} now return a
   #   controllable {SandboxHandle}; this constant remains as an alias so code
-  #   that referenced the old read-only metadata type by name still resolves.
+  #   that referenced the old read-only metadata type by name (e.g. `is_a?`
+  #   checks) still resolves. Note it is now the same class as {SandboxHandle},
+  #   whose constructor takes a native handle, not the metadata Hash the old
+  #   `SandboxInfo.new` accepted — construct via {Sandbox.get}/{Sandbox.list}.
   SandboxInfo = SandboxHandle
 
   # The terminal observation of a stopped sandbox, returned by
-  # {Sandbox#wait_until_stopped}. Mirrors the official SDKs' `SandboxStopResult`.
+  # {SandboxHandle#wait_until_stopped}. Mirrors the official SDKs' `SandboxStopResult`.
   class SandboxStopResult
     # @return [String]
     attr_reader :name

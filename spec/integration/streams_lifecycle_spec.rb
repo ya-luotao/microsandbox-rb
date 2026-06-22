@@ -23,8 +23,8 @@ RSpec.describe "lifecycle controls + streaming", :integration do
         # kill here just guards against an early failure leaving it running.
         begin
           sb.kill
-        rescue
-          Microsandbox::Error
+        rescue Microsandbox::Error
+          # ignore stop/kill failures during teardown
         end
       end
     end

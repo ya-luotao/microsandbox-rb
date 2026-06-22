@@ -23,6 +23,7 @@ use magnus::{function, prelude::*, Error, RModule, Ruby};
 use microsandbox::{Backend, MicrosandboxError};
 
 use crate::error;
+use crate::runtime::block_on;
 
 /// Resolve the ambient default backend, requiring it to be local.
 ///
@@ -44,6 +45,26 @@ pub fn local_backend() -> Result<Arc<dyn Backend>, MicrosandboxError> {
     }
 }
 
+/// Resolve the ambient backend (requiring it to be local), then run `op` with a
+/// borrowed `&LocalBackend` inside the blocking runtime, mapping any core error
+/// to a Ruby exception. Local-only operations (image cache, aggregate metrics)
+/// share this instead of repeating the resolve/downcast dance; the single
+/// `as_local()` unwrap is provably infallible — [`local_backend`] just checked
+/// it and returns the same `Arc` kept alive for the borrow — so it lives here
+/// once rather than at every call site.
+pub fn with_local_backend<T>(
+    op: impl AsyncFnOnce(&microsandbox::LocalBackend) -> Result<T, MicrosandboxError>,
+) -> Result<T, Error> {
+    block_on(async move {
+        let backend = local_backend()?;
+        let local = backend
+            .as_local()
+            .expect("local_backend() guarantees a local backend");
+        op(local).await
+    })
+    .map_err(error::to_ruby)
+}
+
 /// Build an `Arc<dyn Backend>` from the SDK facade. Ported from pyo3
 /// `build_backend` (`sdk/python/src/lib.rs`) / node `build_backend`. Synchronous
 /// (no network I/O): cloud construction only builds the HTTP client. Runs on the
@@ -57,20 +78,16 @@ fn build_backend(
     match kind.trim().to_ascii_lowercase().as_str() {
         "local" => Ok(Arc::new(microsandbox::LocalBackend::lazy())),
         "cloud" => {
-            let cloud = if let Some(profile) = profile {
-                microsandbox::CloudBackend::from_profile(&profile)
-            } else {
-                let url = url.ok_or_else(|| {
-                    error::to_ruby(MicrosandboxError::InvalidConfig(
-                        "cloud backend requires url + api_key or profile".into(),
-                    ))
-                })?;
-                let api_key = api_key.ok_or_else(|| {
-                    error::to_ruby(MicrosandboxError::InvalidConfig(
-                        "cloud backend requires url + api_key or profile".into(),
-                    ))
-                })?;
-                microsandbox::CloudBackend::new(url, api_key)
+            let cloud = match profile {
+                Some(profile) => microsandbox::CloudBackend::from_profile(&profile),
+                None => match (url, api_key) {
+                    (Some(url), Some(api_key)) => microsandbox::CloudBackend::new(url, api_key),
+                    _ => {
+                        return Err(error::to_ruby(MicrosandboxError::InvalidConfig(
+                            "cloud backend requires url + api_key or profile".into(),
+                        )))
+                    }
+                },
             }
             .map_err(error::to_ruby)?;
             Ok(Arc::new(cloud))

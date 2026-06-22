@@ -38,9 +38,12 @@ module Microsandbox
     end
   end
 
-  # The terminal status of a streamed execution, from {ExecHandle#wait}.
+  # The terminal status of a streamed execution ({ExecHandle#wait}) or of a
+  # sandbox process ({Sandbox#wait}, {Sandbox#stop_and_wait}).
   class ExitStatus
-    # @return [Integer]
+    # @return [Integer, nil] the exit code, or nil when the process was
+    #   terminated by a signal and so carries no code (e.g. a SIGKILL'd sandbox
+    #   from {Sandbox#kill} then {Sandbox#wait}) — check {#success?} in that case.
     attr_reader :exit_code
 
     def initialize(data)

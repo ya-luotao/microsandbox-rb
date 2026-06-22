@@ -40,7 +40,9 @@ sandbox lifecycle.
   `MSB_API_KEY`, `MSB_PROFILE`, and `~/.microsandbox/config.json` (honoring
   `MSB_CONFIG_PATH`). The cloud backend supports a documented subset
   (create/start/stop/remove/get/list, one-shot exec, follow log streaming);
-  unsupported operations raise `UnsupportedError`.
+  unsupported operations raise `UnsupportedError`. Under a cloud backend,
+  `Sandbox.create`/`.start` skip local `msb`/`libkrunfw` runtime provisioning
+  (it isn't needed), so cloud-only hosts no longer trigger a spurious download.
 - **`Microsandbox::SandboxHandle`** — the controllable handle returned by
   `Sandbox.get`/`.list`/`.list_with`: `#stop`, `#stop_with_timeout(secs)`,
   `#kill`, `#kill_with_timeout(secs)`, `#request_stop`, `#request_kill`,

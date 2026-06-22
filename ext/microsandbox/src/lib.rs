@@ -32,11 +32,9 @@ fn version() -> String {
 /// Ruby Hash. Mirrors the official `all_sandbox_metrics` / `allSandboxMetrics`
 /// helpers (Python/Node/Go).
 fn all_sandbox_metrics() -> Result<RHash, Error> {
-    let map = runtime::block_on(async {
-        let backend = backend::local_backend()?;
-        microsandbox::sandbox::all_sandbox_metrics(backend.as_local().expect("checked local")).await
-    })
-    .map_err(error::to_ruby)?;
+    let map = backend::with_local_backend(async |local| {
+        microsandbox::sandbox::all_sandbox_metrics(local).await
+    })?;
     let hash = runtime::ruby().hash_new();
     for (name, metrics) in &map {
         hash.aset(name.as_str(), sandbox::metrics_to_hash(metrics))?;

@@ -34,11 +34,17 @@ RSpec.describe "Microsandbox runtime helpers" do
   end
 
   describe ".libkrunfw_path=" do
-    it "is callable and forwards to the native set-once setter" do
-      # Process-level + set-once at the core; MSB_LIBKRUNFW_PATH still wins. We
-      # only assert the binding is wired (no VM boots in unit tests, so the value
-      # is inert here).
-      expect(Microsandbox.libkrunfw_path = "/custom/path/to/libkrunfw.dylib").to eq("/custom/path/to/libkrunfw.dylib")
+    it "forwards the stringified path to the native set-once setter" do
+      # Stub the native setter so we (a) actually verify the binding forwards,
+      # and (b) never consume the real process-wide set-once OnceLock — it has no
+      # getter and cannot be restored, so touching it would leak into a combined
+      # unit+integration run. Asserting the assignment's value would be a Ruby
+      # tautology (an assignment evaluates to its RHS regardless of the setter),
+      # so assert the forwarded native call instead.
+      allow(Microsandbox::Native).to receive(:set_runtime_libkrunfw_path)
+      Microsandbox.libkrunfw_path = "/custom/path/to/libkrunfw.dylib"
+      expect(Microsandbox::Native).to have_received(:set_runtime_libkrunfw_path)
+        .with("/custom/path/to/libkrunfw.dylib")
     end
   end
 

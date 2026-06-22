@@ -78,6 +78,11 @@ module Microsandbox
     # @return [nil]
     def ensure_runtime!
       return if @runtime_ready
+      # A cloud backend has no local msb/libkrunfw runtime to provision: skip the
+      # presence check and the first-use download entirely. Resolving the kind
+      # uses the same lazy env/profile/config ladder every operation already
+      # consults, so this adds no work for local hosts (the common case).
+      return if default_backend_kind == :cloud
       if installed?
         @runtime_ready = true
         return
@@ -132,7 +137,12 @@ module Microsandbox
     # Run the given block with a temporary default backend, restoring the
     # previous one afterward (even on error). NOTE: the swap is process-wide
     # while the block runs, not fiber/thread-local — concurrent threads observe
-    # the temporary backend. Mirrors the official SDKs' scoped-backend helper.
+    # the temporary backend. It is also NOT safe to call from multiple threads
+    # at once: two interleaved `with_backend` calls can restore each other's
+    # saved backend out of order and leave a temporary backend installed
+    # permanently. Use it only when no other thread is changing the backend, and
+    # avoid calling {set_default_backend} inside the block (the restore on exit
+    # would overwrite that change). Mirrors the official SDKs' scoped-backend helper.
     #
     # @param kind ["local","cloud", Symbol]
     # @param url [String, nil]

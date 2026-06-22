@@ -234,7 +234,7 @@ module Microsandbox
   end
 
   class ExitStatus
-    def exit_code: () -> Integer
+    def exit_code: () -> Integer?
     def success?: () -> bool
     def failure?: () -> bool
   end
