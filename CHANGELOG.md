@@ -6,6 +6,19 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-06-22
+
+### Added
+
+- **Streaming stdin pipe for `exec_stream`/`shell_stream`** (`stdin: :pipe`).
+  Opens a writable `ExecHandle#stdin` sink (`ExecStdin`) lifted out of the core
+  handle via `take_stdin`, distinct from the existing fixed-bytes `stdin:`
+  buffer. This is the load-bearing primitive for driving an interactive
+  long-running process (e.g. a `claude` CLI) over `exec_stream` from a host
+  reactor. The published `0.5.9` shipped without it (`stdin: :pipe` was fed as
+  the literal byte string `"pipe"`), so any consumer of the streaming sink must
+  require `>= 0.5.10`.
+
 Adopts the upstream **microsandbox `v0.5.8`** runtime (was `v0.5.7`), whose
 backend-routing rewrite (upstream PR #754) both adds new surface and reshapes the
 sandbox lifecycle.
