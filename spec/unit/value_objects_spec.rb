@@ -114,18 +114,24 @@ RSpec.describe "value objects" do
     end
   end
 
-  describe Microsandbox::SandboxInfo do
-    it "parses name/status and timestamps" do
-      info = described_class.new(
-        "name" => "box", "status" => "running",
-        "created_at_ms" => 1_700_000_000_000, "updated_at_ms" => nil
+  describe Microsandbox::SandboxHandle do
+    it "exposes name/status and timestamps from the native handle" do
+      native = instance_double(
+        Microsandbox::Native::SandboxHandle,
+        name: "box", status: "running",
+        created_at_ms: 1_700_000_000_000, updated_at_ms: nil
       )
-      expect(info.name).to eq("box")
-      expect(info.status).to eq(:running)
-      expect(info).to be_running
-      expect(info).not_to be_stopped
-      expect(info.created_at).to be_a(Time)
-      expect(info.updated_at).to be_nil
+      handle = described_class.new(native)
+      expect(handle.name).to eq("box")
+      expect(handle.status).to eq(:running)
+      expect(handle).to be_running
+      expect(handle).not_to be_stopped
+      expect(handle.created_at).to be_a(Time)
+      expect(handle.updated_at).to be_nil
+    end
+
+    it "is still reachable through the deprecated SandboxInfo alias" do
+      expect(Microsandbox::SandboxInfo).to equal(Microsandbox::SandboxHandle)
     end
   end
 

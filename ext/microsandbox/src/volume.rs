@@ -65,7 +65,12 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
     let vol = block_on(builder.create()).map_err(error::to_ruby)?;
     let hash = ruby().hash_new();
     hash.aset("name", vol.name().to_string())?;
-    hash.aset("path", vol.path().display().to_string())?;
+    // `path()` is fallible as of v0.5.8 (returns `Unsupported` for cloud
+    // volumes); the volume just created here is local, so this resolves.
+    hash.aset(
+        "path",
+        vol.path().map_err(error::to_ruby)?.display().to_string(),
+    )?;
     Ok(hash)
 }
 

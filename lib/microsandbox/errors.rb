@@ -65,4 +65,10 @@ module Microsandbox
 
   # Runtime compatibility ---------------------------------------------------
   define_error(:UnsupportedOperationError, "unsupported-operation")
+
+  # Cloud / backend routing errors (v0.5.8) ---------------------------------
+  # `UnsupportedError` (a backend feature gap, e.g. an op not yet wired on the
+  # cloud backend) is distinct from `UnsupportedOperationError` above.
+  define_error(:CloudHttpError, "cloud-http")
+  define_error(:UnsupportedError, "unsupported")
 end

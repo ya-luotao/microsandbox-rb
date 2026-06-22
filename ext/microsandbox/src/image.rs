@@ -8,8 +8,8 @@
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::image::{Image, ImageDetail, ImageHandle, ImagePruneReport};
 
-use crate::error;
-use crate::runtime::{block_on, ruby};
+use crate::backend::with_local_backend;
+use crate::runtime::ruby;
 
 fn handle_to_hash(h: &ImageHandle) -> RHash {
     let hash = ruby().hash_new();
@@ -76,12 +76,12 @@ fn report_to_hash(report: ImagePruneReport) -> RHash {
 }
 
 fn get(reference: String) -> Result<RHash, Error> {
-    let handle = block_on(Image::get(&reference)).map_err(error::to_ruby)?;
+    let handle = with_local_backend(async |local| Image::get(local, &reference).await)?;
     Ok(handle_to_hash(&handle))
 }
 
 fn list() -> Result<RArray, Error> {
-    let handles = block_on(Image::list()).map_err(error::to_ruby)?;
+    let handles = with_local_backend(async |local| Image::list(local).await)?;
     let arr = ruby().ary_new();
     for h in handles.iter() {
         arr.push(handle_to_hash(h))?;
@@ -90,16 +90,16 @@ fn list() -> Result<RArray, Error> {
 }
 
 fn inspect(reference: String) -> Result<RHash, Error> {
-    let detail = block_on(Image::inspect(&reference)).map_err(error::to_ruby)?;
+    let detail = with_local_backend(async |local| Image::inspect(local, &reference).await)?;
     Ok(detail_to_hash(detail))
 }
 
 fn remove(reference: String, force: bool) -> Result<(), Error> {
-    block_on(Image::remove(&reference, force)).map_err(error::to_ruby)
+    with_local_backend(async |local| Image::remove(local, &reference, force).await)
 }
 
 fn prune() -> Result<RHash, Error> {
-    let report = block_on(Image::prune()).map_err(error::to_ruby)?;
+    let report = with_local_backend(async |local| Image::prune(local).await)?;
     Ok(report_to_hash(report))
 }
 

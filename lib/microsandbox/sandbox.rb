@@ -1,41 +1,119 @@
 # frozen_string_literal: true
 
 module Microsandbox
-  # Lightweight metadata about a sandbox, returned by {Sandbox.get} and
-  # {Sandbox.list}. This is a snapshot, not a live handle.
-  class SandboxInfo
-    # @return [String]
-    attr_reader :name
-    # @return [Symbol] :running, :draining, :paused, :stopped, or :crashed
-    attr_reader :status
-
-    def initialize(data)
-      @name = data["name"]
-      @status = data["status"].to_sym
-      @created_at_ms = data["created_at_ms"]
-      @updated_at_ms = data["updated_at_ms"]
+  # A controllable handle to a sandbox, returned by {Sandbox.get}, {Sandbox.list},
+  # and {Sandbox.list_with}. Carries a metadata snapshot (captured when fetched)
+  # plus the fine-grained lifecycle surface — `stop_with_timeout`, `request_stop`,
+  # `request_kill`, `request_drain`, `wait_until_stopped` — that mirrors the
+  # official SDKs' `SandboxHandle`. (The live {Sandbox} from {Sandbox.create}/
+  # {Sandbox.start} carries only the high-level `stop`/`kill`/`drain`/`wait`.)
+  #
+  # As of v0.5.8 this replaces the old read-only `SandboxInfo` (kept as a
+  # deprecated constant alias); `#status` here is a synchronous snapshot.
+  class SandboxHandle
+    def initialize(native)
+      @native = native
     end
 
-    def running? = @status == :running
-    def stopped? = @status == :stopped
+    # @return [String]
+    def name = @native.name
+
+    # @return [Symbol] :created, :starting, :running, :draining, :paused,
+    #   :stopped, or :crashed (a snapshot, captured when this handle was fetched)
+    def status = @native.status.to_sym
+
+    # Whether the fetch-time {#status} snapshot is `:running` / `:stopped`.
+    # Like {#status}, these do NOT refresh: to observe a state change after
+    # {#request_stop}/{#request_kill}/{#request_drain}, use {#wait_until_stopped}
+    # or re-fetch the handle with {Sandbox.get}.
+    def running? = status == :running
+    def stopped? = status == :stopped
 
     # @return [Time, nil]
     def created_at
-      @created_at_ms && Time.at(@created_at_ms / 1000.0)
+      ms = @native.created_at_ms
+      ms && Time.at(ms / 1000.0)
     end
 
     # @return [Time, nil]
     def updated_at
-      @updated_at_ms && Time.at(@updated_at_ms / 1000.0)
+      ms = @native.updated_at_ms
+      ms && Time.at(ms / 1000.0)
+    end
+
+    # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default).
+    # @return [nil]
+    def stop
+      @native.stop
+      nil
+    end
+
+    # Gracefully stop with a custom escalation timeout.
+    # @param timeout [Numeric] seconds to wait before escalating to SIGKILL
+    # @return [nil]
+    def stop_with_timeout(timeout)
+      @native.stop_with_timeout(Sandbox.send(:coerce_duration, timeout, "timeout"))
+      nil
+    end
+
+    # Force-kill the sandbox (SIGKILL).
+    # @return [nil]
+    def kill
+      @native.kill
+      nil
+    end
+
+    # Force-kill, waiting up to `timeout` seconds for the process to disappear.
+    # @param timeout [Numeric]
+    # @return [nil]
+    def kill_with_timeout(timeout)
+      @native.kill_with_timeout(Sandbox.send(:coerce_duration, timeout, "timeout"))
+      nil
+    end
+
+    # Send the graceful-shutdown request and return immediately, without waiting.
+    # Pair with {#wait_until_stopped}.
+    # @return [nil]
+    def request_stop
+      @native.request_stop
+      nil
+    end
+
+    # Send the force-kill request and return immediately, without waiting.
+    # @return [nil]
+    def request_kill
+      @native.request_kill
+      nil
+    end
+
+    # Request a graceful drain (SIGUSR1) and return immediately, without waiting.
+    # @return [nil]
+    def request_drain
+      @native.request_drain
+      nil
+    end
+
+    # Block until the sandbox is observed in a terminal (non-running) state.
+    # @return [SandboxStopResult]
+    def wait_until_stopped
+      SandboxStopResult.new(@native.wait_until_stopped)
     end
 
     def inspect
-      "#<Microsandbox::SandboxInfo name=#{@name.inspect} status=#{@status}>"
+      "#<Microsandbox::SandboxHandle name=#{name.inspect} status=#{status}>"
     end
   end
 
+  # @deprecated since v0.5.8. {Sandbox.get}/{Sandbox.list} now return a
+  #   controllable {SandboxHandle}; this constant remains as an alias so code
+  #   that referenced the old read-only metadata type by name (e.g. `is_a?`
+  #   checks) still resolves. Note it is now the same class as {SandboxHandle},
+  #   whose constructor takes a native handle, not the metadata Hash the old
+  #   `SandboxInfo.new` accepted — construct via {Sandbox.get}/{Sandbox.list}.
+  SandboxInfo = SandboxHandle
+
   # The terminal observation of a stopped sandbox, returned by
-  # {Sandbox#wait_until_stopped}. Mirrors the official SDKs' `SandboxStopResult`.
+  # {SandboxHandle#wait_until_stopped}. Mirrors the official SDKs' `SandboxStopResult`.
   class SandboxStopResult
     # @return [String]
     attr_reader :name
@@ -215,24 +293,24 @@ module Microsandbox
         new(Native::Sandbox.start(name.to_s, {"detached" => detached}))
       end
 
-      # Fetch metadata for a sandbox by name.
-      # @return [SandboxInfo]
+      # Fetch a controllable handle for a sandbox by name (running or not).
+      # @return [SandboxHandle]
       def get(name)
-        SandboxInfo.new(Native::Sandbox.get(name.to_s))
+        SandboxHandle.new(Native::Sandbox.get(name.to_s))
       end
 
-      # List all sandboxes.
-      # @return [Array<SandboxInfo>]
+      # List all sandboxes as controllable handles.
+      # @return [Array<SandboxHandle>]
       def list
-        Native::Sandbox.list.map { |info| SandboxInfo.new(info) }
+        Native::Sandbox.list.map { |h| SandboxHandle.new(h) }
       end
 
       # List sandboxes carrying all of the given labels (AND-matched).
       # @param labels [Hash] required key => value labels
-      # @return [Array<SandboxInfo>]
+      # @return [Array<SandboxHandle>]
       def list_with(labels: {})
         opts = {"labels" => stringify(labels)}
-        Native::Sandbox.list_with(opts).map { |info| SandboxInfo.new(info) }
+        Native::Sandbox.list_with(opts).map { |h| SandboxHandle.new(h) }
       end
 
       # Remove a (stopped) sandbox by name.
@@ -517,48 +595,46 @@ module Microsandbox
       LogStream.new(@native.log_stream(opts))
     end
 
-    # Gracefully stop the sandbox (and wait for it to terminate).
-    # @param timeout [Numeric, nil] seconds to wait before SIGKILL
+    # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default) and
+    # wait for it to terminate. For a custom timeout or fire-and-return
+    # `request_*` control, fetch a {SandboxHandle} via {Sandbox.get}.
     # @return [nil]
-    def stop(timeout: nil)
-      @native.stop(timeout && coerce_duration(timeout, "timeout"))
+    def stop
+      @native.stop
       nil
+    end
+
+    # Gracefully stop, then wait for the process to exit.
+    # @return [ExitStatus]
+    def stop_and_wait
+      ExitStatus.new(@native.stop_and_wait)
     end
 
     # Force-kill the sandbox (SIGKILL).
-    # @param timeout [Numeric, nil] seconds to wait
     # @return [nil]
-    def kill(timeout: nil)
-      @native.kill(timeout && coerce_duration(timeout, "timeout"))
+    def kill
+      @native.kill
       nil
     end
 
-    # Send the graceful-shutdown request and return immediately, without waiting
-    # for the sandbox to terminate. Pair with {#wait_until_stopped}.
+    # Trigger a graceful drain (SIGUSR1).
     # @return [nil]
-    def request_stop
-      @native.request_stop
+    def drain
+      @native.drain
       nil
     end
 
-    # Send the force-kill request and return immediately, without waiting.
-    # @return [nil]
-    def request_kill
-      @native.request_kill
-      nil
+    # Wait for the sandbox process to exit.
+    # @return [ExitStatus]
+    def wait
+      ExitStatus.new(@native.wait)
     end
 
-    # Request a graceful drain and return immediately, without waiting.
-    # @return [nil]
-    def request_drain
-      @native.request_drain
-      nil
-    end
-
-    # Block until the sandbox is observed in a terminal (non-running) state.
-    # @return [SandboxStopResult]
-    def wait_until_stopped
-      SandboxStopResult.new(@native.wait_until_stopped)
+    # The live status, fetched from the backend (a round-trip per call).
+    # @return [Symbol] :created, :starting, :running, :draining, :paused,
+    #   :stopped, or :crashed
+    def status
+      @native.status.to_sym
     end
 
     # @return [Boolean] whether this handle owns the sandbox process lifecycle

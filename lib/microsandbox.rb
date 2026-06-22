@@ -78,6 +78,11 @@ module Microsandbox
     # @return [nil]
     def ensure_runtime!
       return if @runtime_ready
+      # A cloud backend has no local msb/libkrunfw runtime to provision: skip the
+      # presence check and the first-use download entirely. Resolving the kind
+      # uses the same lazy env/profile/config ladder every operation already
+      # consults, so this adds no work for local hosts (the common case).
+      return if default_backend_kind == :cloud
       if installed?
         @runtime_ready = true
         return
@@ -102,6 +107,62 @@ module Microsandbox
     # @return [void]
     def runtime_path=(path)
       Native.set_runtime_msb_path(path.to_s)
+    end
+
+    # Override the `libkrunfw` shared-library path (SDK tier of the resolver,
+    # below the `MSB_LIBKRUNFW_PATH` environment variable). Process-level and
+    # set-once: a second call is silently ignored, and the env var still wins.
+    # Mirrors {runtime_path=} for libkrunfw.
+    # @param path [String]
+    # @return [void]
+    def libkrunfw_path=(path)
+      Native.set_runtime_libkrunfw_path(path.to_s)
+    end
+
+    # Install a process-wide default backend (v0.5.8 backend routing). Without a
+    # call to this, operations use a local libkrun backend; the env/profile
+    # ladder (`MSB_BACKEND`, `MSB_API_URL`+`MSB_API_KEY`, `MSB_PROFILE`,
+    # `~/.microsandbox/config.json`) is resolved lazily on first use. Call once
+    # at startup, before any sandbox operations.
+    #
+    # @param kind ["local","cloud", Symbol] backend kind
+    # @param url [String, nil] cloud control-plane URL (cloud, unless `profile:`)
+    # @param api_key [String, nil] cloud API key (cloud, unless `profile:`)
+    # @param profile [String, nil] named profile from `~/.microsandbox/config.json`
+    # @return [void]
+    def set_default_backend(kind, url: nil, api_key: nil, profile: nil)
+      Native.set_default_backend(kind.to_s, url&.to_s, api_key&.to_s, profile&.to_s)
+    end
+
+    # Run the given block with a temporary default backend, restoring the
+    # previous one afterward (even on error). NOTE: the swap is process-wide
+    # while the block runs, not fiber/thread-local — concurrent threads observe
+    # the temporary backend. It is also NOT safe to call from multiple threads
+    # at once: two interleaved `with_backend` calls can restore each other's
+    # saved backend out of order and leave a temporary backend installed
+    # permanently. Use it only when no other thread is changing the backend, and
+    # avoid calling {set_default_backend} inside the block (the restore on exit
+    # would overwrite that change). Mirrors the official SDKs' scoped-backend helper.
+    #
+    # @param kind ["local","cloud", Symbol]
+    # @param url [String, nil]
+    # @param api_key [String, nil]
+    # @param profile [String, nil]
+    # @yield with the temporary backend installed
+    # @return [Object] the block's return value
+    def with_backend(kind, url: nil, api_key: nil, profile: nil)
+      token = Native.push_default_backend(kind.to_s, url&.to_s, api_key&.to_s, profile&.to_s)
+      begin
+        yield
+      ensure
+        Native.pop_default_backend(token)
+      end
+    end
+
+    # @return [Symbol] the active default backend kind, :local or :cloud.
+    #   The first call resolves the env/profile/config ladder.
+    def default_backend_kind
+      Native.default_backend_kind.to_sym
     end
 
     # Latest resource-usage snapshot for every running sandbox, keyed by name.

@@ -11,7 +11,11 @@
 # `paths` overrides any dependency whose name + version matches a crate found at
 # the listed path. Paths are relative to this gem's root.
 
+# NOTE: as of upstream v0.5.8 the core `microsandbox` crate moved from
+# `crates/microsandbox` to `sdk/rust` (PR #989); `microsandbox-network` stayed at
+# `crates/network`. Cargo's `paths` override matches by package name, not path, so
+# only the directory below needs to be correct for the override to take effect.
 paths = [
-  "../microsandbox/crates/microsandbox",
+  "../microsandbox/sdk/rust",
   "../microsandbox/crates/network",
 ]

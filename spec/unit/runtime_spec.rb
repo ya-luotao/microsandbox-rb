@@ -33,9 +33,28 @@ RSpec.describe "Microsandbox runtime helpers" do
     end
   end
 
+  describe ".libkrunfw_path=" do
+    it "forwards the stringified path to the native set-once setter" do
+      # Stub the native setter so we (a) actually verify the binding forwards,
+      # and (b) never consume the real process-wide set-once OnceLock — it has no
+      # getter and cannot be restored, so touching it would leak into a combined
+      # unit+integration run. Asserting the assignment's value would be a Ruby
+      # tautology (an assignment evaluates to its RHS regardless of the setter),
+      # so assert the forwarded native call instead.
+      allow(Microsandbox::Native).to receive(:set_runtime_libkrunfw_path)
+      Microsandbox.libkrunfw_path = "/custom/path/to/libkrunfw.dylib"
+      expect(Microsandbox::Native).to have_received(:set_runtime_libkrunfw_path)
+        .with("/custom/path/to/libkrunfw.dylib")
+    end
+  end
+
   describe "Native module" do
     it "exposes the expected module functions" do
-      %i[version install installed? set_runtime_msb_path resolved_msb_path].each do |m|
+      %i[
+        version install installed? set_runtime_msb_path set_runtime_libkrunfw_path
+        resolved_msb_path set_default_backend push_default_backend pop_default_backend
+        default_backend_kind
+      ].each do |m|
         expect(Microsandbox::Native).to respond_to(m)
       end
     end

@@ -209,27 +209,36 @@ impl Sandbox {
         Ok(Sandbox::from_inner(inner))
     }
 
-    /// Lightweight metadata for a sandbox by name (running or not).
-    fn get(name: String) -> Result<RHash, Error> {
+    /// A controllable handle for a sandbox by name (running or not). Carries
+    /// metadata accessors and the full lifecycle surface (see `SbHandle`).
+    fn get(name: String) -> Result<SbHandle, Error> {
         let handle = block_on(microsandbox::Sandbox::get(&name)).map_err(error::to_ruby)?;
-        Ok(handle_to_hash(&handle))
+        Ok(SbHandle::from_inner(handle))
     }
 
-    /// All sandboxes as metadata hashes.
+    /// All sandboxes as controllable handles.
     fn list() -> Result<RArray, Error> {
         let handles = block_on(microsandbox::Sandbox::list()).map_err(error::to_ruby)?;
-        rhash_array(handles.iter().map(handle_to_hash))
+        let arr = ruby().ary_new();
+        for h in handles {
+            arr.push(SbHandle::from_inner(h))?;
+        }
+        Ok(arr)
     }
 
-    /// Sandboxes filtered by required `key=value` labels (AND-matched). `opts`
-    /// carries a string→string `labels` map.
+    /// Sandboxes filtered by required `key=value` labels (AND-matched), as
+    /// controllable handles. `opts` carries a string→string `labels` map.
     fn list_with(opts: RHash) -> Result<RArray, Error> {
         let mut filter = SandboxFilter::new();
         for (k, v) in conv::opt_string_map(opts, "labels")? {
             filter = filter.label(k, v);
         }
         let handles = block_on(microsandbox::Sandbox::list_with(filter)).map_err(error::to_ruby)?;
-        rhash_array(handles.iter().map(handle_to_hash))
+        let arr = ruby().ary_new();
+        for h in handles {
+            arr.push(SbHandle::from_inner(h))?;
+        }
+        Ok(arr)
     }
 
     /// Remove a (stopped) sandbox by name.
@@ -286,44 +295,46 @@ impl Sandbox {
         Ok(ExecHandle::from_core(handle))
     }
 
-    /// Graceful stop (+ wait). `timeout` is optional seconds.
-    fn stop(&self, timeout: Option<f64>) -> Result<(), Error> {
-        match timeout {
-            Some(secs) => block_on(self.inner.stop_with_timeout(Duration::from_secs_f64(secs))),
-            None => block_on(self.inner.stop()),
-        }
+    /// Graceful stop. Mirrors the official SDKs: the live handle routes through
+    /// a freshly fetched `SandboxHandle::stop` (SIGTERM→SIGKILL escalation with
+    /// a 10s default). Fine-grained control — a custom timeout or fire-and-
+    /// return `request_*` — lives on `SandboxHandle`, obtained via `Sandbox.get`.
+    fn stop(&self) -> Result<(), Error> {
+        let name = self.inner.name().to_string();
+        block_on(async move {
+            let handle = microsandbox::sandbox::Sandbox::get(&name).await?;
+            handle.stop().await
+        })
         .map_err(error::to_ruby)
     }
 
-    /// Force kill (SIGKILL). `timeout` is optional seconds.
-    fn kill(&self, timeout: Option<f64>) -> Result<(), Error> {
-        match timeout {
-            Some(secs) => block_on(self.inner.kill_with_timeout(Duration::from_secs_f64(secs))),
-            None => block_on(self.inner.kill()),
-        }
-        .map_err(error::to_ruby)
+    /// Graceful stop, then wait for the process to exit. Returns an exit-status
+    /// Hash (`exit_code`, `success`). Local backend only.
+    fn stop_and_wait(&self) -> Result<RHash, Error> {
+        let status = block_on(self.inner.stop_and_wait()).map_err(error::to_ruby)?;
+        Ok(exit_status_to_hash(status))
     }
 
-    /// Send the graceful-shutdown request and return without waiting.
-    fn request_stop(&self) -> Result<(), Error> {
-        block_on(self.inner.request_stop()).map_err(error::to_ruby)
+    /// Force kill (SIGKILL).
+    fn kill(&self) -> Result<(), Error> {
+        block_on(self.inner.kill()).map_err(error::to_ruby)
     }
 
-    /// Send the force-kill request and return without waiting.
-    fn request_kill(&self) -> Result<(), Error> {
-        block_on(self.inner.request_kill()).map_err(error::to_ruby)
+    /// Trigger a graceful drain (SIGUSR1 on local).
+    fn drain(&self) -> Result<(), Error> {
+        block_on(self.inner.drain()).map_err(error::to_ruby)
     }
 
-    /// Send the drain request and return without waiting.
-    fn request_drain(&self) -> Result<(), Error> {
-        block_on(self.inner.request_drain()).map_err(error::to_ruby)
+    /// Wait for the process to exit. Returns an exit-status Hash. Local only.
+    fn wait(&self) -> Result<RHash, Error> {
+        let status = block_on(self.inner.wait()).map_err(error::to_ruby)?;
+        Ok(exit_status_to_hash(status))
     }
 
-    /// Block until the sandbox is observed in a terminal state; returns a
-    /// stop-result Hash (name, status, exit_code, signal, observed_at_ms, source).
-    fn wait_until_stopped(&self) -> Result<RHash, Error> {
-        let result = block_on(self.inner.wait_until_stopped()).map_err(error::to_ruby)?;
-        Ok(stop_result_to_hash(&result))
+    /// Live status fetched from the backend (a round-trip per call).
+    fn status(&self) -> Result<String, Error> {
+        let status = block_on(self.inner.status()).map_err(error::to_ruby)?;
+        Ok(sandbox_status_str(status).to_string())
     }
 
     /// Whether this handle owns the sandbox process lifecycle (a synchronous,
@@ -1203,13 +1214,28 @@ pub(crate) fn metrics_to_hash(m: &SandboxMetrics) -> RHash {
 }
 
 fn sandbox_status_str(status: SandboxStatus) -> &'static str {
+    // Lowercased `Debug` names, matching the official SDKs' `format!("{:?}")`.
+    // `Created`/`Starting` are new in v0.5.8 (cloud-only today). The match is
+    // intentionally exhaustive — no wildcard — so a future upstream variant
+    // surfaces as a compile error rather than a silent fallback.
     match status {
+        SandboxStatus::Created => "created",
+        SandboxStatus::Starting => "starting",
         SandboxStatus::Running => "running",
         SandboxStatus::Draining => "draining",
         SandboxStatus::Paused => "paused",
         SandboxStatus::Stopped => "stopped",
         SandboxStatus::Crashed => "crashed",
     }
+}
+
+/// A `std::process::ExitStatus` as a Ruby Hash: `exit_code` (Integer or nil) and
+/// `success` (Boolean). Returned by the live `Sandbox#wait` / `#stop_and_wait`.
+fn exit_status_to_hash(status: std::process::ExitStatus) -> RHash {
+    let hash = ruby().hash_new();
+    let _ = hash.aset("exit_code", status.code());
+    let _ = hash.aset("success", status.success());
+    hash
 }
 
 fn stop_result_to_hash(result: &SandboxStopResult) -> RHash {
@@ -1223,19 +1249,85 @@ fn stop_result_to_hash(result: &SandboxStopResult) -> RHash {
     hash
 }
 
-fn handle_to_hash(handle: &SandboxHandle) -> RHash {
-    let hash = ruby().hash_new();
-    let _ = hash.aset("name", handle.name().to_string());
-    let _ = hash.aset("status", sandbox_status_str(handle.status()));
-    let _ = hash.aset(
-        "created_at_ms",
-        handle.created_at().map(|dt| dt.timestamp_millis()),
-    );
-    let _ = hash.aset(
-        "updated_at_ms",
-        handle.updated_at().map(|dt| dt.timestamp_millis()),
-    );
-    hash
+//--------------------------------------------------------------------------------------------------
+// SandboxHandle — the controllable lightweight handle
+//--------------------------------------------------------------------------------------------------
+
+/// Wraps a core `microsandbox::sandbox::SandboxHandle` (returned by
+/// `Sandbox.get`/`list`/`list_with`). Carries metadata accessors plus the rich
+/// lifecycle surface that moved off the live `Sandbox` in v0.5.8 — mirroring the
+/// official Python (`PySandboxHandle`) and Node (`SandboxHandle`) SDKs. Status is
+/// a synchronous snapshot read off the handle (no round-trip).
+#[magnus::wrap(class = "Microsandbox::Native::SandboxHandle", free_immediately, size)]
+pub struct SbHandle {
+    inner: SandboxHandle,
+}
+
+impl SbHandle {
+    fn from_inner(inner: SandboxHandle) -> Self {
+        Self { inner }
+    }
+
+    fn name(&self) -> String {
+        self.inner.name().to_string()
+    }
+
+    /// Status snapshot captured when the handle was fetched (synchronous).
+    fn status(&self) -> String {
+        sandbox_status_str(self.inner.status_snapshot()).to_string()
+    }
+
+    fn created_at_ms(&self) -> Option<i64> {
+        self.inner.created_at().map(|dt| dt.timestamp_millis())
+    }
+
+    fn updated_at_ms(&self) -> Option<i64> {
+        self.inner.updated_at().map(|dt| dt.timestamp_millis())
+    }
+
+    /// Graceful stop (SIGTERM→SIGKILL escalation, 10s default) and wait.
+    fn stop(&self) -> Result<(), Error> {
+        block_on(self.inner.stop()).map_err(error::to_ruby)
+    }
+
+    /// Graceful stop with a custom escalation timeout (seconds).
+    fn stop_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        block_on(self.inner.stop_with_timeout(Duration::from_secs_f64(secs)))
+            .map_err(error::to_ruby)
+    }
+
+    /// Force kill (SIGKILL) and wait.
+    fn kill(&self) -> Result<(), Error> {
+        block_on(self.inner.kill()).map_err(error::to_ruby)
+    }
+
+    /// Force kill, waiting up to `secs` for the process to disappear.
+    fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        block_on(self.inner.kill_with_timeout(Duration::from_secs_f64(secs)))
+            .map_err(error::to_ruby)
+    }
+
+    /// Send the graceful-shutdown request and return without waiting.
+    fn request_stop(&self) -> Result<(), Error> {
+        block_on(self.inner.request_stop()).map_err(error::to_ruby)
+    }
+
+    /// Send the force-kill request and return without waiting.
+    fn request_kill(&self) -> Result<(), Error> {
+        block_on(self.inner.request_kill()).map_err(error::to_ruby)
+    }
+
+    /// Send the drain request (SIGUSR1) and return without waiting.
+    fn request_drain(&self) -> Result<(), Error> {
+        block_on(self.inner.request_drain()).map_err(error::to_ruby)
+    }
+
+    /// Block until the sandbox reaches a terminal state; returns a stop-result
+    /// Hash (name, status, exit_code, signal, observed_at_ms, source).
+    fn wait_until_stopped(&self) -> Result<RHash, Error> {
+        let result = block_on(self.inner.wait_until_stopped()).map_err(error::to_ruby)?;
+        Ok(stop_result_to_hash(&result))
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1336,15 +1428,12 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("shell", method!(Sandbox::shell, 2))?;
     class.define_method("exec_stream", method!(Sandbox::exec_stream, 3))?;
     class.define_method("shell_stream", method!(Sandbox::shell_stream, 2))?;
-    class.define_method("stop", method!(Sandbox::stop, 1))?;
-    class.define_method("kill", method!(Sandbox::kill, 1))?;
-    class.define_method("request_stop", method!(Sandbox::request_stop, 0))?;
-    class.define_method("request_kill", method!(Sandbox::request_kill, 0))?;
-    class.define_method("request_drain", method!(Sandbox::request_drain, 0))?;
-    class.define_method(
-        "wait_until_stopped",
-        method!(Sandbox::wait_until_stopped, 0),
-    )?;
+    class.define_method("stop", method!(Sandbox::stop, 0))?;
+    class.define_method("stop_and_wait", method!(Sandbox::stop_and_wait, 0))?;
+    class.define_method("kill", method!(Sandbox::kill, 0))?;
+    class.define_method("drain", method!(Sandbox::drain, 0))?;
+    class.define_method("wait", method!(Sandbox::wait, 0))?;
+    class.define_method("status", method!(Sandbox::status, 0))?;
     class.define_method("owns_lifecycle", method!(Sandbox::owns_lifecycle, 0))?;
     class.define_method("detach", method!(Sandbox::detach, 0))?;
     class.define_method("metrics", method!(Sandbox::metrics, 0))?;
@@ -1374,6 +1463,23 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
 
     class.define_method("attach", method!(Sandbox::attach, 3))?;
     class.define_method("attach_shell", method!(Sandbox::attach_shell, 0))?;
+
+    let handle = native.define_class("SandboxHandle", ruby.class_object())?;
+    handle.define_method("name", method!(SbHandle::name, 0))?;
+    handle.define_method("status", method!(SbHandle::status, 0))?;
+    handle.define_method("created_at_ms", method!(SbHandle::created_at_ms, 0))?;
+    handle.define_method("updated_at_ms", method!(SbHandle::updated_at_ms, 0))?;
+    handle.define_method("stop", method!(SbHandle::stop, 0))?;
+    handle.define_method("stop_with_timeout", method!(SbHandle::stop_with_timeout, 1))?;
+    handle.define_method("kill", method!(SbHandle::kill, 0))?;
+    handle.define_method("kill_with_timeout", method!(SbHandle::kill_with_timeout, 1))?;
+    handle.define_method("request_stop", method!(SbHandle::request_stop, 0))?;
+    handle.define_method("request_kill", method!(SbHandle::request_kill, 0))?;
+    handle.define_method("request_drain", method!(SbHandle::request_drain, 0))?;
+    handle.define_method(
+        "wait_until_stopped",
+        method!(SbHandle::wait_until_stopped, 0),
+    )?;
 
     Ok(())
 }

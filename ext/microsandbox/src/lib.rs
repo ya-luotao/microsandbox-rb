@@ -9,6 +9,7 @@
 //! surface is the pure-Ruby layer in `lib/microsandbox/`.
 
 mod agent;
+mod backend;
 mod conv;
 mod error;
 mod exec;
@@ -31,8 +32,9 @@ fn version() -> String {
 /// Ruby Hash. Mirrors the official `all_sandbox_metrics` / `allSandboxMetrics`
 /// helpers (Python/Node/Go).
 fn all_sandbox_metrics() -> Result<RHash, Error> {
-    let map =
-        runtime::block_on(microsandbox::sandbox::all_sandbox_metrics()).map_err(error::to_ruby)?;
+    let map = backend::with_local_backend(async |local| {
+        microsandbox::sandbox::all_sandbox_metrics(local).await
+    })?;
     let hash = runtime::ruby().hash_new();
     for (name, metrics) in &map {
         hash.aset(name.as_str(), sandbox::metrics_to_hash(metrics))?;
@@ -55,9 +57,25 @@ fn set_runtime_msb_path(path: String) {
     microsandbox::config::set_sdk_msb_path(path);
 }
 
-/// The currently-resolved `msb` runtime path.
+/// Override the resolved `libkrunfw` path (SDK tier of the resolver). Set-once
+/// per process; the `MSB_LIBKRUNFW_PATH` env var still takes precedence. Mirrors
+/// `set_runtime_msb_path` for the libkrunfw shared library.
+fn set_runtime_libkrunfw_path(path: String) {
+    microsandbox::config::set_sdk_libkrunfw_path(path);
+}
+
+/// The currently-resolved `msb` runtime path. Synchronous (filesystem probes,
+/// no async) — runs on the Ruby thread; resolves the path from the local
+/// backend's config.
 fn resolved_msb_path() -> Result<String, Error> {
-    let path = microsandbox::config::resolve_msb_path().map_err(error::to_ruby)?;
+    let backend = microsandbox::default_backend();
+    let local = backend.as_local().ok_or_else(|| {
+        error::to_ruby(microsandbox::MicrosandboxError::Unsupported {
+            feature: "resolved_msb_path requires a local backend".into(),
+            available_when: "with the local backend".into(),
+        })
+    })?;
+    let path = microsandbox::config::resolve_msb_path(local.config()).map_err(error::to_ruby)?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -72,9 +90,14 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     native.define_singleton_method("install", function!(install, 0))?;
     native.define_singleton_method("installed?", function!(is_installed, 0))?;
     native.define_singleton_method("set_runtime_msb_path", function!(set_runtime_msb_path, 1))?;
+    native.define_singleton_method(
+        "set_runtime_libkrunfw_path",
+        function!(set_runtime_libkrunfw_path, 1),
+    )?;
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
     native.define_singleton_method("all_sandbox_metrics", function!(all_sandbox_metrics, 0))?;
 
+    backend::define(ruby, &native)?;
     sandbox::define(ruby, &native)?;
     exec::define(ruby, &native)?;
     stream::define(ruby, &native)?;

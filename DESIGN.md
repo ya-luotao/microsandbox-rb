@@ -126,9 +126,13 @@ git. The override must never be committed — it would break container builds.
 ## Implemented surface (v1) vs roadmap
 
 **Implemented:** sandbox lifecycle (`create`/`start`/`get`/`list`/`list_with`/
-`remove`/`stop`/`kill`, the async `request_stop`/`request_kill`/`request_drain`/
-`wait_until_stopped` (→ `SandboxStopResult`) / `detach` / `owns_lifecycle?`
-controls, block form), `exec`/`shell` with collected `ExecOutput`,
+`remove`; the live `Sandbox` exposes `stop`/`stop_and_wait`/`kill`/`drain`/
+`wait` (→ `ExitStatus`) / `status` / `detach` / `owns_lifecycle?`, while the
+controllable `SandboxHandle` from `get`/`list` carries the fine-grained
+`stop_with_timeout`/`request_stop`/`request_kill`/`request_drain`/
+`wait_until_stopped` (→ `SandboxStopResult`) controls — the v0.5.8 live-vs-handle
+split that mirrors the official SDKs), backend routing (`set_default_backend`/
+`with_backend`/`default_backend_kind`), block form), `exec`/`shell` with collected `ExecOutput`,
 **streaming** `exec_stream`/`shell_stream` (`ExecHandle` is `Enumerable` over
 `ExecEvent`s, with stdin sink + signal/kill/resize), the full guest filesystem
 API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…), `metrics`,
