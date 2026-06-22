@@ -60,7 +60,9 @@ pub fn runtime() -> &'static Runtime {
         return unsafe { &*ptr };
     }
 
-    let _guard = RUNTIME_LOCK.lock().expect("microsandbox: runtime lock poisoned");
+    let _guard = RUNTIME_LOCK
+        .lock()
+        .expect("microsandbox: runtime lock poisoned");
     // Re-check under the lock (another thread may have just built it).
     let ptr = RUNTIME_PTR.load(Ordering::Acquire);
     if !ptr.is_null() && RUNTIME_PID.load(Ordering::Acquire) == cur {
