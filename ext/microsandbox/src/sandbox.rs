@@ -127,7 +127,11 @@ impl Sandbox {
                 }
             }
             b = b.volume(guest, move |m| {
-                let mut m = if kind == "named" { m.named(source) } else { m.bind(source) };
+                let mut m = if kind == "named" {
+                    m.named(source)
+                } else {
+                    m.bind(source)
+                };
                 for opt in &mount_opts {
                     m = match opt.as_str() {
                         "ro" | "readonly" => m.readonly(),
