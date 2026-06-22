@@ -6,6 +6,21 @@ upstream microsandbox runtime.
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-06-23
+
+### Fixed
+
+- **fork-safe tokio runtime.** The process-wide multi-threaded runtime is now
+  tagged with the pid it was built under and rebuilt automatically after a
+  `fork(2)`. A forking host (Solid Queue / Resque job servers, clustered Puma)
+  used to inherit a runtime whose worker + I/O-driver threads do not survive the
+  fork — `block_on` could still drive the calling thread, but background I/O (e.g.
+  the agent-relay connection that streams `exec_stream` output) never ran, so
+  long-lived operations stalled or the connection dropped mid-stream in the child.
+  `runtime()` now detects the pid change and builds a fresh runtime for the child
+  (the stale one is leaked, never dropped — dropping a runtime whose threads
+  vanished across fork can hang on the shutdown join). No API change.
+
 ## [0.5.11] - 2026-06-23
 
 ### Added

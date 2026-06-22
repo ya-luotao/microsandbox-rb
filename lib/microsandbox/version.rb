@@ -5,5 +5,5 @@ module Microsandbox
   # the pinned core-crate tag); the patch segment advances for gem-only revisions
   # that add bindings atop the same core. Must equal the native ext's Cargo crate
   # version (`Native.version`), enforced by spec/unit/version_spec.rb.
-  VERSION = "0.5.11"
+  VERSION = "0.5.12"
 end
