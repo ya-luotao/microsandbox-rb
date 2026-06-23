@@ -185,6 +185,19 @@ RSpec.describe "streaming exec, images, volumes" do
       )
     end
 
+    it "accepts the legacy \"rw\" token as a no-op (the read-write default)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        volumes: {"/repo" => {bind: "/repo", options: %w[ro rw]}}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("volumes" => [
+          {"guest" => "/repo", "kind" => "bind", "source" => "/repo", "readonly" => true}
+        ])
+      )
+    end
+
     it "raises on an unknown legacy mount option instead of dropping it" do
       expect do
         Microsandbox::Sandbox.create(

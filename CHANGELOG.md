@@ -46,7 +46,9 @@ behavior corrections (see **Changed**).
   per-secret `on_violation:`; plus a sandbox-level `on_secret_violation:`. The
   block-variant actions accept both the underscore form (`block_and_log`) and the
   upstream kebab-case wire spelling (`block-and-log`) used by the CLI / Go SDK /
-  config files, so a policy copied from another SDK ports over unchanged.
+  config files; the bare `"passthrough"` string (passthrough-all-hosts, as in the
+  Python/Node SDKs) is also accepted, so a policy copied from another SDK ports
+  over unchanged.
 - **Network configuration** — `Sandbox.create` now accepts `dns:` (nameservers/
   rebind_protection/query_timeout_ms), `tls:` (interception tuning incl. bypass
   patterns, intercepted ports, block_quic, and CA cert/key paths), `ipv4_pool:`/

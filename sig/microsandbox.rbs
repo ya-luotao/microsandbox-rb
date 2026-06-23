@@ -208,15 +208,15 @@ module Microsandbox
 
     def name: () -> String
     def exec: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
-               ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: String?,
+               ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :null)?,
                ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
     def shell: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
-                ?timeout: Numeric?, ?tty: bool, ?stdin: String?, ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
+                ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :null)?, ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
     def exec_stream: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
-                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe)?,
+                      ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe | :null)?,
                       ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def shell_stream: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
-                       ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe)?, ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
+                       ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe | :null)?, ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def attach: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
                  ?env: Hash[untyped, untyped]?, ?detach_keys: String?,
                  ?rlimits: Hash[untyped, untyped]?) -> Integer
@@ -280,7 +280,7 @@ module Microsandbox
   end
 
   class ExecStdin
-    def write: (untyped data) -> self
+    def write: (String data) -> self
     def close: () -> nil
   end
 

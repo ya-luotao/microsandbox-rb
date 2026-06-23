@@ -61,6 +61,14 @@ RSpec.describe Microsandbox::Sandbox do
         .with("box", hash_including("image" => "python", "cpus" => 2))
     end
 
+    it "create_with_progress rejects a block (which would silently leak the sandbox)" do
+      allow(Microsandbox::Native::Sandbox).to receive(:create_with_progress)
+      expect do
+        Microsandbox::Sandbox.create_with_progress("box", image: "python") { |sb| sb }
+      end.to raise_error(ArgumentError, /takes no block/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create_with_progress)
+    end
+
     it "flattens registry_auth into registry_username/registry_password" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
@@ -195,6 +203,21 @@ RSpec.describe Microsandbox::Sandbox do
         hash_including(
           "secrets" => [hash_including("on_violation" => "block_and_terminate")],
           "on_secret_violation" => "block_and_log"
+        )
+      )
+    end
+
+    it "maps the bare \"passthrough\" string to passthrough-all-hosts (SDK parity)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        secrets: [{env: "K", value: "v", hosts: ["api.example.com"], on_violation: "passthrough"}],
+        on_secret_violation: "passthrough"
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "secrets" => [hash_including("on_violation" => {"passthrough_all_hosts" => true})],
+          "on_secret_violation" => {"passthrough_all_hosts" => true}
         )
       )
     end

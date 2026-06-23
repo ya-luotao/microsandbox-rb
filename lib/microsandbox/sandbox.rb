@@ -280,15 +280,16 @@ module Microsandbox
       #   `placeholder:`, `require_tls:`, injection toggles `inject_headers:` /
       #   `inject_basic_auth:` / `inject_query:` / `inject_body:`, and `on_violation:`.
       # @param on_secret_violation [String, Symbol, Hash, nil] sandbox-wide
-      #   secret-leak policy: "block", "block_and_log", "block_and_terminate", or a
-      #   Hash `{ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }`
+      #   secret-leak policy: "block", "block_and_log", "block_and_terminate",
+      #   "passthrough" (passthrough-all-hosts), or a Hash
+      #   `{ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }`
       # @param detached [Boolean] keep running after this process exits
       # @param replace [Boolean] replace an existing sandbox with the same name
       # @param replace_with_timeout [Numeric, nil] replace, waiting up to N seconds
       # @yieldparam sandbox [Sandbox]
       # @return [Sandbox, Object] the sandbox, or the block's return value
       def create(name, **kwargs, &block)
-        opts = build_create_opts(name, **kwargs)
+        opts = build_create_opts(**kwargs)
         sandbox = new(Native::Sandbox.create(name.to_s, opts))
         return sandbox unless block_given?
 
@@ -310,14 +311,22 @@ module Microsandbox
       # `create_with_progress` / Node `createWithPullProgress`.
       # @return [PullSession]
       def create_with_progress(name, **kwargs)
-        opts = build_create_opts(name, **kwargs)
+        # Unlike {create}, this has no block form: the booted sandbox is reached
+        # via {PullSession#sandbox} (after iterating progress) and stopped by the
+        # caller. A block would be silently dropped — and the sandbox leaked — so
+        # reject it loudly rather than let a `create`-style block call misfire.
+        if block_given?
+          raise ArgumentError,
+            "create_with_progress takes no block; iterate the returned PullSession " \
+            "for progress, then call #sandbox and stop it when done"
+        end
+        opts = build_create_opts(**kwargs)
         PullSession.new(Native::Sandbox.create_with_progress(name.to_s, opts))
       end
 
       # @api private
       # Shared keyword-option builder for {create}/{create_with_progress}.
-      def build_create_opts(name,
-        image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
+      def build_create_opts(image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
         entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
@@ -372,7 +381,7 @@ module Microsandbox
         opts["ipv4_pool"] = ipv4_pool.to_s if ipv4_pool
         opts["ipv6_pool"] = ipv6_pool.to_s if ipv6_pool
         opts["max_connections"] = Integer(max_connections) if max_connections
-        opts["trust_host_cas"] = (trust_host_cas ? true : false) unless trust_host_cas.nil?
+        set_bool(opts, "trust_host_cas", trust_host_cas)
         opts["log_level"] = log_level.to_s if log_level
         opts["quiet_logs"] = true if quiet_logs
         opts["security"] = security.to_s if security
@@ -527,8 +536,7 @@ module Microsandbox
         # Booleans must honor an explicit `false` (to disable a default-on toggle),
         # so probe key presence rather than truthiness.
         %i[require_tls inject_headers inject_basic_auth inject_query inject_body].each do |k|
-          v = fetch_opt(spec, k)
-          out[k.to_s] = (v ? true : false) unless v.nil?
+          set_bool(out, k.to_s, fetch_opt(spec, k))
         end
         ov = spec[:on_violation] || spec["on_violation"]
         out["on_violation"] = normalize_violation(ov) if ov
@@ -542,6 +550,15 @@ module Microsandbox
         spec[sym.to_s]
       end
 
+      # Write a boolean option onto `out`, honoring an explicit `false` (to
+      # disable a default-on toggle) while leaving an absent (`nil`) value unset.
+      # Centralizes the "probe presence, not truthiness" rule for all the boolean
+      # toggles (require_tls/inject_*/verify_upstream/block_quic/rebind_protection/
+      # trust_host_cas) so a future toggle can't silently drop a `false`.
+      def set_bool(out, key, value)
+        out[key] = (value ? true : false) unless value.nil?
+      end
+
       # Normalize an `on_violation`/`on_secret_violation` spec for the native
       # layer: a String/Symbol block variant ("block"/"block_and_log"/
       # "block_and_terminate"), or a Hash describing a passthrough action
@@ -549,7 +566,14 @@ module Microsandbox
       def normalize_violation(spec)
         case spec
         when String, Symbol
-          normalize_violation_action(spec)
+          # The bare "passthrough" string maps to passthrough-all-hosts, matching
+          # the Python/Node SDKs (so a string-form policy copied from another SDK
+          # ports over unchanged); block variants stay as their action string.
+          if spec.to_s.strip.downcase.tr("-", "_") == "passthrough"
+            {"passthrough_all_hosts" => true}
+          else
+            normalize_violation_action(spec)
+          end
         when Hash
           out = {}
           ph = spec[:passthrough_hosts] || spec["passthrough_hosts"]
@@ -574,7 +598,7 @@ module Microsandbox
           raise ArgumentError,
             "unknown on_violation #{spec.inspect} (expected block, " \
             "block_and_log/block-and-log, block_and_terminate/block-and-terminate, " \
-            "or a Hash with :passthrough_hosts/:passthrough_host_patterns/:passthrough_all_hosts)"
+            "passthrough, or a Hash with :passthrough_hosts/:passthrough_host_patterns/:passthrough_all_hosts)"
         end
         action
       end
@@ -585,8 +609,7 @@ module Microsandbox
         out = {}
         ns = dns[:nameservers] || dns["nameservers"]
         out["nameservers"] = Array(ns).map(&:to_s) if ns
-        rp = fetch_opt(dns, :rebind_protection)
-        out["rebind_protection"] = (rp ? true : false) unless rp.nil?
+        set_bool(out, "rebind_protection", fetch_opt(dns, :rebind_protection))
         qt = dns[:query_timeout_ms] || dns["query_timeout_ms"]
         out["query_timeout_ms"] = Integer(qt) if qt
         out
@@ -598,12 +621,10 @@ module Microsandbox
         out = {}
         bypass = tls[:bypass] || tls["bypass"]
         out["bypass"] = Array(bypass).map(&:to_s) if bypass
-        vu = fetch_opt(tls, :verify_upstream)
-        out["verify_upstream"] = (vu ? true : false) unless vu.nil?
+        set_bool(out, "verify_upstream", fetch_opt(tls, :verify_upstream))
         ports = tls[:intercepted_ports] || tls["intercepted_ports"]
         out["intercepted_ports"] = Array(ports).map { |p| Integer(p) } if ports
-        bq = fetch_opt(tls, :block_quic)
-        out["block_quic"] = (bq ? true : false) unless bq.nil?
+        set_bool(out, "block_quic", fetch_opt(tls, :block_quic))
         %i[upstream_ca_cert intercept_ca_cert intercept_ca_key].each do |k|
           v = tls[k] || tls[k.to_s]
           out[k.to_s] = v.to_s if v
@@ -709,13 +730,18 @@ module Microsandbox
         Array(spec[:options] || spec["options"]).each do |opt|
           case opt.to_s
           when "ro", "readonly" then mount["readonly"] = true
+          # "rw" is read-write, the default — accepted as a no-op (the pre-0.7.0
+          # native validator and the upstream wire form both treat it that way).
+          # Dropping it would break a previously-valid `options:` array, which the
+          # CHANGELOG promises is still honored.
+          when "rw" then nil
           when "noexec" then mount["noexec"] = true
           when "nosuid" then mount["nosuid"] = true
           when "nodev" then mount["nodev"] = true
           else
             raise ArgumentError,
               "unknown mount option #{opt.inspect} in options: — use " \
-              "ro/readonly, noexec, nosuid, or nodev (or the matching boolean keys)"
+              "ro/readonly, rw, noexec, nosuid, or nodev (or the matching boolean keys)"
           end
         end
       end

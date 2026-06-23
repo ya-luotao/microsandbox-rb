@@ -18,6 +18,14 @@ RSpec.describe "raw agent client" do
       expect { Microsandbox::AgentClient.connect_sandbox("nope", timeout: Float::INFINITY) }
         .to raise_error(Microsandbox::Error, /timeout/)
     end
+
+    it "rejects a finite-but-out-of-range timeout instead of panicking" do
+      # Float::MAX is finite and positive, so it passes the finite/non-negative
+      # guard but overflows Duration::from_secs_f64; the binding must surface a
+      # clean Microsandbox::Error (via try_from_secs_f64), not a Rust panic.
+      expect { Microsandbox::AgentClient.connect_sandbox("nope", timeout: Float::MAX) }
+        .to raise_error(Microsandbox::Error, /timeout/)
+    end
   end
 
   describe Microsandbox::AgentFrame do

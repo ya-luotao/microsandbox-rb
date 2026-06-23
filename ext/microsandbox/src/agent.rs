@@ -131,10 +131,14 @@ impl AgentClient {
 ///   - `0` → an explicit zero deadline (fail fast), *not* "use the default"
 ///   - negative or non-finite (NaN/Inf) → a caller error (rather than being
 ///     silently swallowed into the default)
+///   - finite but out of `Duration` range (e.g. `Float::MAX`) → a caller error
+///     via `try_from_secs_f64`, rather than the panic `from_secs_f64` would raise
 fn dur(timeout: Option<f64>) -> Result<Option<Duration>, Error> {
     match timeout {
         None => Ok(None),
-        Some(t) if t.is_finite() && t >= 0.0 => Ok(Some(Duration::from_secs_f64(t))),
+        Some(t) if t.is_finite() && t >= 0.0 => Duration::try_from_secs_f64(t)
+            .map(Some)
+            .map_err(|e| error::base_error(format!("timeout {t} seconds is out of range: {e}"))),
         Some(t) => Err(error::base_error(format!(
             "timeout must be a non-negative, finite number of seconds (got {t})"
         ))),
