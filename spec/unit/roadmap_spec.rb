@@ -171,6 +171,29 @@ RSpec.describe "streaming exec, images, volumes" do
       end.to raise_error(ArgumentError, /:bind, :named, :tmpfs, or :disk/)
     end
 
+    it "translates the legacy options: array onto the native boolean flags" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        volumes: {"/repo" => {bind: "/repo", options: %w[ro noexec]}}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("volumes" => [
+          {"guest" => "/repo", "kind" => "bind", "source" => "/repo",
+           "readonly" => true, "noexec" => true}
+        ])
+      )
+    end
+
+    it "raises on an unknown legacy mount option instead of dropping it" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x",
+          volumes: {"/repo" => {bind: "/repo", options: %w[ro bogus]}}
+        )
+      end.to raise_error(ArgumentError, /unknown mount option "bogus"/)
+    end
+
     it "wraps exec_stream in an ExecHandle" do
       stream = instance_double(Microsandbox::Native::ExecHandle)
       allow(native).to receive(:exec_stream).and_return(stream)

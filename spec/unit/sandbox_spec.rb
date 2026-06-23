@@ -177,6 +177,36 @@ RSpec.describe Microsandbox::Sandbox do
       )
     end
 
+    it "rejects fstype: paired with an OCI image reference" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "python", fstype: "ext4")
+      end.to raise_error(ArgumentError, /fstype: only applies to a disk-image rootfs/)
+    end
+
+    it "accepts the upstream kebab-case violation spellings" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        secrets: [{env: "K", value: "v", hosts: ["api.example.com"],
+                   on_violation: "block-and-terminate"}],
+        on_secret_violation: "block-and-log"
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "secrets" => [hash_including("on_violation" => "block_and_terminate")],
+          "on_secret_violation" => "block_and_log"
+        )
+      )
+    end
+
+    it "raises on an unknown violation action string" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", on_secret_violation: "nope"
+        )
+      end.to raise_error(ArgumentError, /unknown on_violation "nope"/)
+    end
+
     it "normalizes a Hash init with args and env" do
       Microsandbox::Sandbox.create(
         "box", image: "x",

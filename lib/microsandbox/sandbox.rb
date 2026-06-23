@@ -336,6 +336,18 @@ module Microsandbox
           raise ArgumentError, "provide either image: or from_snapshot:, not both"
         end
         Microsandbox.ensure_runtime!
+        # `fstype:` names the inner filesystem of a disk-image rootfs, so it only
+        # applies when `image:` is a disk-image path (a local path ending in
+        # .raw/.qcow2/.vmdk). Routing an OCI ref (e.g. "python") through the
+        # disk-image builder would make the core treat it as a host disk path and
+        # fail at boot, so reject the combination up front instead of forwarding a
+        # value the native layer can't honour.
+        if fstype && !disk_image_rootfs?(image)
+          raise ArgumentError,
+            "fstype: only applies to a disk-image rootfs; image: must be a local " \
+            "path ending in .raw, .qcow2, or .vmdk (got #{image.inspect}). " \
+            "OCI references auto-detect their filesystem — drop fstype:."
+        end
         opts = {}
         opts["image"] = image.to_s if image
         opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
@@ -537,7 +549,7 @@ module Microsandbox
       def normalize_violation(spec)
         case spec
         when String, Symbol
-          spec.to_s
+          normalize_violation_action(spec)
         when Hash
           out = {}
           ph = spec[:passthrough_hosts] || spec["passthrough_hosts"]
@@ -549,6 +561,22 @@ module Microsandbox
         else
           raise ArgumentError, "on_violation must be a String or a Hash (got #{spec.inspect})"
         end
+      end
+
+      # Map a block-variant action onto the canonical underscore spelling the
+      # native layer expects. Also accepts the upstream kebab-case wire spellings
+      # ("block-and-log"/"block-and-terminate") used by the CLI, Go SDK, and
+      # sandbox config files, so a policy copied from another SDK ports over
+      # unchanged instead of being rejected.
+      def normalize_violation_action(spec)
+        action = spec.to_s.strip.downcase.tr("-", "_")
+        unless %w[block block_and_log block_and_terminate].include?(action)
+          raise ArgumentError,
+            "unknown on_violation #{spec.inspect} (expected block, " \
+            "block_and_log/block-and-log, block_and_terminate/block-and-terminate, " \
+            "or a Hash with :passthrough_hosts/:passthrough_host_patterns/:passthrough_all_hosts)"
+        end
+        action
       end
 
       # Normalize the `dns:` config Hash for the native layer.
@@ -591,6 +619,17 @@ module Microsandbox
           soft, hard = limit.is_a?(Array) ? [limit[0], limit[1]] : [limit, limit]
           [resource.to_s, Integer(soft), Integer(hard)]
         end
+      end
+
+      # True when `image` names a disk-image rootfs the way the core auto-detects
+      # one: a local-path-looking string (`/`, `./`, `../` prefix) whose extension
+      # is a recognized disk-image format. Mirrors the upstream
+      # `looks_like_local_path_text` + `DiskImageFormat::from_extension` so a bare
+      # OCI ref or a bind directory is not mistaken for a disk image.
+      def disk_image_rootfs?(image)
+        s = image.to_s
+        return false unless s.start_with?("/", "./", "../")
+        %w[raw qcow2 vmdk].include?(File.extname(s).delete_prefix(".").downcase)
       end
 
       # Normalize volumes (Hash of guest_path => spec) into per-mount string-keyed
@@ -653,10 +692,32 @@ module Microsandbox
         mount["noexec"] = true if spec[:noexec] || spec["noexec"]
         mount["nosuid"] = true if spec[:nosuid] || spec["nosuid"]
         mount["nodev"] = true if spec[:nodev] || spec["nodev"]
+        apply_legacy_mount_options(mount, spec)
         sv = spec[:stat_virtualization] || spec["stat_virtualization"]
         mount["stat_virtualization"] = sv.to_s if sv
         hp = spec[:host_permissions] || spec["host_permissions"]
         mount["host_permissions"] = hp.to_s if hp
+      end
+
+      # Translate the pre-0.7.0 `options:` array form (e.g. options: %w[ro noexec])
+      # onto the discrete boolean flags the native layer now consumes. Kept for
+      # backward compatibility with configs written against 0.5.11–0.6.0. Unknown
+      # tokens raise rather than being silently dropped: a mount requested
+      # read-only/noexec that quietly mounted read-write/executable would be a
+      # security regression, not a cosmetic one.
+      def apply_legacy_mount_options(mount, spec)
+        Array(spec[:options] || spec["options"]).each do |opt|
+          case opt.to_s
+          when "ro", "readonly" then mount["readonly"] = true
+          when "noexec" then mount["noexec"] = true
+          when "nosuid" then mount["nosuid"] = true
+          when "nodev" then mount["nodev"] = true
+          else
+            raise ArgumentError,
+              "unknown mount option #{opt.inspect} in options: — use " \
+              "ro/readonly, noexec, nosuid, or nodev (or the matching boolean keys)"
+          end
+        end
       end
 
       # Normalize a list of patches (each a Hash from the {Patch} factory, or a

@@ -43,16 +43,25 @@ behavior corrections (see **Changed**).
 - **Full secrets surface** — `secrets:` entries accept `hosts:` / `host_patterns:`
   (wildcards) allow-lists, `placeholder:`, `require_tls:`, injection toggles
   (`inject_headers:`/`inject_basic_auth:`/`inject_query:`/`inject_body:`), and
-  per-secret `on_violation:`; plus a sandbox-level `on_secret_violation:`.
+  per-secret `on_violation:`; plus a sandbox-level `on_secret_violation:`. The
+  block-variant actions accept both the underscore form (`block_and_log`) and the
+  upstream kebab-case wire spelling (`block-and-log`) used by the CLI / Go SDK /
+  config files, so a policy copied from another SDK ports over unchanged.
 - **Network configuration** — `Sandbox.create` now accepts `dns:` (nameservers/
   rebind_protection/query_timeout_ms), `tls:` (interception tuning incl. bypass
   patterns, intercepted ports, block_quic, and CA cert/key paths), `ipv4_pool:`/
   `ipv6_pool:`, `max_connections:`, and `trust_host_cas:`.
 - **Create options** — `init:`/`init_with` (hand guest PID 1 to an init system),
   `ephemeral:` (auto-remove state on terminal), and disk-image `fstype:`.
+  `fstype:` is rejected up front unless `image:` is a disk-image path (a local
+  path ending in `.raw`/`.qcow2`/`.vmdk`); pairing it with an OCI reference no
+  longer routes the ref through the disk-image builder and fails at boot.
 - **Full mount options** — `volumes:` now supports `{ tmpfs: }`, `{ disk:,
   format:, fstype: }`, and per-mount `stat_virtualization:`/`host_permissions:`
-  alongside the existing bind/named + ro/noexec/nosuid/nodev flags.
+  alongside the existing bind/named + ro/noexec/nosuid/nodev flags. The pre-0.7.0
+  `options: %w[ro noexec]` array form is still honored (translated onto the
+  boolean flags); an unrecognized token now raises rather than being silently
+  dropped, so a requested read-only/noexec mount can't quietly become writable.
 - **Snapshots** — `Snapshot.open`/`list_dir`/`reindex`, `SnapshotInfo#open`/
   `#remove`, and `SandboxHandle#snapshot`/`#snapshot_to`. `SnapshotInfo` now
   carries the full manifest (`image_manifest_digest`, `fstype`,
