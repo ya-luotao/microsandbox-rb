@@ -7,6 +7,7 @@ module Microsandbox
   def self.version: () -> String
   def self.runtime_version: () -> String
   def self.install: () -> nil
+  def self.setup: (?base_dir: String?, ?version: String?, ?force: bool, ?skip_verify: bool) -> nil
   def self.installed?: () -> bool
   def self.ensure_runtime!: () -> nil
   def self.runtime_path: () -> String
@@ -97,6 +98,20 @@ module Microsandbox
     def stat: (String path) -> FsMetadata
     def copy_from_host: (String host_path, String guest_path) -> nil
     def copy_to_host: (String guest_path, String host_path) -> nil
+    def read_stream: (String path) -> FsReadStream
+    def write_stream: (String path) ?{ (FsWriteSink) -> untyped } -> untyped
+  end
+
+  class FsReadStream
+    include Enumerable[String]
+    def each: () { (String) -> void } -> self
+            | () -> Enumerator[String, self]
+    def read: () -> String
+  end
+
+  class FsWriteSink
+    def write: (String data) -> self
+    def close: () -> nil
   end
 
   class Metrics
@@ -110,6 +125,9 @@ module Microsandbox
     def disk_write_bytes: () -> Integer
     def net_rx_bytes: () -> Integer
     def net_tx_bytes: () -> Integer
+    def upper_used_bytes: () -> Integer?
+    def upper_free_bytes: () -> Integer?
+    def upper_host_allocated_bytes: () -> Integer?
     def uptime_secs: () -> Float
     def timestamp: () -> Time
   end
@@ -138,6 +156,10 @@ module Microsandbox
     def request_kill: () -> nil
     def request_drain: () -> nil
     def wait_until_stopped: () -> SandboxStopResult
+    def config_json: () -> String
+    def config: () -> Hash[String, untyped]
+    def snapshot: (String name) -> SnapshotInfo
+    def snapshot_to: (String path) -> SnapshotInfo
   end
 
   # Deprecated alias for SandboxHandle (was a read-only metadata type pre-v0.5.8).
@@ -161,15 +183,23 @@ module Microsandbox
                       ?scripts: Hash[untyped, untyped]?, ?entrypoint: Array[String]?,
                       ?ports: Hash[untyped, untyped]?, ?ports_udp: Hash[untyped, untyped]?,
                       ?volumes: Hash[untyped, untyped]?, ?network: untyped?,
+                      ?dns: Hash[untyped, untyped]?, ?tls: Hash[untyped, untyped]?,
+                      ?ipv4_pool: String?, ?ipv6_pool: String?,
+                      ?max_connections: Integer?, ?trust_host_cas: bool?,
                       ?patches: Array[Hash[untyped, untyped]]?, ?from_snapshot: String?,
+                      ?fstype: String?, ?init: (String | Symbol | Hash[untyped, untyped])?, ?ephemeral: bool,
                       ?log_level: (String | Symbol)?, ?quiet_logs: bool, ?security: (String | Symbol)?,
                       ?oci_upper_size: Integer?, ?max_duration: Integer?, ?idle_timeout: Integer?,
                       ?rlimits: Hash[untyped, untyped]?, ?pull_policy: (String | Symbol)?,
                       ?registry_auth: Hash[untyped, untyped]?, ?registry_insecure: bool,
                       ?registry_ca_certs: (String | Array[String])?,
-                      ?secrets: Array[Hash[untyped, untyped]]?, ?detached: bool,
+                      ?secrets: Array[Hash[untyped, untyped]]?,
+                      ?on_secret_violation: (String | Symbol | Hash[untyped, untyped])?,
+                      ?detached: bool,
                       ?replace: bool, ?replace_with_timeout: Numeric?)
                       ?{ (Sandbox) -> untyped } -> untyped
+    # Accepts the same keyword options as {create}.
+    def self.create_with_progress: (String name, **untyped) -> PullSession
     def self.start: (String name, ?detached: bool) -> Sandbox
     def self.get: (String name) -> SandboxHandle
     def self.list: () -> Array[SandboxHandle]
@@ -207,6 +237,14 @@ module Microsandbox
     def status: () -> Symbol
     def owns_lifecycle?: () -> bool
     def detach: () -> nil
+  end
+
+  class PullSession
+    include Enumerable[Hash[String, untyped]]
+    def initialize: (untyped native) -> void
+    def each: () { (Hash[String, untyped]) -> void } -> self
+            | () -> Enumerator[Hash[String, untyped], self]
+    def sandbox: () -> Sandbox
   end
 
   class LogStream
@@ -305,6 +343,22 @@ module Microsandbox
     def disk_fstype: () -> String?
     def labels: () -> Hash[String, String]
     def created_at: () -> Time?
+    def fs: () -> VolumeFs
+  end
+
+  class VolumeFs
+    def initialize: (untyped native) -> void
+    def read: (String path) -> String
+    def read_text: (String path) -> String
+    def write: (String path, String data) -> nil
+    def list: (String path) -> Array[FsEntry]
+    def mkdir: (String path) -> nil
+    def remove_file: (String path) -> nil
+    def remove_dir: (String path) -> nil
+    def exists?: (String path) -> bool
+    def copy: (String src, String dst) -> nil
+    def rename: (String src, String dst) -> nil
+    def stat: (String path) -> FsMetadata
   end
 
   class Volume
@@ -313,6 +367,7 @@ module Microsandbox
     def self.get: (String name) -> VolumeInfo
     def self.list: () -> Array[VolumeInfo]
     def self.remove: (String name) -> nil
+    def self.fs: (String name) -> VolumeFs
   end
 
   class SnapshotInfo
@@ -321,9 +376,15 @@ module Microsandbox
     def name: () -> String?
     def parent_digest: () -> String?
     def image_ref: () -> String?
+    def image_manifest_digest: () -> String?
+    def fstype: () -> String?
+    def source_sandbox: () -> String?
+    def labels: () -> Hash[String, String]
     def size_bytes: () -> Integer?
     def format: () -> Symbol?
     def created_at: () -> Time?
+    def open: () -> SnapshotInfo
+    def remove: (?force: bool) -> nil
   end
 
   class SnapshotVerifyReport
@@ -339,8 +400,11 @@ module Microsandbox
   class Snapshot
     def self.create: (String source_sandbox, ?name: String?, ?path: String?,
                       ?labels: Hash[untyped, untyped]?, ?force: bool, ?record_integrity: bool) -> SnapshotInfo
+    def self.open: (String name_or_path) -> SnapshotInfo
     def self.get: (String name_or_digest) -> SnapshotInfo
     def self.list: () -> Array[SnapshotInfo]
+    def self.list_dir: (String dir) -> Array[SnapshotInfo]
+    def self.reindex: (?String? dir) -> Integer
     def self.remove: (String name_or_path, ?force: bool) -> nil
     def self.verify: (String name_or_path) -> SnapshotVerifyReport
     def self.export: (String name_or_path, String out_path, ?with_parents: bool,

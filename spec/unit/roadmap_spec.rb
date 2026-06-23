@@ -130,21 +130,45 @@ RSpec.describe "streaming exec, images, volumes" do
       Microsandbox::Sandbox.create(
         "box",
         from_snapshot: "snap-1",
-        volumes: {"/data" => "/host/data", "/cache" => {named: "cache-vol"}}
+        volumes: {"/data" => "/host/data", "/cache" => {named: "cache-vol", ro: true}}
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "from_snapshot" => "snap-1",
-          "volumes" => [["/data", "bind", "/host/data"], ["/cache", "named", "cache-vol"]]
+          "volumes" => [
+            {"guest" => "/data", "kind" => "bind", "source" => "/host/data"},
+            {"guest" => "/cache", "kind" => "named", "source" => "cache-vol", "readonly" => true}
+          ]
         )
+      )
+    end
+
+    it "normalizes tmpfs and disk-image mounts with policies" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        volumes: {
+          "/scratch" => {tmpfs: true, size_mib: 64},
+          "/disk" => {disk: "/img.raw", format: "raw", fstype: "ext4"},
+          "/data" => {bind: "/host", stat_virtualization: :relaxed, host_permissions: :mirror}
+        }
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("volumes" => [
+          {"guest" => "/scratch", "kind" => "tmpfs", "size_mib" => 64},
+          {"guest" => "/disk", "kind" => "disk", "source" => "/img.raw",
+           "format" => "raw", "fstype" => "ext4"},
+          {"guest" => "/data", "kind" => "bind", "source" => "/host",
+           "stat_virtualization" => "relaxed", "host_permissions" => "mirror"}
+        ])
       )
     end
 
     it "raises on a malformed volume spec" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", volumes: {"/data" => {wrong: 1}})
-      end.to raise_error(ArgumentError, /:bind or :named/)
+      end.to raise_error(ArgumentError, /:bind, :named, :tmpfs, or :disk/)
     end
 
     it "wraps exec_stream in an ExecHandle" do

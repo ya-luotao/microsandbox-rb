@@ -5,7 +5,7 @@
 //! singleton functions returning plain Hashes/Arrays (shaped into value objects
 //! by the Ruby layer) — there is no long-lived handle to own.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::snapshot::{
@@ -22,6 +22,38 @@ fn format_str(format: SnapshotFormat) -> &'static str {
         SnapshotFormat::Raw => "raw",
         SnapshotFormat::Qcow2 => "qcow2",
     }
+}
+
+/// Parse a manifest's RFC 3339 `created_at` into epoch-ms (nil if unparseable).
+fn created_at_ms(rfc3339: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+}
+
+/// Convert a fully-opened `Snapshot` into the `SnapshotInfo` Hash. Unlike a
+/// `SnapshotHandle` (a lightweight index row), an opened snapshot carries the
+/// full manifest, so this is the richest shape — `create`/`open`/`list_dir`
+/// and the `SandboxHandle#snapshot`/`#snapshot_to` shortcuts all funnel here.
+pub(crate) fn snapshot_to_hash(snap: &Snapshot) -> RHash {
+    let m = snap.manifest();
+    let hash = ruby().hash_new();
+    let _ = hash.aset("digest", snap.digest().to_string());
+    let _ = hash.aset("path", snap.path().to_string_lossy().into_owned());
+    let _ = hash.aset("size_bytes", snap.size_bytes());
+    let _ = hash.aset("image_ref", m.image.reference.clone());
+    let _ = hash.aset("image_manifest_digest", m.image.manifest_digest.clone());
+    let _ = hash.aset("format", format_str(m.format));
+    let _ = hash.aset("fstype", m.fstype.clone());
+    let _ = hash.aset("parent_digest", m.parent.clone());
+    let _ = hash.aset("created_at_ms", created_at_ms(&m.created_at));
+    let _ = hash.aset("source_sandbox", m.source_sandbox.clone());
+    let labels = ruby().hash_new();
+    for (k, v) in &m.labels {
+        let _ = labels.aset(k.as_str(), v.as_str());
+    }
+    let _ = hash.aset("labels", labels);
+    hash
 }
 
 /// Create a snapshot of a stopped sandbox. `opts`: name | path (destination),
@@ -48,11 +80,42 @@ fn create(source_sandbox: String, opts: RHash) -> Result<RHash, Error> {
     }
 
     let snap = block_on(b.create()).map_err(error::to_ruby)?;
-    let hash = ruby().hash_new();
-    hash.aset("digest", snap.digest().to_string())?;
-    hash.aset("path", snap.path().to_string_lossy().into_owned())?;
-    hash.aset("size_bytes", snap.size_bytes())?;
-    Ok(hash)
+    Ok(snapshot_to_hash(&snap))
+}
+
+/// Open an existing snapshot artifact by bare name or path. Cheap metadata
+/// validation only (does not read the upper file). Returns a full SnapshotInfo
+/// Hash — the only way to inspect an artifact addressed by path (`get`/`list`
+/// read the local index, which path-addressed artifacts are absent from).
+fn open(path_or_name: String) -> Result<RHash, Error> {
+    let snap = block_on(Snapshot::open(&path_or_name)).map_err(error::to_ruby)?;
+    Ok(snapshot_to_hash(&snap))
+}
+
+/// Walk `dir` and parse each subdirectory's `manifest.json` without touching the
+/// local index — for enumerating external/un-imported snapshot collections.
+fn list_dir(dir: String) -> Result<RArray, Error> {
+    let snaps = block_on(Snapshot::list_dir(Path::new(&dir))).map_err(error::to_ruby)?;
+    let arr = ruby().ary_new();
+    for snap in &snaps {
+        arr.push(snapshot_to_hash(snap))?;
+    }
+    Ok(arr)
+}
+
+/// Rebuild the local snapshot index from `dir` (defaults to the configured
+/// snapshots directory). Returns the number of indexed snapshots — the repair
+/// for index drift or out-of-band imports that `get`/`list` can't see.
+fn reindex(dir: Option<String>) -> Result<u64, Error> {
+    let dir: PathBuf = match dir {
+        Some(d) => PathBuf::from(d),
+        None => microsandbox::default_backend()
+            .as_local()
+            .map(|l| l.snapshots_dir())
+            .unwrap_or_else(|| PathBuf::from(".")),
+    };
+    let n = block_on(Snapshot::reindex(&dir)).map_err(error::to_ruby)?;
+    Ok(n as u64)
 }
 
 /// Metadata for one snapshot by name or digest.
@@ -148,8 +211,11 @@ fn verify_report_to_hash(report: &SnapshotVerifyReport) -> RHash {
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let class = native.define_class("Snapshot", ruby.class_object())?;
     class.define_singleton_method("create", function!(create, 2))?;
+    class.define_singleton_method("open", function!(open, 1))?;
     class.define_singleton_method("get", function!(get, 1))?;
     class.define_singleton_method("list", function!(list, 0))?;
+    class.define_singleton_method("list_dir", function!(list_dir, 1))?;
+    class.define_singleton_method("reindex", function!(reindex, 1))?;
     class.define_singleton_method("remove", function!(remove, 2))?;
     class.define_singleton_method("verify", function!(verify, 1))?;
     class.define_singleton_method("export", function!(export, 3))?;

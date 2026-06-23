@@ -3,12 +3,17 @@
 //! Mirrors `sdk/python/src/volume.rs`. Static async CRUD over the volume store;
 //! results are returned as plain Ruby Hashes/Arrays.
 
-use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
-use microsandbox::volume::VolumeHandle;
+use std::sync::Arc;
 
+use magnus::{function, method, prelude::*, Error, RArray, RHash, RModule, RString, Ruby};
+use microsandbox::volume::VolumeHandle;
+use microsandbox::Backend;
+
+use crate::backend::local_backend;
 use crate::conv;
 use crate::error;
 use crate::runtime::{block_on, ruby};
+use crate::sandbox::{fs_entry_to_hash, fs_metadata_to_hash};
 
 fn handle_to_hash(h: &VolumeHandle) -> RHash {
     let hash = ruby().hash_new();
@@ -92,11 +97,118 @@ fn remove(name: String) -> Result<(), Error> {
     block_on(microsandbox::Volume::remove(&name)).map_err(error::to_ruby)
 }
 
+/// A host-side filesystem view over a named volume — read/write its contents
+/// without a running sandbox. Mirrors the Python `VolumeFs` / Node `VolumeFs`.
+/// The core `VolumeFs<'a>` borrows the volume name, so (like the Python binding)
+/// each operation rebuilds it from the stored backend + name.
+#[magnus::wrap(class = "Microsandbox::Native::VolumeFs", free_immediately, size)]
+pub struct VolumeFs {
+    backend: Arc<dyn Backend>,
+    name: String,
+}
+
+impl VolumeFs {
+    /// Resolve the (local) backend once and bind it to `name`.
+    fn for_volume(name: String) -> Result<VolumeFs, Error> {
+        Ok(VolumeFs {
+            backend: local_backend().map_err(error::to_ruby)?,
+            name,
+        })
+    }
+
+    fn fs(&self) -> microsandbox::volume::VolumeFs<'_> {
+        microsandbox::volume::VolumeFs::with_backend(self.backend.clone(), &self.name)
+    }
+
+    fn read(&self, path: String) -> Result<RString, Error> {
+        let fs = self.fs();
+        let bytes = block_on(fs.read(&path)).map_err(error::to_ruby)?;
+        Ok(ruby().str_from_slice(bytes.as_ref()))
+    }
+
+    fn read_text(&self, path: String) -> Result<String, Error> {
+        let fs = self.fs();
+        block_on(fs.read_to_string(&path)).map_err(error::to_ruby)
+    }
+
+    fn write(&self, path: String, data: RString) -> Result<(), Error> {
+        // Copy the bytes out while the GVL is held (GC.compact could move them).
+        let bytes = unsafe { data.as_slice() }.to_vec();
+        let fs = self.fs();
+        block_on(fs.write(&path, &bytes)).map_err(error::to_ruby)
+    }
+
+    fn list(&self, path: String) -> Result<RArray, Error> {
+        let fs = self.fs();
+        let entries = block_on(fs.list(&path)).map_err(error::to_ruby)?;
+        let arr = ruby().ary_new();
+        for entry in &entries {
+            arr.push(fs_entry_to_hash(entry))?;
+        }
+        Ok(arr)
+    }
+
+    fn mkdir(&self, path: String) -> Result<(), Error> {
+        let fs = self.fs();
+        block_on(fs.mkdir(&path)).map_err(error::to_ruby)
+    }
+
+    fn remove_file(&self, path: String) -> Result<(), Error> {
+        let fs = self.fs();
+        block_on(fs.remove(&path)).map_err(error::to_ruby)
+    }
+
+    fn remove_dir(&self, path: String) -> Result<(), Error> {
+        let fs = self.fs();
+        block_on(fs.remove_dir(&path)).map_err(error::to_ruby)
+    }
+
+    fn exists(&self, path: String) -> Result<bool, Error> {
+        let fs = self.fs();
+        block_on(fs.exists(&path)).map_err(error::to_ruby)
+    }
+
+    fn copy(&self, from: String, to: String) -> Result<(), Error> {
+        let fs = self.fs();
+        block_on(fs.copy(&from, &to)).map_err(error::to_ruby)
+    }
+
+    fn rename(&self, from: String, to: String) -> Result<(), Error> {
+        let fs = self.fs();
+        block_on(fs.rename(&from, &to)).map_err(error::to_ruby)
+    }
+
+    fn stat(&self, path: String) -> Result<RHash, Error> {
+        let fs = self.fs();
+        let meta = block_on(fs.stat(&path)).map_err(error::to_ruby)?;
+        Ok(fs_metadata_to_hash(&meta))
+    }
+}
+
+/// Open a host-side filesystem view over a named volume.
+fn fs(name: String) -> Result<VolumeFs, Error> {
+    VolumeFs::for_volume(name)
+}
+
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let class = native.define_class("Volume", ruby.class_object())?;
     class.define_singleton_method("create", function!(create, 2))?;
     class.define_singleton_method("get", function!(get, 1))?;
     class.define_singleton_method("list", function!(list, 0))?;
     class.define_singleton_method("remove", function!(remove, 1))?;
+    class.define_singleton_method("fs", function!(fs, 1))?;
+
+    let vfs = native.define_class("VolumeFs", ruby.class_object())?;
+    vfs.define_method("read", method!(VolumeFs::read, 1))?;
+    vfs.define_method("read_text", method!(VolumeFs::read_text, 1))?;
+    vfs.define_method("write", method!(VolumeFs::write, 2))?;
+    vfs.define_method("list", method!(VolumeFs::list, 1))?;
+    vfs.define_method("mkdir", method!(VolumeFs::mkdir, 1))?;
+    vfs.define_method("remove_file", method!(VolumeFs::remove_file, 1))?;
+    vfs.define_method("remove_dir", method!(VolumeFs::remove_dir, 1))?;
+    vfs.define_method("exists", method!(VolumeFs::exists, 1))?;
+    vfs.define_method("copy", method!(VolumeFs::copy, 2))?;
+    vfs.define_method("rename", method!(VolumeFs::rename, 2))?;
+    vfs.define_method("stat", method!(VolumeFs::stat, 1))?;
     Ok(())
 }

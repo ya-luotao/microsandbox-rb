@@ -40,7 +40,7 @@ impl AgentClient {
 
     /// Connect to a running sandbox by name. `timeout` is optional seconds.
     fn connect_sandbox(name: String, timeout: Option<f64>) -> Result<AgentClient, Error> {
-        let bridge = match dur(timeout) {
+        let bridge = match dur(timeout)? {
             Some(t) => block_on(AgentBridge::connect_sandbox_with_timeout(&name, t)),
             None => block_on(AgentBridge::connect_sandbox(&name)),
         }
@@ -50,7 +50,7 @@ impl AgentClient {
 
     /// Connect to an agentd relay socket by path. `timeout` is optional seconds.
     fn connect_path(path: String, timeout: Option<f64>) -> Result<AgentClient, Error> {
-        let bridge = match dur(timeout) {
+        let bridge = match dur(timeout)? {
             Some(t) => block_on(AgentBridge::connect_path_with_timeout(&path, t)),
             None => block_on(AgentBridge::connect_path(&path)),
         }
@@ -125,12 +125,19 @@ impl AgentClient {
     }
 }
 
-/// Convert seconds into a `Duration`, treating a non-positive/absent value as
-/// "use the default handshake timeout".
-fn dur(timeout: Option<f64>) -> Option<Duration> {
+/// Convert an optional `timeout` (seconds) into an optional `Duration`,
+/// mirroring the Python SDK's `timeout_duration`:
+///   - absent (`nil`) → `None` → the core's default handshake timeout
+///   - `0` → an explicit zero deadline (fail fast), *not* "use the default"
+///   - negative or non-finite (NaN/Inf) → a caller error (rather than being
+///     silently swallowed into the default)
+fn dur(timeout: Option<f64>) -> Result<Option<Duration>, Error> {
     match timeout {
-        Some(t) if t.is_finite() && t > 0.0 => Some(Duration::from_secs_f64(t)),
-        _ => None,
+        None => Ok(None),
+        Some(t) if t.is_finite() && t >= 0.0 => Ok(Some(Duration::from_secs_f64(t))),
+        Some(t) => Err(error::base_error(format!(
+            "timeout must be a non-negative, finite number of seconds (got {t})"
+        ))),
     }
 }
 

@@ -25,9 +25,11 @@ module Microsandbox
       Time.at(@timestamp_ms / 1000.0)
     end
 
-    # @return [String] the captured bytes decoded as UTF-8 (lenient)
+    # @return [String] the captured bytes decoded as UTF-8 (lossy — invalid byte
+    #   sequences are replaced with U+FFFD, so the result is always valid UTF-8;
+    #   use {#data} for the raw ASCII-8BIT bytes)
     def text
-      @data.dup.force_encoding(Encoding::UTF_8)
+      @data.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
     def inspect

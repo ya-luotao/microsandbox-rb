@@ -22,7 +22,8 @@ module Microsandbox
       @created_at_ms = data["created_at_ms"]
     end
 
-    # @return [Symbol, nil] :directory or :disk
+    # @return [Symbol, nil] :dir or :disk (matches the {Volume.create} `kind:`
+    #   input and the core's canonical names)
     def kind
       @kind&.to_sym
     end
@@ -32,8 +33,100 @@ module Microsandbox
       @created_at_ms && Time.at(@created_at_ms / 1000.0)
     end
 
+    # A host-side filesystem view over this volume (read/write its contents
+    # without a running sandbox).
+    # @return [VolumeFs]
+    def fs
+      @fs ||= VolumeFs.new(Native::Volume.fs(@name.to_s))
+    end
+
     def inspect
       "#<Microsandbox::VolumeInfo name=#{@name.inspect}#{" kind=#{@kind}" if @kind}>"
+    end
+  end
+
+  # A host-side filesystem view over a named volume, from {Volume.fs} or
+  # {VolumeInfo#fs}. Reads and writes the volume's contents directly on the host,
+  # without booting a sandbox. All paths are relative to the volume root. Mirrors
+  # the `VolumeFs` of the official Python/Node SDKs.
+  class VolumeFs
+    def initialize(native)
+      @native = native
+    end
+
+    # Read a file as raw bytes (ASCII-8BIT).
+    # @return [String]
+    def read(path)
+      @native.read(path.to_s)
+    end
+
+    # Read a file as a UTF-8 string.
+    # @return [String]
+    def read_text(path)
+      @native.read_text(path.to_s)
+    end
+
+    # Write data to a file, creating parent directories as needed.
+    # @param data [String] raw bytes (binary-safe)
+    # @raise [TypeError] if +data+ is not a String
+    # @return [nil]
+    def write(path, data)
+      bytes = String.try_convert(data) or
+        raise TypeError, "data must be a String (got #{data.class})"
+      @native.write(path.to_s, bytes)
+      nil
+    end
+
+    # List the entries of a directory.
+    # @return [Array<FsEntry>]
+    def list(path)
+      @native.list(path.to_s).map { |entry| FsEntry.new(entry) }
+    end
+
+    # Create a directory (and any missing parents).
+    # @return [nil]
+    def mkdir(path)
+      @native.mkdir(path.to_s)
+      nil
+    end
+
+    # Remove a single file.
+    # @return [nil]
+    def remove_file(path)
+      @native.remove_file(path.to_s)
+      nil
+    end
+
+    # Remove a directory recursively.
+    # @return [nil]
+    def remove_dir(path)
+      @native.remove_dir(path.to_s)
+      nil
+    end
+
+    # @return [Boolean] whether the path exists in the volume
+    def exists?(path)
+      @native.exists(path.to_s)
+    end
+
+    # Copy a file within the volume.
+    # @return [nil]
+    def copy(src, dst)
+      @native.copy(src.to_s, dst.to_s)
+      nil
+    end
+
+    # Rename/move a file or directory within the volume.
+    # @return [nil]
+    def rename(src, dst)
+      @native.rename(src.to_s, dst.to_s)
+      nil
+    end
+
+    # Stat a path.
+    # @return [FsMetadata]
+    def stat(path)
+      FsMetadata.new(@native.stat(path.to_s))
     end
   end
 
@@ -73,6 +166,13 @@ module Microsandbox
       def remove(name)
         Native::Volume.remove(name.to_s)
         nil
+      end
+
+      # A host-side filesystem view over a named volume (read/write its contents
+      # without a running sandbox). The volume need not be mounted.
+      # @return [VolumeFs]
+      def fs(name)
+        VolumeFs.new(Native::Volume.fs(name.to_s))
       end
     end
   end

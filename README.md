@@ -347,7 +347,7 @@ variable → an SDK-set override → the config file → `~/.microsandbox/bin/ms
 Microsandbox.installed?            # => true/false
 Microsandbox.install               # download + install the runtime (idempotent)
 Microsandbox.runtime_path          # => "/Users/you/.microsandbox/bin/msb"
-Microsandbox.runtime_path = "/opt/microsandbox/bin/msb"  # override
+Microsandbox.runtime_path = "/opt/microsandbox/bin/msb"  # override (set-once)
 Microsandbox.libkrunfw_path = "/opt/microsandbox/lib/libkrunfw.dylib"  # override (set-once)
 ```
 
@@ -470,25 +470,38 @@ or credential setup is needed.
 > Until promoted, users install the source gem (which compiles via `rb_sys`).
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
-section. The binding now covers the full official-SDK surface: sandbox
+section. The binding covers the official-SDK surface: sandbox
 lifecycle (the live `Sandbox` `stop`/`stop_and_wait`/`kill`/`drain`/`wait`/
 `status`/`detach`/`owns_lifecycle?`, plus the `SandboxHandle` controls
 `stop_with_timeout`/`request_stop`/`request_kill`/`request_drain`/
-`wait_until_stopped` from `Sandbox.get`, and label-filtered `list_with`),
+`wait_until_stopped`/`config`/`config_json`/`snapshot`/`snapshot_to` from
+`Sandbox.get`, and label-filtered `list_with`),
 backend routing (`set_default_backend`/`with_backend`/`default_backend_kind`),
 `exec`/`shell` (collected and streaming), interactive `attach`/
-`attach_shell`, the full guest filesystem, metrics (per-sandbox,
-`Microsandbox.all_sandbox_metrics`, and streaming `metrics_stream`/`log_stream`),
-logs, OCI image-cache management, named volumes, snapshots (create/list/verify/
-export/import + boot-from-snapshot), **rootfs patches** (`Microsandbox::Patch`),
-**custom per-rule network policies** (`Microsandbox::NetworkPolicy`/`Rule`/
-`Destination`, alongside the presets), **SSH** (`Sandbox#ssh` →
-`SshClient`/`SftpClient`/`SshServer`), and the **raw agent client**
-(`Microsandbox::AgentClient`). Create options span resources, network policy,
-`log_level`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches` and more;
-`exec`/`shell` take per-call `rlimits`, and `create` accepts
+`attach_shell`, the full guest filesystem (incl. streaming `read_stream`/
+`write_stream`), metrics (per-sandbox, `Microsandbox.all_sandbox_metrics`, and
+streaming `metrics_stream`/`log_stream`), logs, OCI image-cache management,
+named volumes (incl. host-side `Volume.fs`/`VolumeInfo#fs` read/write),
+snapshots (create/open/list/list_dir/reindex/verify/export/import +
+boot-from-snapshot), streaming image-pull progress
+(`Sandbox.create_with_progress` → `PullSession`), **rootfs patches**
+(`Microsandbox::Patch`), **network configuration** (presets, custom per-rule
+`Microsandbox::NetworkPolicy`/`Rule`/`Destination`, plus DNS, TLS interception,
+IPv4/IPv6 pools, `max_connections`, `trust_host_cas`), **secrets** (multi-host /
+wildcard allow-lists, injection toggles, per-secret + sandbox-level violation
+policy), **SSH** (`Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`), and the
+**raw agent client** (`Microsandbox::AgentClient`). Create options span
+resources, `init`/`ephemeral`, disk-image `fstype`, network policy + config,
+`log_level`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches`/`volumes`
+(bind/named/tmpfs/disk with mount policies) and more; `exec`/`shell` take
+per-call `rlimits`, and `create` accepts
 `registry_auth`/`registry_insecure`/`registry_ca_certs` for private and
-authenticated registries.
+authenticated registries, plus customizable provisioning via `Microsandbox.setup`.
+
+A few secondary upstream knobs are not yet exposed: per-published-port host bind
+address (ports always bind loopback), network interface overrides, and inline
+named-volume create-mode (pre-create the volume with `Volume.create`, then mount
+it with `{ named: "…" }`).
 
 ## Contributing
 

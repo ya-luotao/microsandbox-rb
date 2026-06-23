@@ -2,8 +2,9 @@
 
 module Microsandbox
   # The result of an {SshClient#exec} call. Like {ExecOutput}, `stdout`/`stderr`
-  # are the captured bytes decoded as UTF-8 (lenient); use `stdout_bytes`/
-  # `stderr_bytes` for the raw ASCII-8BIT bytes.
+  # are the captured bytes decoded as UTF-8 (lossy — invalid byte sequences are
+  # replaced with U+FFFD); use `stdout_bytes`/`stderr_bytes` for the raw
+  # ASCII-8BIT bytes.
   class SshOutput
     # @return [Integer] the remote command's exit status
     attr_reader :status
@@ -25,14 +26,14 @@ module Microsandbox
     # @return [Boolean] whether the command exited non-zero
     def failure? = !@success
 
-    # @return [String] stdout decoded as UTF-8
+    # @return [String] stdout decoded as UTF-8 (lossy)
     def stdout
-      @stdout ||= @stdout_bytes.dup.force_encoding(Encoding::UTF_8)
+      @stdout ||= @stdout_bytes.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
-    # @return [String] stderr decoded as UTF-8
+    # @return [String] stderr decoded as UTF-8 (lossy)
     def stderr
-      @stderr ||= @stderr_bytes.dup.force_encoding(Encoding::UTF_8)
+      @stderr ||= @stderr_bytes.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
     def to_s = stdout
@@ -56,16 +57,21 @@ module Microsandbox
       @native.read(path.to_s)
     end
 
-    # Read a file and decode it as UTF-8 (lenient).
+    # Read a file and decode it as UTF-8 (lossy — invalid byte sequences are
+    # replaced with U+FFFD).
     # @return [String]
     def read_text(path)
-      read(path).force_encoding(Encoding::UTF_8)
+      read(path).force_encoding(Encoding::UTF_8).scrub
     end
 
     # Write a file, creating or truncating it.
+    # @param data [String] raw bytes to write (binary-safe)
+    # @raise [TypeError] if +data+ is not a String
     # @return [nil]
     def write(path, data)
-      @native.write(path.to_s, data.to_s)
+      bytes = String.try_convert(data) or
+        raise TypeError, "data must be a String (got #{data.class})"
+      @native.write(path.to_s, bytes)
       nil
     end
 

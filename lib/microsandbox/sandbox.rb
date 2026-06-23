@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Microsandbox
   # A controllable handle to a sandbox, returned by {Sandbox.get}, {Sandbox.list},
   # and {Sandbox.list_with}. Carries a metadata snapshot (captured when fetched)
@@ -99,6 +101,37 @@ module Microsandbox
       SandboxStopResult.new(@native.wait_until_stopped)
     end
 
+    # The sandbox's stored configuration as a raw JSON string (synchronous — the
+    # handle already carries it, no runtime round-trip). Mirrors the Python/Node
+    # `config_json`.
+    # @return [String]
+    def config_json
+      @native.config_json
+    end
+
+    # The sandbox's stored configuration, parsed into a Hash (image, cpus,
+    # memory, mounts, …). Mirrors the Python/Node `config`.
+    # @return [Hash]
+    def config
+      JSON.parse(@native.config_json)
+    end
+
+    # Snapshot this (stopped) sandbox under a bare name, resolved under the
+    # snapshots dir. Convenience equivalent of
+    # `Snapshot.create(name, name: <snapshot-name>)` addressed by this handle.
+    # @param name [String] destination snapshot name
+    # @return [SnapshotInfo]
+    def snapshot(name)
+      SnapshotInfo.new(@native.snapshot(name.to_s))
+    end
+
+    # Snapshot this (stopped) sandbox to an explicit filesystem path.
+    # @param path [String] destination directory
+    # @return [SnapshotInfo]
+    def snapshot_to(path)
+      SnapshotInfo.new(@native.snapshot_to(path.to_s))
+    end
+
     def inspect
       "#<Microsandbox::SandboxHandle name=#{name.inspect} status=#{status}>"
     end
@@ -186,12 +219,40 @@ module Microsandbox
       # @param entrypoint [Array<String>, nil] image entrypoint override
       # @param ports [Hash, nil] host_port => guest_port TCP publications
       # @param ports_udp [Hash, nil] host_port => guest_port UDP publications
+      # @param volumes [Hash, nil] guest_path => mount spec. Each value is a host
+      #   path String (a bind mount), or a Hash: `{ bind: "/host" }`,
+      #   `{ named: "vol" }`, `{ tmpfs: true, size_mib: 64 }`, or
+      #   `{ disk: "/img.raw", format: "raw", fstype: "ext4" }`. Any mount may add
+      #   flags `ro:`/`readonly:`, `noexec:`, `nosuid:`, `nodev:`, and (bind/named
+      #   only) `stat_virtualization:` (:strict/:relaxed/:off) and
+      #   `host_permissions:` (:private/:mirror).
       # @param network [String, Symbol, NetworkPolicy, Hash, nil] network policy.
       #   A preset name ("public_only" (default), "none", "allow_all",
       #   "non_local"), a {NetworkPolicy} (e.g. {NetworkPolicy.custom}), or a Hash
       #   describing a custom policy (`default_egress:`, `default_ingress:`,
       #   `rules:`, `deny_domains:`, `deny_domain_suffixes:`). See {NetworkPolicy}
       #   and {Rule}.
+      # @param dns [Hash, nil] custom DNS: `{ nameservers: [...],
+      #   rebind_protection: true, query_timeout_ms: 2000 }`
+      # @param tls [Hash, nil] TLS-interception tuning: `{ bypass: [...patterns],
+      #   verify_upstream: true, intercepted_ports: [443, 8443], block_quic: true,
+      #   upstream_ca_cert:, intercept_ca_cert:, intercept_ca_key: }` (paths). Use
+      #   this to inject `secrets:` on non-443 ports or to trust a private CA.
+      # @param ipv4_pool [String, nil] guest IPv4 address pool CIDR (e.g. "10.0.0.0/24")
+      # @param ipv6_pool [String, nil] guest IPv6 address pool CIDR
+      # @param max_connections [Integer, nil] cap on concurrent proxied connections
+      # @param trust_host_cas [Boolean, nil] trust the host's CA bundle for upstream TLS
+      # @param from_snapshot [String, nil] boot from a snapshot name or digest
+      #   instead of an image (mutually exclusive with `image:`)
+      # @param fstype [String, nil] inner filesystem type (e.g. "ext4") when
+      #   `image:` is a disk-image rootfs path whose filesystem can't be
+      #   auto-probed; ignored for OCI images
+      # @param init [String, Hash, nil] hand guest PID 1 to an init system: a
+      #   command path (e.g. "/lib/systemd/systemd" or "auto"), or a Hash
+      #   `{ cmd:, args:, env: }` when the init binary takes argv/extra env
+      # @param ephemeral [Boolean] auto-remove the sandbox's stored state (DB
+      #   row, disk, logs, captured output) once it reaches a terminal state
+      #   (default: state is persisted until {.remove})
       # @param patches [Array<Hash>, nil] rootfs patches applied before boot, each
       #   built with the {Patch} factory (e.g. `Patch.text(...)`, `Patch.mkdir(...)`).
       #   Not compatible with disk-image roots.
@@ -212,23 +273,61 @@ module Microsandbox
       #   instead of HTTPS (for local/self-hosted registries)
       # @param registry_ca_certs [String, Array<String>, nil] extra PEM-encoded CA
       #   root certificate(s) to trust (for a registry with a private CA)
-      # @param secrets [Array<Hash>, nil] placeholder-protected secrets, each
-      #   { env:, value:, host: } — the value is substituted by the TLS proxy only
-      #   for the allowed host (auto-enables TLS interception)
+      # @param secrets [Array<Hash>, nil] placeholder-protected secrets injected by
+      #   the TLS proxy (auto-enables TLS interception). Each Hash needs `env:` and
+      #   `value:` plus an allow list — `host:` (single), `hosts:` (Array), and/or
+      #   `host_patterns:` (wildcards like "*.stripe.com"). Optional per-secret:
+      #   `placeholder:`, `require_tls:`, injection toggles `inject_headers:` /
+      #   `inject_basic_auth:` / `inject_query:` / `inject_body:`, and `on_violation:`.
+      # @param on_secret_violation [String, Symbol, Hash, nil] sandbox-wide
+      #   secret-leak policy: "block", "block_and_log", "block_and_terminate", or a
+      #   Hash `{ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }`
       # @param detached [Boolean] keep running after this process exits
       # @param replace [Boolean] replace an existing sandbox with the same name
       # @param replace_with_timeout [Numeric, nil] replace, waiting up to N seconds
       # @yieldparam sandbox [Sandbox]
       # @return [Sandbox, Object] the sandbox, or the block's return value
-      def create(name,
+      def create(name, **kwargs, &block)
+        opts = build_create_opts(name, **kwargs)
+        sandbox = new(Native::Sandbox.create(name.to_s, opts))
+        return sandbox unless block_given?
+
+        begin
+          yield sandbox
+        ensure
+          begin
+            sandbox.stop
+          rescue Microsandbox::Error
+            # best-effort cleanup; ignore stop failures during teardown
+          end
+        end
+      end
+
+      # Create a sandbox while streaming image-pull progress. Accepts the same
+      # options as {create}; returns a {PullSession} — iterate it (an
+      # {Enumerable} of progress-event Hashes, each with a "kind"), then call
+      # {PullSession#sandbox} for the booted {Sandbox}. Mirrors the Python
+      # `create_with_progress` / Node `createWithPullProgress`.
+      # @return [PullSession]
+      def create_with_progress(name, **kwargs)
+        opts = build_create_opts(name, **kwargs)
+        PullSession.new(Native::Sandbox.create_with_progress(name.to_s, opts))
+      end
+
+      # @api private
+      # Shared keyword-option builder for {create}/{create_with_progress}.
+      def build_create_opts(name,
         image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
         entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
+        dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
+        max_connections: nil, trust_host_cas: nil,
         patches: nil,
-        from_snapshot: nil, log_level: nil, quiet_logs: false, security: nil,
+        from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
+        log_level: nil, quiet_logs: false, security: nil,
         oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
         pull_policy: nil, registry_auth: nil, registry_insecure: false,
-        registry_ca_certs: nil, secrets: nil,
+        registry_ca_certs: nil, secrets: nil, on_secret_violation: nil,
         detached: false, replace: false, replace_with_timeout: nil)
         # A sandbox boots from exactly one rootfs source. The core would reject a
         # contradictory pair, but only after a runtime round-trip; fail fast and
@@ -240,6 +339,7 @@ module Microsandbox
         opts = {}
         opts["image"] = image.to_s if image
         opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
+        opts["fstype"] = fstype.to_s if fstype
         opts["cpus"] = Integer(cpus) if cpus
         opts["memory"] = Integer(memory) if memory
         opts["workdir"] = workdir.to_s if workdir
@@ -255,6 +355,12 @@ module Microsandbox
         opts["volumes"] = normalize_volumes(volumes) if volumes
         opts["patches"] = normalize_patches(patches) if patches
         apply_network_opts(opts, network) unless network.nil?
+        opts["dns"] = normalize_dns(dns) if dns
+        opts["tls"] = normalize_tls(tls) if tls
+        opts["ipv4_pool"] = ipv4_pool.to_s if ipv4_pool
+        opts["ipv6_pool"] = ipv6_pool.to_s if ipv6_pool
+        opts["max_connections"] = Integer(max_connections) if max_connections
+        opts["trust_host_cas"] = (trust_host_cas ? true : false) unless trust_host_cas.nil?
         opts["log_level"] = log_level.to_s if log_level
         opts["quiet_logs"] = true if quiet_logs
         opts["security"] = security.to_s if security
@@ -265,6 +371,9 @@ module Microsandbox
         opts["pull_policy"] = pull_policy.to_s if pull_policy
         apply_registry_opts(opts, registry_auth, registry_insecure, registry_ca_certs)
         opts["secrets"] = normalize_secrets(secrets) if secrets
+        opts["on_secret_violation"] = normalize_violation(on_secret_violation) if on_secret_violation
+        opts["init"] = normalize_init(init) unless init.nil?
+        opts["ephemeral"] = true if ephemeral
         opts["detached"] = true if detached
         if replace_with_timeout
           opts["replace_with_timeout"] = coerce_duration(replace_with_timeout, "replace_with_timeout")
@@ -272,18 +381,7 @@ module Microsandbox
           opts["replace"] = true
         end
 
-        sandbox = new(Native::Sandbox.create(name.to_s, opts))
-        return sandbox unless block_given?
-
-        begin
-          yield sandbox
-        ensure
-          begin
-            sandbox.stop
-          rescue Microsandbox::Error
-            # best-effort cleanup; ignore stop failures during teardown
-          end
-        end
+        opts
       end
 
       # Restart a previously-defined sandbox by name.
@@ -343,6 +441,28 @@ module Microsandbox
         ports.each_with_object({}) { |(k, v), acc| acc[Integer(k)] = Integer(v) }
       end
 
+      # Normalize the `init:` option into the native { "cmd" =>, "args" =>,
+      # "env" => } shape. Accepts a bare command (String/Symbol — an init binary
+      # path or the literal "auto") or a Hash { cmd:, args:, env: }, mirroring the
+      # Python InitConfig / Node init options.
+      def normalize_init(init)
+        case init
+        when String, Symbol
+          {"cmd" => init.to_s}
+        when Hash
+          cmd = init[:cmd] || init["cmd"]
+          raise ArgumentError, "init: requires a :cmd" unless cmd
+          spec = {"cmd" => cmd.to_s}
+          args = init[:args] || init["args"]
+          spec["args"] = Array(args).map(&:to_s) if args
+          env = init[:env] || init["env"]
+          spec["env"] = stringify(env) if env
+          spec
+        else
+          raise ArgumentError, "init: must be a String command or a Hash {cmd:, args:, env:}"
+        end
+      end
+
       # Flatten the registry options into the native layer's `registry_*` keys.
       # `auth` is a Hash { username:, password: } (string or symbol keys); both
       # are required when given. `ca_certs` accepts one PEM string or an Array.
@@ -362,18 +482,105 @@ module Microsandbox
         opts["registry_ca_certs"] = Array(ca_certs).map(&:to_s) if ca_certs
       end
 
-      # Normalize secrets into [env, value, host] triples for the native layer.
-      # Each entry is a Hash { env:, value:, host: } (string or symbol keys).
+      # Normalize secrets into per-secret string-keyed Hashes for the native
+      # layer. Each entry is a Hash (string or symbol keys); required :env and
+      # :value, plus at least one allowed host via :host (single), :hosts (Array),
+      # or :host_patterns (Array of wildcards like "*.stripe.com"). Optional:
+      # :placeholder, :require_tls, the injection toggles :inject_headers /
+      # :inject_basic_auth / :inject_query / :inject_body, and :on_violation (see
+      # {#normalize_violation}).
       def normalize_secrets(secrets)
-        Array(secrets).map do |spec|
-          env = spec[:env] || spec["env"]
-          value = spec[:value] || spec["value"]
-          host = spec[:host] || spec["host"]
-          unless env && value && host
-            raise ArgumentError, "secret spec needs :env, :value, and :host (got #{spec.inspect})"
-          end
-          [env.to_s, value.to_s, host.to_s]
+        Array(secrets).map { |spec| normalize_secret(spec) }
+      end
+
+      def normalize_secret(spec)
+        env = spec[:env] || spec["env"]
+        value = spec[:value] || spec["value"]
+        unless env && value
+          raise ArgumentError, "secret spec needs :env and :value (got #{spec.inspect})"
         end
+        out = {"env" => env.to_s, "value" => value.to_s}
+        hosts = Array(spec[:hosts] || spec["hosts"]).map(&:to_s)
+        single = spec[:host] || spec["host"]
+        hosts << single.to_s if single
+        patterns = Array(spec[:host_patterns] || spec["host_patterns"]).map(&:to_s)
+        if hosts.empty? && patterns.empty?
+          raise ArgumentError,
+            "secret spec needs :host, :hosts, or :host_patterns (got #{spec.inspect})"
+        end
+        out["hosts"] = hosts unless hosts.empty?
+        out["host_patterns"] = patterns unless patterns.empty?
+        pl = spec[:placeholder] || spec["placeholder"]
+        out["placeholder"] = pl.to_s if pl
+        # Booleans must honor an explicit `false` (to disable a default-on toggle),
+        # so probe key presence rather than truthiness.
+        %i[require_tls inject_headers inject_basic_auth inject_query inject_body].each do |k|
+          v = fetch_opt(spec, k)
+          out[k.to_s] = (v ? true : false) unless v.nil?
+        end
+        ov = spec[:on_violation] || spec["on_violation"]
+        out["on_violation"] = normalize_violation(ov) if ov
+        out
+      end
+
+      # Read a symbol-or-string key from a Hash, distinguishing an explicit
+      # `false`/`nil` value from an absent key.
+      def fetch_opt(spec, sym)
+        return spec[sym] if spec.key?(sym)
+        spec[sym.to_s]
+      end
+
+      # Normalize an `on_violation`/`on_secret_violation` spec for the native
+      # layer: a String/Symbol block variant ("block"/"block_and_log"/
+      # "block_and_terminate"), or a Hash describing a passthrough action
+      # ({ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }).
+      def normalize_violation(spec)
+        case spec
+        when String, Symbol
+          spec.to_s
+        when Hash
+          out = {}
+          ph = spec[:passthrough_hosts] || spec["passthrough_hosts"]
+          out["passthrough_hosts"] = Array(ph).map(&:to_s) if ph
+          pp = spec[:passthrough_host_patterns] || spec["passthrough_host_patterns"]
+          out["passthrough_host_patterns"] = Array(pp).map(&:to_s) if pp
+          out["passthrough_all_hosts"] = true if spec[:passthrough_all_hosts] || spec["passthrough_all_hosts"]
+          out
+        else
+          raise ArgumentError, "on_violation must be a String or a Hash (got #{spec.inspect})"
+        end
+      end
+
+      # Normalize the `dns:` config Hash for the native layer.
+      def normalize_dns(dns)
+        raise ArgumentError, "dns: must be a Hash" unless dns.is_a?(Hash)
+        out = {}
+        ns = dns[:nameservers] || dns["nameservers"]
+        out["nameservers"] = Array(ns).map(&:to_s) if ns
+        rp = fetch_opt(dns, :rebind_protection)
+        out["rebind_protection"] = (rp ? true : false) unless rp.nil?
+        qt = dns[:query_timeout_ms] || dns["query_timeout_ms"]
+        out["query_timeout_ms"] = Integer(qt) if qt
+        out
+      end
+
+      # Normalize the `tls:` interception-tuning Hash for the native layer.
+      def normalize_tls(tls)
+        raise ArgumentError, "tls: must be a Hash" unless tls.is_a?(Hash)
+        out = {}
+        bypass = tls[:bypass] || tls["bypass"]
+        out["bypass"] = Array(bypass).map(&:to_s) if bypass
+        vu = fetch_opt(tls, :verify_upstream)
+        out["verify_upstream"] = (vu ? true : false) unless vu.nil?
+        ports = tls[:intercepted_ports] || tls["intercepted_ports"]
+        out["intercepted_ports"] = Array(ports).map { |p| Integer(p) } if ports
+        bq = fetch_opt(tls, :block_quic)
+        out["block_quic"] = (bq ? true : false) unless bq.nil?
+        %i[upstream_ca_cert intercept_ca_cert intercept_ca_key].each do |k|
+          v = tls[k] || tls[k.to_s]
+          out[k.to_s] = v.to_s if v
+        end
+        out
       end
 
       # Normalize an rlimits Hash into [resource, soft, hard] triples for the
@@ -386,49 +593,70 @@ module Microsandbox
         end
       end
 
-      # Normalize volumes (Hash of guest_path => spec) into [guest, kind, source]
-      # triples (or [guest, kind, source, options] quads) for the native layer. A
-      # spec is a host path String (read-write bind mount), or a Hash
-      # { bind: "/host" } / { named: "volume-name" } optionally carrying mount
-      # options: { bind: "/host", ro: true } / { named: "v", options: %w[ro noexec] }.
+      # Normalize volumes (Hash of guest_path => spec) into per-mount string-keyed
+      # Hashes for the native layer. A spec is a host path String (a read-write
+      # bind mount) or a Hash describing the mount:
+      #   { bind: "/host", ro: true, noexec: true }            # host bind mount
+      #   { named: "vol" }                                       # named volume
+      #   { tmpfs: true, size_mib: 64 }                          # memory-backed
+      #   { disk: "/img.raw", format: "raw", fstype: "ext4" }   # disk-image mount
+      # Any mount may also carry stat_virtualization: (:strict/:relaxed/:off) and
+      # host_permissions: (:private/:mirror).
       def normalize_volumes(volumes)
         volumes.map do |guest, spec|
-          guest = guest.to_s
+          mount = {"guest" => guest.to_s}
           case spec
           when String
-            [guest, "bind", spec]
+            mount["kind"] = "bind"
+            mount["source"] = spec
           when Hash
-            triple =
-              if (named = spec[:named] || spec["named"])
-                [guest, "named", named.to_s]
-              elsif (bind = spec[:bind] || spec["bind"])
-                [guest, "bind", bind.to_s]
-              else
-                raise ArgumentError, "volume spec for #{guest.inspect} needs :bind or :named"
-              end
-            # Optional 4th element: comma-joined mount options. Omitted when empty
-            # so existing [guest,kind,source] consumers and the common read-write
-            # case are byte-for-byte unchanged.
-            opts = mount_options(spec)
-            opts.empty? ? triple : triple + [opts.join(",")]
+            apply_mount_kind(mount, spec, guest)
+            apply_mount_flags(mount, spec)
           else
             raise ArgumentError, "invalid volume spec for #{guest.inspect}: #{spec.inspect}"
           end
+          mount
         end
       end
 
-      # Collect mount options from a volume spec Hash. `ro:`/`readonly:` makes the
-      # mount read-only (host virtiofs rejects writes + guest kernel returns EROFS);
-      # `noexec:`/`nosuid:`/`nodev:` set the matching flags; an explicit `options:`
-      # array passes through verbatim. Unknown options are rejected natively.
-      def mount_options(spec)
-        opts = []
-        opts << "ro" if spec[:ro] || spec["ro"] || spec[:readonly] || spec["readonly"]
-        opts << "noexec" if spec[:noexec] || spec["noexec"]
-        opts << "nosuid" if spec[:nosuid] || spec["nosuid"]
-        opts << "nodev" if spec[:nodev] || spec["nodev"]
-        Array(spec[:options] || spec["options"]).each { |o| opts << o.to_s }
-        opts.uniq
+      # Resolve a volume spec Hash's mount kind + source/size/format/fstype.
+      def apply_mount_kind(mount, spec, guest)
+        if (bind = spec[:bind] || spec["bind"])
+          mount["kind"] = "bind"
+          mount["source"] = bind.to_s
+        elsif (named = spec[:named] || spec["named"])
+          mount["kind"] = "named"
+          mount["source"] = named.to_s
+        elsif spec[:tmpfs] || spec["tmpfs"]
+          mount["kind"] = "tmpfs"
+        elsif (disk = spec[:disk] || spec["disk"])
+          mount["kind"] = "disk"
+          mount["source"] = disk.to_s
+          fmt = spec[:format] || spec["format"]
+          mount["format"] = fmt.to_s if fmt
+        else
+          raise ArgumentError,
+            "volume spec for #{guest.inspect} needs :bind, :named, :tmpfs, or :disk"
+        end
+        size = spec[:size_mib] || spec["size_mib"]
+        mount["size_mib"] = Integer(size) if size
+        fstype = spec[:fstype] || spec["fstype"]
+        mount["fstype"] = fstype.to_s if fstype
+      end
+
+      # Apply a volume spec Hash's mount flags. `ro:`/`readonly:` makes the mount
+      # read-only; `noexec:`/`nosuid:`/`nodev:` set the matching flags;
+      # `stat_virtualization:`/`host_permissions:` set the passthrough policies
+      # (only valid on bind/named — the core rejects them on tmpfs/disk).
+      def apply_mount_flags(mount, spec)
+        mount["readonly"] = true if spec[:ro] || spec["ro"] || spec[:readonly] || spec["readonly"]
+        mount["noexec"] = true if spec[:noexec] || spec["noexec"]
+        mount["nosuid"] = true if spec[:nosuid] || spec["nosuid"]
+        mount["nodev"] = true if spec[:nodev] || spec["nodev"]
+        sv = spec[:stat_virtualization] || spec["stat_virtualization"]
+        mount["stat_virtualization"] = sv.to_s if sv
+        hp = spec[:host_permissions] || spec["host_permissions"]
+        mount["host_permissions"] = hp.to_s if hp
       end
 
       # Normalize a list of patches (each a Hash from the {Patch} factory, or a
@@ -600,7 +828,7 @@ module Microsandbox
     # Stream captured logs as they appear.
     #
     # @param sources [Array<String,Symbol>, nil] filter by source
-    #   ("stdout"/"stderr"/"output"/"system")
+    #   ("stdout"/"stderr"/"output"/"system"/"all")
     # @param since_ms [Numeric, nil] start at the first entry at/after this Unix ms
     # @param from_cursor [String, nil] resume exactly after a prior {LogEntry#cursor}
     #   (mutually exclusive with since_ms; takes precedence if both given)
@@ -692,15 +920,20 @@ module Microsandbox
       opts["env"] = env.each_with_object({}) { |(k, v), a| a[k.to_s] = v.to_s } if env
       opts["timeout"] = coerce_duration(timeout, "timeout") if timeout
       opts["tty"] = true if tty
-      # `stdin: :pipe` opens a streaming stdin pipe — write to it via
-      # {ExecHandle#stdin} and close to send EOF. It is only meaningful for the
-      # streaming variants (which return an ExecHandle); a blocking exec/shell
-      # collects to completion and has nowhere to hand back the sink, so a piped
-      # process that reads stdin would block forever waiting for EOF. Reject it
-      # there. Any other truthy value is fed as a fixed byte buffer (closed
-      # automatically). nil means no stdin.
+      # stdin is a closed set of modes, mirroring the official SDKs:
+      #   nil / :null  — no stdin (the guest sees /dev/null)
+      #   :pipe        — open a streaming stdin pipe; write via {ExecHandle#stdin}
+      #                  and close to send EOF. Only meaningful for the streaming
+      #                  variants (which return an ExecHandle); a blocking
+      #                  exec/shell collects to completion and has nowhere to hand
+      #                  back the sink, so a piped process reading stdin would
+      #                  block forever waiting for EOF — rejected there.
+      #   a String     — fed as a fixed byte buffer (closed automatically).
+      # An unrecognized Symbol is a loud error rather than being fed as its bytes
+      # (so a typo'd or mistaken `stdin: :null`-style mode never silently sends
+      # the literal characters of the mode name to the process).
       case stdin
-      when nil then nil
+      when nil, :null then nil
       when :pipe
         unless pipe_ok
           raise ArgumentError,
@@ -708,7 +941,14 @@ module Microsandbox
             "exec/shell cannot expose a writable stdin sink; pass a String to feed bytes"
         end
         opts["stdin_pipe"] = true
-      else opts["stdin"] = stdin.to_s
+      when Symbol
+        raise ArgumentError,
+          "unknown stdin mode #{stdin.inspect}; expected nil or :null (no stdin), " \
+          ":pipe (exec_stream/shell_stream only), or a String of bytes to feed"
+      else
+        bytes = String.try_convert(stdin) or
+          raise TypeError, "stdin must be nil, :null, :pipe, or a String (got #{stdin.class})"
+        opts["stdin"] = bytes
       end
       if rlimits
         opts["rlimits"] = rlimits.map do |resource, limit|
@@ -717,6 +957,50 @@ module Microsandbox
         end
       end
       opts
+    end
+  end
+
+  # A streaming image-pull + create session, from {Sandbox.create_with_progress}.
+  # Iterate it (it is {Enumerable}) to consume progress-event Hashes as the image
+  # pulls, then call {#sandbox} to get the booted {Sandbox}. Each event Hash has a
+  # "kind" key (e.g. "resolving", "resolved", "layer_download_progress",
+  # "layer_materialize_progress", "complete") plus kind-specific fields.
+  #
+  # @example
+  #   session = Microsandbox::Sandbox.create_with_progress("box", image: "python")
+  #   session.each { |ev| puts "#{ev["kind"]} #{ev["downloaded_bytes"]}" }
+  #   sb = session.sandbox
+  #   begin
+  #     sb.exec("python", ["-V"])
+  #   ensure
+  #     sb.stop
+  #   end
+  class PullSession
+    include Enumerable
+
+    def initialize(native)
+      @native = native
+    end
+
+    # Yield each progress-event Hash until the pull finishes. Returns an
+    # Enumerator when called without a block.
+    # @yieldparam event [Hash]
+    # @return [self, Enumerator]
+    def each
+      return enum_for(:each) unless block_given?
+
+      while (event = @native.recv)
+        yield event
+      end
+      self
+    end
+
+    # The booted sandbox. Joins the create task (draining any remaining pull
+    # progress first), so call it after iterating progress. The returned
+    # {Sandbox} is live — stop it when done. Memoized; callable once.
+    # @return [Sandbox]
+    def sandbox
+      @sandbox ||= Sandbox.new(@native.result)
     end
   end
 end

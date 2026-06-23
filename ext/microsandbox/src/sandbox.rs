@@ -7,23 +7,32 @@
 //! as a plain Ruby `Hash`/`Array`/`String` and shaped into value objects by the
 //! Ruby layer.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use magnus::{function, method, prelude::*, Error, RArray, RHash, RModule, RString, Ruby};
+use magnus::{
+    function, method, prelude::*, Error, RArray, RHash, RModule, RString, Ruby, TryConvert, Value,
+};
 use microsandbox::logs::{
     LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
 use microsandbox::sandbox::{
-    AttachOptionsBuilder, FsEntry, FsEntryKind, FsMetadata, Patch, PullPolicy, RlimitResource,
-    SandboxFilter, SandboxHandle, SandboxMetrics, SandboxStatus, SandboxStopResult,
-    SecurityProfile,
+    AttachOptionsBuilder, DiskImageFormat, FsEntry, FsEntryKind, FsMetadata, HostPermissions,
+    Patch, PullPolicy, PullProgress, PullProgressHandle, RlimitResource, SandboxBuilder,
+    SandboxFilter, SandboxHandle, SandboxMetrics, SandboxStatus, SandboxStopResult, SecretBuilder,
+    SecurityProfile, StatVirtualization,
 };
 use microsandbox::LogLevel;
+use microsandbox::MicrosandboxResult;
 use microsandbox::RegistryAuth;
+use microsandbox_network::builder::ViolationActionBuilder;
+use microsandbox_network::dns::Nameserver;
 use microsandbox_network::policy::{
     Action, Destination, DestinationGroup, Direction, NetworkPolicy, PortRange, Protocol, Rule,
 };
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 use crate::conv;
 use crate::error;
@@ -45,12 +54,22 @@ impl Sandbox {
     // Lifecycle (singleton methods)
     //----------------------------------------------------------------------
 
-    /// Create and boot a sandbox. `opts` is a string-keyed options Hash.
-    fn create(name: String, opts: RHash) -> Result<Sandbox, Error> {
+    /// Build a configured `SandboxBuilder` from a string-keyed options Hash.
+    /// Shared by `create` (blocking) and `create_with_progress` (streaming pull).
+    fn build_builder(name: String, opts: RHash) -> Result<SandboxBuilder, Error> {
         let mut b = microsandbox::Sandbox::builder(name);
 
         if let Some(v) = conv::opt_string(opts, "image")? {
-            b = b.image(v);
+            if let Some(fstype) = conv::opt_string(opts, "fstype")? {
+                // An explicit fstype means `image` names a disk-image rootfs path
+                // whose inner filesystem can't be auto-probed: route through
+                // image_with(disk().fstype()). (A bare `image` string otherwise
+                // auto-detects OCI vs disk by extension.) Errors in disk()/fstype()
+                // are captured on the builder and surface at create().
+                b = b.image_with(move |i| i.disk(v).fstype(fstype));
+            } else {
+                b = b.image(v);
+            }
         }
         if let Some(v) = conv::opt_string(opts, "from_snapshot")? {
             b = b.from_snapshot(v);
@@ -89,59 +108,87 @@ impl Sandbox {
         for (host, guest) in conv::opt_port_map(opts, "ports")? {
             b = b.port(host, guest);
         }
-        // volumes: normalized by the Ruby layer to [guest, kind, source] triples,
-        // or [guest, kind, source, options] quads where options is a comma-joined
-        // list (ro/readonly, rw, noexec, nosuid, nodev).
-        for spec in conv::opt::<Vec<Vec<String>>>(opts, "volumes")?.unwrap_or_default() {
-            if spec.len() < 3 || spec.len() > 4 {
-                return Err(error::base_error("invalid volume mount spec"));
-            }
-            let (guest, kind, source) = (spec[0].clone(), spec[1].clone(), spec[2].clone());
+        // volumes: each mount is normalized by the Ruby layer to a string-keyed
+        // Hash — guest (req), kind ("bind"/"named"/"tmpfs"/"disk"), source
+        // (bind/named/disk), size_mib (tmpfs/disk), format + fstype (disk),
+        // readonly/noexec/nosuid/nodev (bool), stat_virtualization,
+        // host_permissions. Enum-valued options are validated up front (the
+        // volume closure can't return an error); the core validates the rest
+        // (e.g. rejecting stat_virtualization on tmpfs/disk) at create().
+        for m in conv::opt_hash_vec(opts, "volumes")? {
+            let guest = conv::opt_string(m, "guest")?
+                .ok_or_else(|| error::base_error("volume mount is missing :guest"))?;
+            let kind = conv::opt_string(m, "kind")?
+                .ok_or_else(|| error::base_error("volume mount is missing :kind"))?;
+            let source = conv::opt_string(m, "source")?;
+            let size_mib = conv::opt_u32(m, "size_mib")?;
+            let fstype = conv::opt_string(m, "fstype")?;
+            let readonly = conv::opt_bool(m, "readonly")?;
+            let noexec = conv::opt_bool(m, "noexec")?;
+            let nosuid = conv::opt_bool(m, "nosuid")?;
+            let nodev = conv::opt_bool(m, "nodev")?;
+            let format = match conv::opt_string(m, "format")? {
+                Some(f) => Some(disk_format_from_str(&f)?),
+                None => None,
+            };
+            let stat_virt = match conv::opt_string(m, "stat_virtualization")? {
+                Some(s) => Some(stat_virtualization_from_str(&s)?),
+                None => None,
+            };
+            let host_perms = match conv::opt_string(m, "host_permissions")? {
+                Some(s) => Some(host_permissions_from_str(&s)?),
+                None => None,
+            };
+            // bind/named/disk require a source; tmpfs must not have one.
             match kind.as_str() {
-                "bind" | "named" => {}
+                "bind" | "named" | "disk" if source.is_some() => {}
+                "bind" | "named" | "disk" => {
+                    return Err(error::base_error(format!(
+                        "volume mount kind {kind:?} requires a source"
+                    )))
+                }
+                "tmpfs" => {}
                 other => {
                     return Err(error::base_error(format!(
-                        "unknown volume mount kind {other:?} (expected \"bind\" or \"named\")"
+                        "unknown volume mount kind {other:?} (expected bind/named/tmpfs/disk)"
                     )))
                 }
             }
-            // Validate options up front (the volume closure cannot return an error).
-            let mount_opts: Vec<String> = spec
-                .get(3)
-                .map(|s| {
-                    s.split(',')
-                        .map(|o| o.trim().to_string())
-                        .filter(|o| !o.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
-            for opt in &mount_opts {
-                match opt.as_str() {
-                    "ro" | "readonly" | "rw" | "noexec" | "nosuid" | "nodev" => {}
-                    other => {
-                        return Err(error::base_error(format!(
-                            "unknown volume mount option {other:?} \
-                             (expected ro/rw/noexec/nosuid/nodev)"
-                        )))
-                    }
-                }
-            }
-            b = b.volume(guest, move |m| {
-                let mut m = if kind == "named" {
-                    m.named(source)
-                } else {
-                    m.bind(source)
+            b = b.volume(guest, move |mut mb| {
+                mb = match kind.as_str() {
+                    "named" => mb.named(source.unwrap()),
+                    "tmpfs" => mb.tmpfs(),
+                    "disk" => mb.disk(source.unwrap()),
+                    _ => mb.bind(source.unwrap()), // "bind"
                 };
-                for opt in &mount_opts {
-                    m = match opt.as_str() {
-                        "ro" | "readonly" => m.readonly(),
-                        "noexec" => m.noexec(),
-                        "nosuid" => m.nosuid(),
-                        "nodev" => m.nodev(),
-                        _ => m, // "rw" — default; already validated above
-                    };
+                if let Some(n) = size_mib {
+                    mb = mb.size(n);
                 }
-                m
+                if let Some(f) = format {
+                    mb = mb.format(f);
+                }
+                if let Some(ft) = fstype {
+                    mb = mb.fstype(ft);
+                }
+                if readonly {
+                    mb = mb.readonly();
+                }
+                if noexec {
+                    mb = mb.noexec();
+                }
+                if nosuid {
+                    mb = mb.nosuid();
+                }
+                if nodev {
+                    mb = mb.nodev();
+                }
+                if let Some(sv) = stat_virt {
+                    mb = mb.stat_virtualization(sv);
+                }
+                if let Some(hp) = host_perms {
+                    mb = mb.host_permissions(hp);
+                }
+                mb
             });
         }
         // patches: rootfs modifications applied before boot. The Ruby layer
@@ -207,16 +254,130 @@ impl Sandbox {
         for (resource, soft, hard) in parse_rlimits(opts)? {
             b = b.rlimit_range(resource, soft, hard);
         }
-        // secrets: normalized by the Ruby layer to [env_var, value, allowed_host]
-        // triples. Uses the placeholder-based `secret_env` shorthand, which also
-        // auto-enables TLS interception (required for value substitution).
-        for spec in conv::opt::<Vec<Vec<String>>>(opts, "secrets")?.unwrap_or_default() {
-            if spec.len() != 3 {
-                return Err(error::base_error(
-                    "invalid secret spec (expected [env, value, host])",
-                ));
+        // secrets: each entry is normalized by the Ruby layer to a string-keyed
+        // Hash — env (req), value (req), hosts / host_patterns (allow lists),
+        // placeholder, require_tls, inject_{headers,basic_auth,query,body},
+        // on_violation. Routed through the full secret builder (`b.secret`), which
+        // auto-enables TLS interception. Mirrors the Python/Node SecretEntry.
+        for h in conv::opt_hash_vec(opts, "secrets")? {
+            let spec = parse_secret(h)?;
+            b = b.secret(move |s| spec.apply(s));
+        }
+        // Sandbox-level secret-leak policy (block / block_and_log /
+        // block_and_terminate / passthrough). Applied via the network builder,
+        // which accumulates on top of any policy/dns/tls already configured.
+        if let Some(v) = conv::opt::<Value>(opts, "on_secret_violation")? {
+            let spec = parse_violation_spec(v)?;
+            b = b.network(move |n| n.on_secret_violation(move |va| spec.apply(va)));
+        }
+        // Advanced network configuration (custom DNS, TLS-interception tuning,
+        // guest IP pools, connection cap, host-CA trust), applied via the network
+        // builder, which accumulates on top of any policy already configured.
+        // Mirrors the Python binding's `apply_network`. Parsed up front because
+        // the builder closures cannot return an error.
+        let dns = match conv::opt::<RHash>(opts, "dns")? {
+            Some(d) => Some(parse_dns(d)?),
+            None => None,
+        };
+        let tls = match conv::opt::<RHash>(opts, "tls")? {
+            Some(t) => Some(parse_tls(t)?),
+            None => None,
+        };
+        let ipv4_pool = match conv::opt_string(opts, "ipv4_pool")? {
+            Some(s) => Some(
+                s.parse::<ipnetwork::Ipv4Network>()
+                    .map_err(|e| error::base_error(format!("invalid ipv4_pool {s:?}: {e}")))?,
+            ),
+            None => None,
+        };
+        let ipv6_pool = match conv::opt_string(opts, "ipv6_pool")? {
+            Some(s) => Some(
+                s.parse::<ipnetwork::Ipv6Network>()
+                    .map_err(|e| error::base_error(format!("invalid ipv6_pool {s:?}: {e}")))?,
+            ),
+            None => None,
+        };
+        let max_connections = conv::opt::<usize>(opts, "max_connections")?;
+        let trust_host_cas = conv::opt::<bool>(opts, "trust_host_cas")?;
+        if dns.is_some()
+            || tls.is_some()
+            || ipv4_pool.is_some()
+            || ipv6_pool.is_some()
+            || max_connections.is_some()
+            || trust_host_cas.is_some()
+        {
+            b = b.network(move |mut n| {
+                if let Some(dns) = dns {
+                    n = n.dns(move |mut d| {
+                        if !dns.nameservers.is_empty() {
+                            d = d.nameservers(dns.nameservers);
+                        }
+                        if let Some(rp) = dns.rebind_protection {
+                            d = d.rebind_protection(rp);
+                        }
+                        if let Some(qt) = dns.query_timeout_ms {
+                            d = d.query_timeout_ms(qt);
+                        }
+                        d
+                    });
+                }
+                if let Some(tls) = tls {
+                    n = n.tls(move |mut t| {
+                        for pat in tls.bypass {
+                            t = t.bypass(pat);
+                        }
+                        if let Some(v) = tls.verify_upstream {
+                            t = t.verify_upstream(v);
+                        }
+                        if let Some(ports) = tls.intercepted_ports {
+                            t = t.intercepted_ports(ports);
+                        }
+                        if let Some(q) = tls.block_quic {
+                            t = t.block_quic(q);
+                        }
+                        if let Some(p) = tls.upstream_ca_cert {
+                            t = t.upstream_ca_cert(p);
+                        }
+                        if let Some(p) = tls.intercept_ca_cert {
+                            t = t.intercept_ca_cert(p);
+                        }
+                        if let Some(p) = tls.intercept_ca_key {
+                            t = t.intercept_ca_key(p);
+                        }
+                        t
+                    });
+                }
+                if let Some(p) = ipv4_pool {
+                    n = n.ipv4_pool(p);
+                }
+                if let Some(p) = ipv6_pool {
+                    n = n.ipv6_pool(p);
+                }
+                if let Some(m) = max_connections {
+                    n = n.max_connections(m);
+                }
+                if let Some(t) = trust_host_cas {
+                    n = n.trust_host_cas(t);
+                }
+                n
+            });
+        }
+        // init: hand guest PID 1 to an init system. The Ruby layer normalizes
+        // `init:` to a Hash { cmd:, args?:, env?: }. With no args/env, use the
+        // plain `init(cmd)`; otherwise the `init_with` closure-builder.
+        if let Some(h) = conv::opt::<RHash>(opts, "init")? {
+            let cmd = conv::opt_string(h, "cmd")?
+                .ok_or_else(|| error::base_error("init requires a :cmd"))?;
+            let args = conv::opt_string_vec(h, "args")?;
+            let env = conv::opt_string_map(h, "env")?;
+            if args.is_empty() && env.is_empty() {
+                b = b.init(cmd);
+            } else {
+                b = b.init_with(cmd, move |i| i.args(args).envs(env));
             }
-            b = b.secret_env(spec[0].clone(), spec[1].clone(), spec[2].clone());
+        }
+        if conv::opt_bool(opts, "ephemeral")? {
+            b = b.ephemeral(true);
         }
         if conv::opt_bool(opts, "detached")? {
             b = b.detached(true);
@@ -227,8 +388,27 @@ impl Sandbox {
             b = b.replace();
         }
 
+        Ok(b)
+    }
+
+    /// Create and boot a sandbox. `opts` is a string-keyed options Hash.
+    fn create(name: String, opts: RHash) -> Result<Sandbox, Error> {
+        let b = Self::build_builder(name, opts)?;
         let inner = block_on(b.create()).map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
+    }
+
+    /// Create a sandbox with streaming image-pull progress. Returns a
+    /// `PullSession` whose `recv` yields progress events and whose `result`
+    /// resolves to the booted sandbox. Mirrors Python `create_with_progress` /
+    /// Node `createWithPullProgress`.
+    fn create_with_progress(name: String, opts: RHash) -> Result<PullSession, Error> {
+        let b = Self::build_builder(name, opts)?;
+        // `create_with_pull_progress` spawns a tokio task, so it must run inside
+        // the runtime context even though the call itself is synchronous.
+        let (handle, join) =
+            block_on(async move { b.create_with_pull_progress() }).map_err(error::to_ruby)?;
+        Ok(PullSession::new(handle, join))
     }
 
     /// Restart a previously-defined sandbox by name.
@@ -495,6 +675,20 @@ impl Sandbox {
         block_on(fs.copy_to_host(&guest_path, &host_path)).map_err(error::to_ruby)
     }
 
+    /// Open a streaming reader over a guest file (for files too large to buffer).
+    fn fs_read_stream(&self, path: String) -> Result<crate::fs_stream::FsReadStreamHandle, Error> {
+        let fs = self.inner.fs();
+        let stream = block_on(fs.read_stream(&path)).map_err(error::to_ruby)?;
+        Ok(crate::fs_stream::FsReadStreamHandle::new(stream))
+    }
+
+    /// Open a streaming writer to a guest file.
+    fn fs_write_stream(&self, path: String) -> Result<crate::fs_stream::FsWriteSinkHandle, Error> {
+        let fs = self.inner.fs();
+        let sink = block_on(fs.write_stream(&path)).map_err(error::to_ruby)?;
+        Ok(crate::fs_stream::FsWriteSinkHandle::new(sink))
+    }
+
     //----------------------------------------------------------------------
     // SSH (mirror SandboxSshOps)
     //----------------------------------------------------------------------
@@ -686,6 +880,51 @@ fn parse_rlimits(opts: RHash) -> Result<Vec<(RlimitResource, u64, u64)>, Error> 
 }
 
 //--------------------------------------------------------------------------------------------------
+// Mount enum parsing
+//--------------------------------------------------------------------------------------------------
+
+fn disk_format_from_str(s: &str) -> Result<DiskImageFormat, Error> {
+    use DiskImageFormat::*;
+    Ok(match s {
+        "qcow2" => Qcow2,
+        "raw" => Raw,
+        "vmdk" => Vmdk,
+        other => {
+            return Err(error::base_error(format!(
+                "unknown disk format {other:?} (expected qcow2/raw/vmdk)"
+            )))
+        }
+    })
+}
+
+fn stat_virtualization_from_str(s: &str) -> Result<StatVirtualization, Error> {
+    use StatVirtualization::*;
+    Ok(match s {
+        "strict" => Strict,
+        "relaxed" => Relaxed,
+        "off" => Off,
+        other => {
+            return Err(error::base_error(format!(
+                "unknown stat_virtualization {other:?} (expected strict/relaxed/off)"
+            )))
+        }
+    })
+}
+
+fn host_permissions_from_str(s: &str) -> Result<HostPermissions, Error> {
+    use HostPermissions::*;
+    Ok(match s {
+        "private" => Private,
+        "mirror" => Mirror,
+        other => {
+            return Err(error::base_error(format!(
+                "unknown host_permissions {other:?} (expected private/mirror)"
+            )))
+        }
+    })
+}
+
+//--------------------------------------------------------------------------------------------------
 // Patch parsing (mirrors the Python binding's `apply_patch`)
 //--------------------------------------------------------------------------------------------------
 
@@ -762,6 +1001,199 @@ fn parse_patches(opts: RHash) -> Result<Vec<Patch>, Error> {
         out.push(patch);
     }
     Ok(out)
+}
+
+//--------------------------------------------------------------------------------------------------
+// Secret parsing (mirrors the Python/Node SecretEntry surface)
+//--------------------------------------------------------------------------------------------------
+
+/// A secret-leak response. Per-secret (`on_violation:`) and sandbox-level
+/// (`on_secret_violation:`) share the same shape.
+enum ViolationSpec {
+    Block,
+    BlockAndLog,
+    BlockAndTerminate,
+    Passthrough {
+        hosts: Vec<String>,
+        patterns: Vec<String>,
+        all: bool,
+    },
+}
+
+impl ViolationSpec {
+    fn apply(self, mut v: ViolationActionBuilder) -> ViolationActionBuilder {
+        match self {
+            ViolationSpec::Block => v.block(),
+            ViolationSpec::BlockAndLog => v.block_and_log(),
+            ViolationSpec::BlockAndTerminate => v.block_and_terminate(),
+            ViolationSpec::Passthrough {
+                hosts,
+                patterns,
+                all,
+            } => {
+                for h in hosts {
+                    v = v.passthrough_host(h);
+                }
+                for p in patterns {
+                    v = v.passthrough_host_pattern(p);
+                }
+                if all {
+                    v = v.passthrough_all_hosts(true);
+                }
+                v
+            }
+        }
+    }
+}
+
+/// Parse `on_violation:` — a String (block variants) or a Hash describing a
+/// passthrough action — into a [`ViolationSpec`].
+fn parse_violation_spec(v: Value) -> Result<ViolationSpec, Error> {
+    if let Ok(s) = String::try_convert(v) {
+        return match s.as_str() {
+            "block" => Ok(ViolationSpec::Block),
+            "block_and_log" => Ok(ViolationSpec::BlockAndLog),
+            "block_and_terminate" => Ok(ViolationSpec::BlockAndTerminate),
+            other => Err(error::base_error(format!(
+                "unknown on_violation {other:?} (expected block/block_and_log/\
+                 block_and_terminate, or a Hash with :passthrough_hosts/\
+                 :passthrough_host_patterns/:passthrough_all_hosts)"
+            ))),
+        };
+    }
+    let h = RHash::try_convert(v)
+        .map_err(|_| error::base_error("on_violation must be a String or a Hash"))?;
+    Ok(ViolationSpec::Passthrough {
+        hosts: conv::opt_string_vec(h, "passthrough_hosts")?,
+        patterns: conv::opt_string_vec(h, "passthrough_host_patterns")?,
+        all: conv::opt_bool(h, "passthrough_all_hosts")?,
+    })
+}
+
+struct SecretSpec {
+    env: String,
+    value: String,
+    hosts: Vec<String>,
+    host_patterns: Vec<String>,
+    placeholder: Option<String>,
+    require_tls: Option<bool>,
+    inject_headers: Option<bool>,
+    inject_basic_auth: Option<bool>,
+    inject_query: Option<bool>,
+    inject_body: Option<bool>,
+    on_violation: Option<ViolationSpec>,
+}
+
+fn parse_secret(h: RHash) -> Result<SecretSpec, Error> {
+    let env =
+        conv::opt_string(h, "env")?.ok_or_else(|| error::base_error("secret requires :env"))?;
+    let value =
+        conv::opt_string(h, "value")?.ok_or_else(|| error::base_error("secret requires :value"))?;
+    let hosts = conv::opt_string_vec(h, "hosts")?;
+    let host_patterns = conv::opt_string_vec(h, "host_patterns")?;
+    if hosts.is_empty() && host_patterns.is_empty() {
+        return Err(error::base_error(
+            "secret requires at least one allowed host (:host, :hosts, or :host_patterns)",
+        ));
+    }
+    let on_violation = match conv::opt::<Value>(h, "on_violation")? {
+        Some(v) => Some(parse_violation_spec(v)?),
+        None => None,
+    };
+    Ok(SecretSpec {
+        env,
+        value,
+        hosts,
+        host_patterns,
+        placeholder: conv::opt_string(h, "placeholder")?,
+        require_tls: conv::opt::<bool>(h, "require_tls")?,
+        inject_headers: conv::opt::<bool>(h, "inject_headers")?,
+        inject_basic_auth: conv::opt::<bool>(h, "inject_basic_auth")?,
+        inject_query: conv::opt::<bool>(h, "inject_query")?,
+        inject_body: conv::opt::<bool>(h, "inject_body")?,
+        on_violation,
+    })
+}
+
+impl SecretSpec {
+    fn apply(self, mut s: SecretBuilder) -> SecretBuilder {
+        s = s.env(self.env).value(self.value);
+        for host in self.hosts {
+            s = s.allow_host(host);
+        }
+        for pat in self.host_patterns {
+            s = s.allow_host_pattern(pat);
+        }
+        if let Some(p) = self.placeholder {
+            s = s.placeholder(p);
+        }
+        if let Some(rt) = self.require_tls {
+            s = s.require_tls_identity(rt);
+        }
+        if let Some(enabled) = self.inject_headers {
+            s = s.inject_headers(enabled);
+        }
+        if let Some(enabled) = self.inject_basic_auth {
+            s = s.inject_basic_auth(enabled);
+        }
+        if let Some(enabled) = self.inject_query {
+            s = s.inject_query(enabled);
+        }
+        if let Some(enabled) = self.inject_body {
+            s = s.inject_body(enabled);
+        }
+        if let Some(action) = self.on_violation {
+            s = s.on_violation(move |v| action.apply(v));
+        }
+        s
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Network connection config parsing (DNS / TLS interception)
+//--------------------------------------------------------------------------------------------------
+
+struct DnsSpec {
+    nameservers: Vec<Nameserver>,
+    rebind_protection: Option<bool>,
+    query_timeout_ms: Option<u64>,
+}
+
+fn parse_dns(d: RHash) -> Result<DnsSpec, Error> {
+    let mut nameservers = Vec::new();
+    for s in conv::opt_string_vec(d, "nameservers")? {
+        nameservers.push(
+            s.parse::<Nameserver>()
+                .map_err(|e| error::base_error(format!("invalid nameserver {s:?}: {e}")))?,
+        );
+    }
+    Ok(DnsSpec {
+        nameservers,
+        rebind_protection: conv::opt::<bool>(d, "rebind_protection")?,
+        query_timeout_ms: conv::opt::<u64>(d, "query_timeout_ms")?,
+    })
+}
+
+struct TlsSpec {
+    bypass: Vec<String>,
+    verify_upstream: Option<bool>,
+    intercepted_ports: Option<Vec<u16>>,
+    block_quic: Option<bool>,
+    upstream_ca_cert: Option<String>,
+    intercept_ca_cert: Option<String>,
+    intercept_ca_key: Option<String>,
+}
+
+fn parse_tls(t: RHash) -> Result<TlsSpec, Error> {
+    Ok(TlsSpec {
+        bypass: conv::opt_string_vec(t, "bypass")?,
+        verify_upstream: conv::opt::<bool>(t, "verify_upstream")?,
+        intercepted_ports: conv::opt::<Vec<u16>>(t, "intercepted_ports")?,
+        block_quic: conv::opt::<bool>(t, "block_quic")?,
+        upstream_ca_cert: conv::opt_string(t, "upstream_ca_cert")?,
+        intercept_ca_cert: conv::opt_string(t, "intercept_ca_cert")?,
+        intercept_ca_key: conv::opt_string(t, "intercept_ca_key")?,
+    })
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1205,7 +1637,7 @@ fn fs_entry_kind_str(kind: FsEntryKind) -> &'static str {
     }
 }
 
-fn fs_entry_to_hash(entry: &FsEntry) -> RHash {
+pub(crate) fn fs_entry_to_hash(entry: &FsEntry) -> RHash {
     let hash = ruby().hash_new();
     let _ = hash.aset("path", entry.path.clone());
     let _ = hash.aset("type", fs_entry_kind_str(entry.kind));
@@ -1218,7 +1650,7 @@ fn fs_entry_to_hash(entry: &FsEntry) -> RHash {
     hash
 }
 
-fn fs_metadata_to_hash(meta: &FsMetadata) -> RHash {
+pub(crate) fn fs_metadata_to_hash(meta: &FsMetadata) -> RHash {
     let hash = ruby().hash_new();
     let _ = hash.aset("type", fs_entry_kind_str(meta.kind));
     let _ = hash.aset("size", meta.size);
@@ -1241,6 +1673,11 @@ pub(crate) fn metrics_to_hash(m: &SandboxMetrics) -> RHash {
     let _ = hash.aset("disk_write_bytes", m.disk_write_bytes);
     let _ = hash.aset("net_rx_bytes", m.net_rx_bytes);
     let _ = hash.aset("net_tx_bytes", m.net_tx_bytes);
+    // OCI writable-upper-layer accounting (Option<u64> → Integer or nil), for
+    // sandboxes capped by `oci_upper_size`. Mirrors the Python/Node metrics.
+    let _ = hash.aset("upper_used_bytes", m.upper_used_bytes);
+    let _ = hash.aset("upper_free_bytes", m.upper_free_bytes);
+    let _ = hash.aset("upper_host_allocated_bytes", m.upper_host_allocated_bytes);
     let _ = hash.aset("uptime_secs", m.uptime.as_secs_f64());
     let _ = hash.aset("timestamp_ms", m.timestamp.timestamp_millis());
     hash
@@ -1280,6 +1717,159 @@ fn stop_result_to_hash(result: &SandboxStopResult) -> RHash {
     let _ = hash.aset("observed_at_ms", result.observed_at.timestamp_millis());
     let _ = hash.aset("source", result.source.clone());
     hash
+}
+
+//--------------------------------------------------------------------------------------------------
+// Pull progress (streaming image-pull during create_with_progress)
+//--------------------------------------------------------------------------------------------------
+
+/// Convert a core `PullProgress` event into a `{ "kind" => …, fields… }` Hash.
+/// The match is exhaustive (no wildcard) so a future upstream variant surfaces
+/// as a compile error rather than a silently-dropped event.
+fn pull_progress_to_hash(p: &PullProgress) -> RHash {
+    use PullProgress::*;
+    let h = ruby().hash_new();
+    match p {
+        Resolving { reference } => {
+            let _ = h.aset("kind", "resolving");
+            let _ = h.aset("reference", reference.to_string());
+        }
+        Resolved {
+            reference,
+            manifest_digest,
+            layer_count,
+            total_download_bytes,
+        } => {
+            let _ = h.aset("kind", "resolved");
+            let _ = h.aset("reference", reference.to_string());
+            let _ = h.aset("manifest_digest", manifest_digest.to_string());
+            let _ = h.aset("layer_count", *layer_count);
+            let _ = h.aset("total_download_bytes", *total_download_bytes);
+        }
+        LayerDownloadProgress {
+            layer_index,
+            digest,
+            downloaded_bytes,
+            total_bytes,
+        } => {
+            let _ = h.aset("kind", "layer_download_progress");
+            let _ = h.aset("layer_index", *layer_index);
+            let _ = h.aset("digest", digest.to_string());
+            let _ = h.aset("downloaded_bytes", *downloaded_bytes);
+            let _ = h.aset("total_bytes", *total_bytes);
+        }
+        LayerDownloadComplete {
+            layer_index,
+            digest,
+            downloaded_bytes,
+        } => {
+            let _ = h.aset("kind", "layer_download_complete");
+            let _ = h.aset("layer_index", *layer_index);
+            let _ = h.aset("digest", digest.to_string());
+            let _ = h.aset("downloaded_bytes", *downloaded_bytes);
+        }
+        LayerDownloadVerifying {
+            layer_index,
+            digest,
+        } => {
+            let _ = h.aset("kind", "layer_download_verifying");
+            let _ = h.aset("layer_index", *layer_index);
+            let _ = h.aset("digest", digest.to_string());
+        }
+        LayerMaterializeStarted {
+            layer_index,
+            diff_id,
+        } => {
+            let _ = h.aset("kind", "layer_materialize_started");
+            let _ = h.aset("layer_index", *layer_index);
+            let _ = h.aset("diff_id", diff_id.to_string());
+        }
+        LayerMaterializeProgress {
+            layer_index,
+            bytes_read,
+            total_bytes,
+        } => {
+            let _ = h.aset("kind", "layer_materialize_progress");
+            let _ = h.aset("layer_index", *layer_index);
+            let _ = h.aset("bytes_read", *bytes_read);
+            let _ = h.aset("total_bytes", *total_bytes);
+        }
+        LayerMaterializeWriting { layer_index } => {
+            let _ = h.aset("kind", "layer_materialize_writing");
+            let _ = h.aset("layer_index", *layer_index);
+        }
+        LayerMaterializeComplete {
+            layer_index,
+            diff_id,
+        } => {
+            let _ = h.aset("kind", "layer_materialize_complete");
+            let _ = h.aset("layer_index", *layer_index);
+            let _ = h.aset("diff_id", diff_id.to_string());
+        }
+        StitchMergingTrees { layer_count } => {
+            let _ = h.aset("kind", "stitch_merging_trees");
+            let _ = h.aset("layer_count", *layer_count);
+        }
+        StitchWritingFsmeta => {
+            let _ = h.aset("kind", "stitch_writing_fsmeta");
+        }
+        StitchWritingVmdk => {
+            let _ = h.aset("kind", "stitch_writing_vmdk");
+        }
+        StitchComplete => {
+            let _ = h.aset("kind", "stitch_complete");
+        }
+        Complete {
+            reference,
+            layer_count,
+        } => {
+            let _ = h.aset("kind", "complete");
+            let _ = h.aset("reference", reference.to_string());
+            let _ = h.aset("layer_count", *layer_count);
+        }
+    }
+    h
+}
+
+/// A streaming image-pull + create session, from `Sandbox.create_with_progress`.
+/// `recv` yields progress events; `result` awaits the booted sandbox. The pull
+/// runs as a tokio task; the progress receiver needs `&mut self` and the join
+/// handle is consumed once, so both sit behind a `tokio::Mutex`.
+#[magnus::wrap(class = "Microsandbox::Native::PullSession", free_immediately, size)]
+pub struct PullSession {
+    progress: Arc<Mutex<PullProgressHandle>>,
+    join: Arc<Mutex<Option<JoinHandle<MicrosandboxResult<microsandbox::Sandbox>>>>>,
+}
+
+impl PullSession {
+    fn new(
+        progress: PullProgressHandle,
+        join: JoinHandle<MicrosandboxResult<microsandbox::Sandbox>>,
+    ) -> Self {
+        Self {
+            progress: Arc::new(Mutex::new(progress)),
+            join: Arc::new(Mutex::new(Some(join))),
+        }
+    }
+
+    /// Next progress event as a Hash, or nil when the pull is finished.
+    fn recv(&self) -> Result<Option<RHash>, Error> {
+        let progress = Arc::clone(&self.progress);
+        let event = block_on(async move { progress.lock().await.recv().await });
+        Ok(event.map(|p| pull_progress_to_hash(&p)))
+    }
+
+    /// Await the booted sandbox. Call after draining `recv` (it joins the
+    /// create task). Consumes the join handle, so it is callable only once.
+    fn result(&self) -> Result<Sandbox, Error> {
+        let join = Arc::clone(&self.join);
+        let taken = block_on(async move { join.lock().await.take() });
+        let handle = taken.ok_or_else(|| error::base_error("pull session result already taken"))?;
+        let inner = block_on(handle)
+            .map_err(|e| error::base_error(format!("sandbox creation task failed: {e}")))?
+            .map_err(error::to_ruby)?;
+        Ok(Sandbox::from_inner(inner))
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1360,6 +1950,27 @@ impl SbHandle {
     fn wait_until_stopped(&self) -> Result<RHash, Error> {
         let result = block_on(self.inner.wait_until_stopped()).map_err(error::to_ruby)?;
         Ok(stop_result_to_hash(&result))
+    }
+
+    /// The sandbox's stored configuration as a JSON string (synchronous — the
+    /// handle already carries it, no runtime round-trip). The Ruby layer parses
+    /// it into a Hash for `#config`. Mirrors the Python/Node `config_json`.
+    fn config_json(&self) -> String {
+        self.inner.config_json().to_string()
+    }
+
+    /// Snapshot this (stopped) sandbox under a bare name (resolved under the
+    /// snapshots directory). Returns the same SnapshotInfo Hash as
+    /// `Snapshot.create`. Mirrors the Python/Node `handle.snapshot(name)`.
+    fn snapshot(&self, name: String) -> Result<RHash, Error> {
+        let snap = block_on(self.inner.snapshot(&name)).map_err(error::to_ruby)?;
+        Ok(crate::snapshot::snapshot_to_hash(&snap))
+    }
+
+    /// Snapshot this (stopped) sandbox to an explicit filesystem path.
+    fn snapshot_to(&self, path: String) -> Result<RHash, Error> {
+        let snap = block_on(self.inner.snapshot_to(path)).map_err(error::to_ruby)?;
+        Ok(crate::snapshot::snapshot_to_hash(&snap))
     }
 }
 
@@ -1450,6 +2061,10 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let class = native.define_class("Sandbox", ruby.class_object())?;
 
     class.define_singleton_method("create", function!(Sandbox::create, 2))?;
+    class.define_singleton_method(
+        "create_with_progress",
+        function!(Sandbox::create_with_progress, 2),
+    )?;
     class.define_singleton_method("start", function!(Sandbox::start, 2))?;
     class.define_singleton_method("get", function!(Sandbox::get, 1))?;
     class.define_singleton_method("list", function!(Sandbox::list, 0))?;
@@ -1487,6 +2102,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("fs_stat", method!(Sandbox::fs_stat, 1))?;
     class.define_method("fs_copy_from_host", method!(Sandbox::fs_copy_from_host, 2))?;
     class.define_method("fs_copy_to_host", method!(Sandbox::fs_copy_to_host, 2))?;
+    class.define_method("fs_read_stream", method!(Sandbox::fs_read_stream, 1))?;
+    class.define_method("fs_write_stream", method!(Sandbox::fs_write_stream, 1))?;
 
     class.define_method("ssh_open_client", method!(Sandbox::ssh_open_client, 1))?;
     class.define_method(
@@ -1513,6 +2130,13 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
         "wait_until_stopped",
         method!(SbHandle::wait_until_stopped, 0),
     )?;
+    handle.define_method("config_json", method!(SbHandle::config_json, 0))?;
+    handle.define_method("snapshot", method!(SbHandle::snapshot, 1))?;
+    handle.define_method("snapshot_to", method!(SbHandle::snapshot_to, 1))?;
+
+    let session = native.define_class("PullSession", ruby.class_object())?;
+    session.define_method("recv", method!(PullSession::recv, 0))?;
+    session.define_method("result", method!(PullSession::result, 0))?;
 
     Ok(())
 }

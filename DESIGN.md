@@ -183,9 +183,19 @@ The binding is verified at four levels:
    microVM, confirming the gem manifest and source-install path are complete.
 
 **Roadmap:** the v1 roadmap (custom per-rule network policies, file patches,
-interactive `attach`/`attach_shell`, SSH, and the raw agent client) is now
-implemented — see the list above. What remains is upstream-gated rather than a
-binding gap: surfacing newer core features as the pinned core-crate tag advances
-(e.g. additional network knobs like DNS/TLS-proxy tuning and per-mount stat
-virtualization), which slot in module-by-module exactly as the existing bindings
-do.
+interactive `attach`/`attach_shell`, SSH, and the raw agent client) is
+implemented, and so is the bulk of the v0.5.8 configuration surface that a
+later parity pass added: streaming image-pull progress, host-side `VolumeFs`,
+streaming guest fs (`read_stream`/`write_stream`), the full secrets surface,
+network configuration (DNS, TLS-interception tuning, IPv4/IPv6 pools,
+`max_connections`, `trust_host_cas`), `init`/`ephemeral`/disk-image `fstype`
+create options, full mount options (tmpfs/disk + stat-virtualization/
+host-permissions), and snapshot inspection (`open`/`list_dir`/`reindex`).
+
+A few **secondary** upstream knobs remain unexposed (a genuine binding gap, not
+upstream-gated — they exist at the pinned `v0.5.8`): per-published-port host
+**bind address** (ports always bind loopback), network **interface overrides**,
+and inline **named-volume create-mode** (pre-create with `Volume.create`, then
+mount with `{ named: }`). These slot in module-by-module exactly as the existing
+bindings do. Beyond those, surfacing genuinely newer core features is gated on
+advancing the pinned core-crate tag.

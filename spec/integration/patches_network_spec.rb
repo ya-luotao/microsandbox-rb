@@ -41,6 +41,24 @@ RSpec.describe "patches and network", :integration do
         end
       end
     end
+
+    # The binary `file` patch is the only variant with a distinct native byte
+    # path (RString::as_slice copy) and no Python analogue, so the end-to-end
+    # round-trip — NUL-containing bytes through the guest filesystem — is only
+    # exercised here. (The pure-Ruby factory bytes are asserted in patch_spec.rb.)
+    it "writes a binary file patch with NUL bytes, byte-exact" do
+      blob = "\x00\xff\x01\x02\x00\x80".b
+      Microsandbox::Sandbox.create(
+        unique_sandbox_name, image: image,
+        patches: [Microsandbox::Patch.file("/opt/blob.bin", blob, mode: 0o600)]
+      ) do |sb|
+        got = sb.fs.read("/opt/blob.bin")
+        expect(got.b).to eq(blob)
+        # Cross-check the byte count via a shell probe (guards against truncation).
+        size = sb.shell("wc -c < /opt/blob.bin").stdout.strip
+        expect(size).to eq(blob.bytesize.to_s)
+      end
+    end
   end
 
   describe "custom network policy" do

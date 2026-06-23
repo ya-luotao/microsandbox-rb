@@ -24,6 +24,12 @@ module Microsandbox
     attr_reader :net_rx_bytes
     # @return [Integer] cumulative bytes transmitted over the network
     attr_reader :net_tx_bytes
+    # @return [Integer, nil] bytes used in the writable OCI upper layer
+    attr_reader :upper_used_bytes
+    # @return [Integer, nil] bytes free in the writable OCI upper layer
+    attr_reader :upper_free_bytes
+    # @return [Integer, nil] host bytes allocated to back the upper layer
+    attr_reader :upper_host_allocated_bytes
     # @return [Float] sandbox uptime in seconds
     attr_reader :uptime_secs
 
@@ -38,6 +44,9 @@ module Microsandbox
       @disk_write_bytes = data["disk_write_bytes"]
       @net_rx_bytes = data["net_rx_bytes"]
       @net_tx_bytes = data["net_tx_bytes"]
+      @upper_used_bytes = data["upper_used_bytes"]
+      @upper_free_bytes = data["upper_free_bytes"]
+      @upper_host_allocated_bytes = data["upper_host_allocated_bytes"]
       @uptime_secs = data["uptime_secs"]
       @timestamp_ms = data["timestamp_ms"]
     end

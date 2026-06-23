@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use magnus::{value::ReprValue, Error, RArray, RHash, TryConvert, Value};
+use magnus::{value::ReprValue, Error, IntoValue, RArray, RHash, TryConvert, Value};
 
 /// Fetch a non-nil value for `key`, if present.
 fn get(hash: RHash, key: &str) -> Option<Value> {
@@ -88,5 +88,41 @@ pub fn opt_port_map(hash: RHash, key: &str) -> Result<Vec<(u16, u16)>, Error> {
             Ok(map.into_iter().collect())
         }
         None => Ok(Vec::new()),
+    }
+}
+
+/// Recursively convert a `serde_json::Value` into a Ruby value. Used for
+/// pass-through JSON whose shape is not fixed — e.g. an image config's OCI
+/// `labels` object, which the Ruby layer hands back verbatim (mirroring the
+/// Python SDK's `dict | None`).
+pub fn json_to_ruby(value: &serde_json::Value) -> Value {
+    let ruby = crate::runtime::ruby();
+    match value {
+        serde_json::Value::Null => ruby.qnil().as_value(),
+        serde_json::Value::Bool(b) => b.into_value_with(&ruby),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i.into_value_with(&ruby)
+            } else if let Some(u) = n.as_u64() {
+                u.into_value_with(&ruby)
+            } else {
+                n.as_f64().unwrap_or(0.0).into_value_with(&ruby)
+            }
+        }
+        serde_json::Value::String(s) => s.as_str().into_value_with(&ruby),
+        serde_json::Value::Array(items) => {
+            let arr = ruby.ary_new();
+            for item in items {
+                let _ = arr.push(json_to_ruby(item));
+            }
+            arr.into_value_with(&ruby)
+        }
+        serde_json::Value::Object(map) => {
+            let hash = ruby.hash_new();
+            for (k, v) in map {
+                let _ = hash.aset(k.as_str(), json_to_ruby(v));
+            }
+            hash.into_value_with(&ruby)
+        }
     }
 }

@@ -20,9 +20,10 @@ module Microsandbox
       @data = event["data"]
     end
 
-    # @return [String, nil] {#data} decoded as UTF-8 (lenient)
+    # @return [String, nil] {#data} decoded as UTF-8 (lossy — invalid byte
+    #   sequences are replaced with U+FFFD, so the result is always valid UTF-8)
     def text
-      @data&.dup&.force_encoding(Encoding::UTF_8)
+      @data&.dup&.force_encoding(Encoding::UTF_8)&.scrub
     end
 
     def started? = @type == :started
@@ -62,9 +63,13 @@ module Microsandbox
     end
 
     # Write data to the process stdin.
+    # @param data [String] raw bytes to write (binary-safe)
+    # @raise [TypeError] if +data+ is not a String
     # @return [self]
     def write(data)
-      @native.write(data.to_s)
+      bytes = String.try_convert(data) or
+        raise TypeError, "data must be a String (got #{data.class})"
+      @native.write(bytes)
       self
     end
 
