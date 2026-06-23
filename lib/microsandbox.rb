@@ -45,6 +45,15 @@ module Microsandbox
       VERSION
     end
 
+    # The upstream microsandbox runtime release this gem build embeds (the git
+    # `tag` pinned in ext/microsandbox/Cargo.toml). The gem's own {version} is
+    # versioned independently of this, so consult this to learn which runtime is
+    # wrapped. See the Versioning section of the README for the full map.
+    # @return [String] e.g. "v0.5.8"
+    def runtime_version
+      RUNTIME_VERSION
+    end
+
     # Download and install the `msb` runtime + `libkrunfw` into
     # `~/.microsandbox` (idempotent).
     #

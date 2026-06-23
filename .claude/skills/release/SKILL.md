@@ -16,11 +16,17 @@ version with the user before pushing the tag.
    - `lib/microsandbox/version.rb` → `VERSION = "$ARGUMENTS"`
    - `ext/microsandbox/Cargo.toml` `[package]` → `version = "$ARGUMENTS"`
 
+   The gem version is on its OWN semver track, independent of the upstream runtime tag — do NOT
+   pick `$ARGUMENTS` to mirror the runtime version. While 0.x, a breaking API change bumps the
+   minor; a fix/addition bumps the patch. (See the Versioning section of `README.md`.)
+
 3. **Upstream runtime tag — only if this release adopts a new upstream runtime.** This is a
    SEPARATE axis from the gem version. If adopting a new runtime, update the `tag = "vX.Y.Z"` for
    BOTH `microsandbox` and `microsandbox-network` git deps in `ext/microsandbox/Cargo.toml` to the
-   same tag, then `bundle exec rake compile` to refresh `Cargo.lock`. Otherwise leave the deps
-   untouched.
+   same tag, then ALSO update `Microsandbox::RUNTIME_VERSION` in `lib/microsandbox/version.rb` to
+   match (`version_spec.rb` asserts the constant equals the Cargo tag) and add a row to the
+   Versioning table in `README.md`. Then `bundle exec rake compile` to refresh `Cargo.lock`.
+   Otherwise leave all of these untouched.
 
 4. **Update `CHANGELOG.md`** (Keep-a-Changelog) — move Unreleased items under a new
    `## [$ARGUMENTS] - <date>` heading.

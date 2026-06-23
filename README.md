@@ -374,6 +374,43 @@ Resolution order when no backend is set programmatically: `MSB_BACKEND`
 operations (create/start/stop/remove/get/list, one-shot exec, follow log
 streaming); unsupported operations raise `Microsandbox::UnsupportedError`.
 
+## Versioning
+
+The gem follows its **own** [semantic version](https://semver.org/), **independent
+of** the upstream `microsandbox` runtime it embeds. Early releases (`0.5.7`–`0.5.9`)
+happened to share the upstream tag, but gem-only revisions and a bundled breaking
+change diverged the two numbers — the gem version is **not** a reliable indicator
+of the embedded runtime version. To learn which runtime a build wraps, ask it:
+
+```ruby
+Microsandbox::VERSION          # => "0.6.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.5.8"  (the embedded upstream runtime tag)
+```
+
+| Gem version | Upstream runtime | Notes |
+|-------------|------------------|-------|
+| `0.5.7`  | `v0.5.7` | initial release |
+| `0.5.8`  | `v0.5.7` | gem-only revision |
+| `0.5.9`  | `v0.5.7` | gem-only revision |
+| `0.5.10` | `v0.5.8` | adopts upstream `v0.5.8`; **breaking** lifecycle split |
+| `0.5.11` | `v0.5.8` | gem-only revision |
+| `0.5.12` | `v0.5.8` | gem-only revision |
+| `0.6.0`  | `v0.5.8` | gem version decoupled from the upstream tag; adds `runtime_version` |
+
+**Going forward** — the gem version moves on its own semver track and no longer
+mirrors the upstream tag:
+
+- A **gem-only** change (new bindings, fixes, refactors over the *same* runtime)
+  bumps the gem version by itself.
+- **Adopting a new upstream runtime** bumps the gem version too and updates the
+  pinned git tag, `Microsandbox::RUNTIME_VERSION`, and the table above together.
+- While the gem is `0.x`, a breaking API change bumps the **minor** (`0.5 → 0.6`),
+  not the patch — the `0.5.9 → 0.5.10` lifecycle split predates this policy and is
+  the reason for it.
+
+Every release records its embedded runtime in `CHANGELOG.md`, and
+`Microsandbox.runtime_version` reports it at runtime.
+
 ## Development
 
 ```bash
@@ -406,9 +443,13 @@ or credential setup is needed.
 
 **Each release:**
 
-1. Bump `Microsandbox::VERSION` (and the `tag = "vX.Y.Z"` on the core-crate
-   dependency in `ext/microsandbox/Cargo.toml`) to match the upstream runtime,
-   update `CHANGELOG.md`.
+1. Bump the gem's **own** version — `Microsandbox::VERSION` and the matching
+   `[package] version` in `ext/microsandbox/Cargo.toml` (they must stay equal) —
+   on its independent semver track (see [Versioning](#versioning)); **don't** pick
+   the number to mirror the upstream tag. If the release also adopts a new upstream
+   runtime, bump the `tag = "vX.Y.Z"` on **both** the `microsandbox` and
+   `microsandbox-network` git deps, update `Microsandbox::RUNTIME_VERSION` to match,
+   and add a row to the Versioning table. Update `CHANGELOG.md`.
 2. Push a `vX.Y.Z` tag. CI builds the **source gem** and pushes it to RubyGems
    via `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no
    `RUBYGEMS_API_KEY` secret required.

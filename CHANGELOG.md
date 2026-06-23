@@ -1,10 +1,32 @@
 # Changelog
 
 All notable changes to this gem are documented here. The format is based on
-[Keep a Changelog](https://keepachangelog.com/), and the version tracks the
-upstream microsandbox runtime.
+[Keep a Changelog](https://keepachangelog.com/). The gem follows its own
+[semantic version](https://semver.org/), **independent of** the upstream
+microsandbox runtime it embeds; each release notes the upstream runtime tag it
+wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
+
+## [0.6.0] - 2026-06-23
+
+This release puts the gem on its **own semantic version**, decoupled from the
+upstream microsandbox runtime tag it embeds (which stays at `v0.5.8`). The
+`0.5.x` lineage had stopped tracking upstream 1:1 — gem-only revisions and a
+bundled breaking change (the `0.5.9 → 0.5.10` lifecycle split) had already
+diverged the two numbers. `0.6.0` makes the split explicit; the gem version no
+longer mirrors the upstream tag. See the README's **Versioning** section for the
+gem→runtime map and the go-forward policy. No runtime change and no breaking API
+change in this release.
+
+### Added
+
+- **`Microsandbox.runtime_version`** and the `Microsandbox::RUNTIME_VERSION`
+  constant — report the upstream microsandbox runtime tag this gem build embeds
+  (e.g. `"v0.5.8"`). The gem now versions itself independently of that tag, so
+  this is the supported way to learn which runtime is wrapped.
+  `spec/unit/version_spec.rb` pins the constant to the Cargo git tag so it can't
+  drift.
 
 ## [0.5.12] - 2026-06-23
 
@@ -269,6 +291,7 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.8...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.12...v0.6.0
 [0.5.8]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/superradcompany/microsandbox/releases/tag/v0.5.7
