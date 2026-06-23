@@ -191,6 +191,29 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /fstype: only applies to a disk-image rootfs/)
     end
 
+    # Pins the disk_image_rootfs? heuristic that gates the fstype:-vs-OCI check.
+    # It hand-mirrors upstream's looks_like_local_path_text (path prefix) +
+    # DiskImageFormat::from_extension (qcow2/raw/vmdk); this guards against drift
+    # if a runtime-tag bump changes either set. Expectations are hardcoded here
+    # (not derived from the constant) so a wrong constant value is caught.
+    describe "disk_image_rootfs? contract" do
+      def disk?(image) = Microsandbox::Sandbox.send(:disk_image_rootfs?, image)
+
+      it "accepts a local-path-looking disk image (any recognized extension, any case)" do
+        expect(disk?("/img/alpine.raw")).to be(true)
+        expect(disk?("./disk.qcow2")).to be(true)
+        expect(disk?("../vm.vmdk")).to be(true)
+        expect(disk?("/img/alpine.RAW")).to be(true) # extension match is case-insensitive
+      end
+
+      it "rejects an OCI ref, a path without a local prefix, and a non-disk extension" do
+        expect(disk?("python")).to be(false)           # bare OCI reference
+        expect(disk?("alpine.raw")).to be(false)        # no /, ./, ../ prefix
+        expect(disk?("/img/rootfs.tar")).to be(false)   # unrecognized extension
+        expect(disk?("/img/rootfs")).to be(false)       # no extension
+      end
+    end
+
     it "accepts the upstream kebab-case violation spellings" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
@@ -228,6 +251,14 @@ RSpec.describe Microsandbox::Sandbox do
           "box", image: "x", on_secret_violation: "nope"
         )
       end.to raise_error(ArgumentError, /unknown on_violation "nope"/)
+    end
+
+    it "rejects an effectively-empty passthrough Hash (a no-op spec)" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", on_secret_violation: {passthrough_hosts: []}
+        )
+      end.to raise_error(ArgumentError, /passthrough on_violation needs at least one/)
     end
 
     it "normalizes a Hash init with args and env" do

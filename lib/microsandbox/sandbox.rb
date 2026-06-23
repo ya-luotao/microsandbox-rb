@@ -198,6 +198,11 @@ module Microsandbox
   #     sb.stop
   #   end
   class Sandbox
+    # Recognized disk-image rootfs extensions, mirroring the upstream
+    # `DiskImageFormat::from_extension`/`FromStr` set. Used by {disk_image_rootfs?}
+    # to gate the `fstype:`-vs-OCI check; keep in sync on a runtime-tag bump.
+    DISK_IMAGE_EXTENSIONS = %w[raw qcow2 vmdk].freeze
+
     class << self
       # Create and boot a sandbox.
       #
@@ -575,12 +580,23 @@ module Microsandbox
             normalize_violation_action(spec)
           end
         when Hash
+          hosts = Array(spec[:passthrough_hosts] || spec["passthrough_hosts"]).map(&:to_s)
+          patterns = Array(spec[:passthrough_host_patterns] || spec["passthrough_host_patterns"]).map(&:to_s)
+          all = !!(spec[:passthrough_all_hosts] || spec["passthrough_all_hosts"])
+          # An empty passthrough (no hosts, no patterns, not all) passes nothing
+          # through — a no-op the native builder silently degrades to its default
+          # action. Reject it with actionable guidance rather than accept a spec
+          # that does nothing the caller intended.
+          if hosts.empty? && patterns.empty? && !all
+            raise ArgumentError,
+              "passthrough on_violation needs at least one of :passthrough_hosts, " \
+              ":passthrough_host_patterns, or :passthrough_all_hosts (use \"block\" " \
+              "if blocking is the intent)"
+          end
           out = {}
-          ph = spec[:passthrough_hosts] || spec["passthrough_hosts"]
-          out["passthrough_hosts"] = Array(ph).map(&:to_s) if ph
-          pp = spec[:passthrough_host_patterns] || spec["passthrough_host_patterns"]
-          out["passthrough_host_patterns"] = Array(pp).map(&:to_s) if pp
-          out["passthrough_all_hosts"] = true if spec[:passthrough_all_hosts] || spec["passthrough_all_hosts"]
+          out["passthrough_hosts"] = hosts unless hosts.empty?
+          out["passthrough_host_patterns"] = patterns unless patterns.empty?
+          out["passthrough_all_hosts"] = true if all
           out
         else
           raise ArgumentError, "on_violation must be a String or a Hash (got #{spec.inspect})"
@@ -644,13 +660,17 @@ module Microsandbox
 
       # True when `image` names a disk-image rootfs the way the core auto-detects
       # one: a local-path-looking string (`/`, `./`, `../` prefix) whose extension
-      # is a recognized disk-image format. Mirrors the upstream
-      # `looks_like_local_path_text` + `DiskImageFormat::from_extension` so a bare
-      # OCI ref or a bind directory is not mistaken for a disk image.
+      # is a recognized disk-image format. This re-implements two upstream
+      # heuristics the native layer can't reach from here (the `microsandbox`
+      # crate re-exports neither): `looks_like_local_path_text`
+      # (microsandbox/crates/utils/lib/lib.rs) and `DiskImageFormat::from_extension`
+      # / `FromStr` (microsandbox/packages/microsandbox-types/rust/lib/domain.rs,
+      # qcow2/raw/vmdk). Keep both in sync when bumping the pinned runtime tag —
+      # the "disk_image_rootfs? contract" examples in sandbox_spec.rb pin it.
       def disk_image_rootfs?(image)
         s = image.to_s
         return false unless s.start_with?("/", "./", "../")
-        %w[raw qcow2 vmdk].include?(File.extname(s).delete_prefix(".").downcase)
+        DISK_IMAGE_EXTENSIONS.include?(File.extname(s).delete_prefix(".").downcase)
       end
 
       # Normalize volumes (Hash of guest_path => spec) into per-mount string-keyed

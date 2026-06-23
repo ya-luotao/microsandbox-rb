@@ -102,8 +102,7 @@ module Microsandbox
     #   its +to_s+ form, e.g. the inspect string of a StringIO or "42")
     # @return [nil]
     def write(path, data)
-      bytes = String.try_convert(data) or
-        raise TypeError, "data must be a String (got #{data.class})"
+      bytes = Microsandbox.coerce_write_bytes(data)
       @native.fs_write(path.to_s, bytes)
       nil
     end
@@ -240,8 +239,7 @@ module Microsandbox
     # @raise [TypeError] if +data+ is not a String
     # @return [self]
     def write(data)
-      bytes = String.try_convert(data) or
-        raise TypeError, "data must be a String (got #{data.class})"
+      bytes = Microsandbox.coerce_write_bytes(data)
       @native.write(bytes)
       self
     end

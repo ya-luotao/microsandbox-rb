@@ -202,6 +202,19 @@ module Microsandbox
       Native.all_sandbox_metrics.transform_values { |m| Metrics.new(m) }
     end
 
+    # Coerce write data to a binary-safe String, or raise. Centralizes the
+    # contract every `#write` shares (FS/SftpClient/VolumeFs/ExecStdin/
+    # FsWriteSink): accept a String and reject anything else loudly, instead of
+    # silently writing its `to_s` form (e.g. a StringIO's inspect or "42").
+    # @api private
+    # @param data [Object]
+    # @return [String]
+    # @raise [TypeError] unless +data+ is a String
+    def coerce_write_bytes(data)
+      String.try_convert(data) or
+        raise TypeError, "data must be a String (got #{data.class})"
+    end
+
     private
 
     # Auto-provisioning is on by default; any non-empty, non-"0"/"false" value

@@ -67,8 +67,7 @@ module Microsandbox
     # @raise [TypeError] if +data+ is not a String
     # @return [self]
     def write(data)
-      bytes = String.try_convert(data) or
-        raise TypeError, "data must be a String (got #{data.class})"
+      bytes = Microsandbox.coerce_write_bytes(data)
       @native.write(bytes)
       self
     end

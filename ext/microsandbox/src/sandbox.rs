@@ -127,18 +127,15 @@ impl Sandbox {
             let noexec = conv::opt_bool(m, "noexec")?;
             let nosuid = conv::opt_bool(m, "nosuid")?;
             let nodev = conv::opt_bool(m, "nodev")?;
-            let format = match conv::opt_string(m, "format")? {
-                Some(f) => Some(disk_format_from_str(&f)?),
-                None => None,
-            };
-            let stat_virt = match conv::opt_string(m, "stat_virtualization")? {
-                Some(s) => Some(stat_virtualization_from_str(&s)?),
-                None => None,
-            };
-            let host_perms = match conv::opt_string(m, "host_permissions")? {
-                Some(s) => Some(host_permissions_from_str(&s)?),
-                None => None,
-            };
+            let format = conv::opt_string(m, "format")?
+                .map(|f| disk_format_from_str(&f))
+                .transpose()?;
+            let stat_virt = conv::opt_string(m, "stat_virtualization")?
+                .map(|s| stat_virtualization_from_str(&s))
+                .transpose()?;
+            let host_perms = conv::opt_string(m, "host_permissions")?
+                .map(|s| host_permissions_from_str(&s))
+                .transpose()?;
             // bind/named/disk require a source; tmpfs must not have one.
             match kind.as_str() {
                 "bind" | "named" | "disk" if source.is_some() => {}
@@ -275,28 +272,24 @@ impl Sandbox {
         // builder, which accumulates on top of any policy already configured.
         // Mirrors the Python binding's `apply_network`. Parsed up front because
         // the builder closures cannot return an error.
-        let dns = match conv::opt::<RHash>(opts, "dns")? {
-            Some(d) => Some(parse_dns(d)?),
-            None => None,
-        };
-        let tls = match conv::opt::<RHash>(opts, "tls")? {
-            Some(t) => Some(parse_tls(t)?),
-            None => None,
-        };
-        let ipv4_pool = match conv::opt_string(opts, "ipv4_pool")? {
-            Some(s) => Some(
+        let dns = conv::opt::<RHash>(opts, "dns")?
+            .map(parse_dns)
+            .transpose()?;
+        let tls = conv::opt::<RHash>(opts, "tls")?
+            .map(parse_tls)
+            .transpose()?;
+        let ipv4_pool = conv::opt_string(opts, "ipv4_pool")?
+            .map(|s| {
                 s.parse::<ipnetwork::Ipv4Network>()
-                    .map_err(|e| error::base_error(format!("invalid ipv4_pool {s:?}: {e}")))?,
-            ),
-            None => None,
-        };
-        let ipv6_pool = match conv::opt_string(opts, "ipv6_pool")? {
-            Some(s) => Some(
+                    .map_err(|e| error::base_error(format!("invalid ipv4_pool {s:?}: {e}")))
+            })
+            .transpose()?;
+        let ipv6_pool = conv::opt_string(opts, "ipv6_pool")?
+            .map(|s| {
                 s.parse::<ipnetwork::Ipv6Network>()
-                    .map_err(|e| error::base_error(format!("invalid ipv6_pool {s:?}: {e}")))?,
-            ),
-            None => None,
-        };
+                    .map_err(|e| error::base_error(format!("invalid ipv6_pool {s:?}: {e}")))
+            })
+            .transpose()?;
         let max_connections = conv::opt::<usize>(opts, "max_connections")?;
         let trust_host_cas = conv::opt::<bool>(opts, "trust_host_cas")?;
         if dns.is_some()
@@ -363,18 +356,15 @@ impl Sandbox {
             });
         }
         // init: hand guest PID 1 to an init system. The Ruby layer normalizes
-        // `init:` to a Hash { cmd:, args?:, env?: }. With no args/env, use the
-        // plain `init(cmd)`; otherwise the `init_with` closure-builder.
+        // `init:` to a Hash { cmd:, args?:, env?: }. `init_with` with empty
+        // args/env builds the same HandoffInit as the plain `init(cmd)`, so route
+        // everything through the one closure-builder.
         if let Some(h) = conv::opt::<RHash>(opts, "init")? {
             let cmd = conv::opt_string(h, "cmd")?
                 .ok_or_else(|| error::base_error("init requires a :cmd"))?;
             let args = conv::opt_string_vec(h, "args")?;
             let env = conv::opt_string_map(h, "env")?;
-            if args.is_empty() && env.is_empty() {
-                b = b.init(cmd);
-            } else {
-                b = b.init_with(cmd, move |i| i.args(args).envs(env));
-            }
+            b = b.init_with(cmd, move |i| i.args(args).envs(env));
         }
         if conv::opt_bool(opts, "ephemeral")? {
             b = b.ephemeral(true);
@@ -884,16 +874,12 @@ fn parse_rlimits(opts: RHash) -> Result<Vec<(RlimitResource, u64, u64)>, Error> 
 //--------------------------------------------------------------------------------------------------
 
 fn disk_format_from_str(s: &str) -> Result<DiskImageFormat, Error> {
-    use DiskImageFormat::*;
-    Ok(match s {
-        "qcow2" => Qcow2,
-        "raw" => Raw,
-        "vmdk" => Vmdk,
-        other => {
-            return Err(error::base_error(format!(
-                "unknown disk format {other:?} (expected qcow2/raw/vmdk)"
-            )))
-        }
+    // Delegate the qcow2/raw/vmdk mapping to the core's `FromStr` (single source
+    // of truth) but keep the friendlier, option-listing error message.
+    s.parse::<DiskImageFormat>().map_err(|_| {
+        error::base_error(format!(
+            "unknown disk format {s:?} (expected qcow2/raw/vmdk)"
+        ))
     })
 }
 
@@ -1096,10 +1082,9 @@ fn parse_secret(h: RHash) -> Result<SecretSpec, Error> {
             "secret requires at least one allowed host (:host, :hosts, or :host_patterns)",
         ));
     }
-    let on_violation = match conv::opt::<Value>(h, "on_violation")? {
-        Some(v) => Some(parse_violation_spec(v)?),
-        None => None,
-    };
+    let on_violation = conv::opt::<Value>(h, "on_violation")?
+        .map(parse_violation_spec)
+        .transpose()?;
     Ok(SecretSpec {
         env,
         value,
