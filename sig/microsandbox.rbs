@@ -2,8 +2,10 @@
 
 module Microsandbox
   VERSION: String
+  RUNTIME_VERSION: String
 
   def self.version: () -> String
+  def self.runtime_version: () -> String
   def self.install: () -> nil
   def self.installed?: () -> bool
   def self.ensure_runtime!: () -> nil

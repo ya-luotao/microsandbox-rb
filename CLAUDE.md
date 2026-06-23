@@ -37,11 +37,17 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
 
 1. **Gem version** — `Microsandbox::VERSION` in `lib/microsandbox/version.rb` MUST equal `version`
    in `ext/microsandbox/Cargo.toml` `[package]`. `spec/unit/version_spec.rb` asserts equality via
-   `Native.version`. Bump both together, or specs fail.
+   `Native.version`. Bump both together, or specs fail. The gem follows its OWN semver and is NOT
+   numbered to mirror the upstream tag — the `0.5.x` lineage stopped mapping 1:1 once gem-only
+   revisions (and a bundled breaking change) diverged the two numbers. While 0.x, a breaking API
+   change bumps the minor and a fix bumps the patch. See the Versioning section of `README.md` for
+   the gem→runtime map.
 2. **Upstream runtime tag** — the `microsandbox` and `microsandbox-network` git deps in
-   `ext/microsandbox/Cargo.toml` are pinned to a `tag` (currently `v0.5.7`). This tracks the
-   upstream runtime, NOT the gem version. Bump it only when adopting a new upstream release, and
-   keep both deps on the same tag.
+   `ext/microsandbox/Cargo.toml` are pinned to a `tag` (currently `v0.5.8`). This tracks the
+   upstream runtime, NOT the gem version. Bump it only when adopting a new upstream release, keep
+   both deps on the same tag, AND update `Microsandbox::RUNTIME_VERSION` in
+   `lib/microsandbox/version.rb` to match — `spec/unit/version_spec.rb` asserts the constant equals
+   the Cargo tag, so it can't silently go stale.
 
 ## Conventions
 
