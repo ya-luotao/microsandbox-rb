@@ -3,6 +3,29 @@
 require "microsandbox"
 require "rspec/retry"
 
+# Matches ONLY the transient "timed out waiting for agent relay" boot failure so
+# rspec-retry can be scoped to it (see the :integration around hook below).
+#
+# The relay timeout surfaces as a *base* Microsandbox::Error — upstream's
+# `MicrosandboxError::Runtime` variant has no typed subclass, so
+# ext/microsandbox/src/error.rs maps it to the base class — and every typed
+# runtime error (image-pull, cleanup, SSH, FS, …) also inherits from that base.
+# Retrying on the class alone would therefore also swallow those intermittent
+# failures and mask real regressions, so we match on the message instead.
+#
+# A Module (not a lambda or plain object) is required: rspec-retry checks
+# `exception.is_a?(klass) || klass === exception` (rspec/retry.rb), and `is_a?`
+# raises TypeError unless its argument is a Module. is_a? against a Module the
+# exception doesn't mix in just returns false, then our `===` does the message
+# check.
+module RelayTimeoutRetry
+  MESSAGE = "timed out waiting for agent relay"
+
+  def self.===(exception)
+    exception.is_a?(Microsandbox::Error) && exception.message.to_s.include?(MESSAGE)
+  end
+end
+
 RSpec.configure do |config|
   config.expect_with :rspec do |c|
     c.syntax = :expect
@@ -13,17 +36,15 @@ RSpec.configure do |config|
 
   # Integration specs boot real microVMs. On GitHub-hosted nested KVM the boot
   # latency has a long tail: a microVM occasionally exceeds the upstream 180s
-  # agent-relay deadline and fails with a transient
-  # "timed out waiting for agent relay" (a Microsandbox::Error). The failing
-  # example is random run-to-run — the signature of environment flakiness, not a
-  # spec bug. Retry such examples a few times; unit specs get no retry (no
-  # around hook below → rspec-retry's default of a single try). Restricting
-  # exceptions_to_retry to Microsandbox::Error means a microVM that loses the
-  # boot lottery is re-attempted while assertion failures and real runtime
-  # errors still fail on the first try.
+  # agent-relay deadline and the example fails with a transient relay timeout.
+  # The failing example is random run-to-run — the signature of environment
+  # flakiness, not a spec bug — so retry just that one failure (RelayTimeoutRetry
+  # above; scoped to the message so other intermittent runtime errors are NOT
+  # swallowed). Unit specs get no retry (no around hook below → rspec-retry's
+  # single-try default), and assertion failures still fail on the first try.
   config.verbose_retry = true
   config.display_try_failure_messages = true
-  config.exceptions_to_retry = [Microsandbox::Error]
+  config.exceptions_to_retry = [RelayTimeoutRetry]
   config.around(:each, :integration) do |example|
     example.run_with_retry retry: 3
   end
