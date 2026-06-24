@@ -6,7 +6,7 @@ name = "microsandbox_rb"
 description = "Ruby SDK native extension for microsandbox — secure, fast microVM-based sandboxing."
 # Must equal Microsandbox::VERSION (lib/microsandbox/version.rb) — Native.version
 # returns this via env!("CARGO_PKG_VERSION") and version_spec.rb asserts equality.
-# The core-crate dependency below stays pinned at its own tag (v0.5.8).
+# The core-crate dependency below stays pinned at its own tag (v0.5.9).
 version = "0.7.0"
 authors = ["Super Rad Company <development@superrad.company>"]
 repository = "https://github.com/superradcompany/microsandbox"
@@ -35,8 +35,8 @@ rb-sys = "0.9"
 # `.cargo/config.toml.example`). "ssh" matches the feature set the Python/Node
 # SDKs ship with; default features add "prebuilt" (provisions msb + libkrunfw at
 # build time), "net", and "keyring".
-microsandbox = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.8", default-features = true, features = ["ssh"] }
-microsandbox-network = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.8" }
+microsandbox = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.9", default-features = true, features = ["ssh"] }
+microsandbox-network = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.5.9" }
 
 # Async core bridged to Ruby's synchronous API via a blocking tokio runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
