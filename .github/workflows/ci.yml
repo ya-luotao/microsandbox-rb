@@ -75,7 +75,12 @@ jobs:
     # This cap is the safety net: a single deadlocked spec (e.g. a guest process
     # blocked on stdin that never gets EOF) would otherwise wedge the job until
     # GitHub's 6-hour default and surface the whole run as "cancelled".
-    timeout-minutes: 20
+    #
+    # Raised from 20 to 25 to absorb the agent-relay retry (spec/spec_helper.rb):
+    # a deterministically stuck boot can now retry up to 3×180s + waits before
+    # failing, which on top of the ~11-12 min suite could otherwise clip the old
+    # 20-min cap and surface a clean failure as a confusing job timeout.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
