@@ -16,20 +16,19 @@ RSpec.describe "Microsandbox runtime helpers" do
   end
 
   describe ".runtime_path=" do
-    around do |example|
-      original = begin
-        Microsandbox.runtime_path
-      rescue Microsandbox::Error
-        nil
-      end
-      example.run
-    ensure
-      Microsandbox.runtime_path = original if original
-    end
-
-    it "overrides the resolved path (SDK tier)" do
+    it "forwards the stringified path to the native set-once setter" do
+      # Stub the native setter so we (a) actually verify the binding forwards,
+      # and (b) never consume the real process-wide set-once OnceLock — it has no
+      # getter and cannot be restored, so writing a fake path here would leak
+      # into the rest of the process (e.g. a combined unit+integration run with
+      # :random order, where a later real-microVM example would then resolve the
+      # bogus msb path and fail with an order-dependent boot error). The previous
+      # around-hook "restore" was a silent no-op for exactly that reason.
+      # Mirrors the .libkrunfw_path= spec below.
+      allow(Microsandbox::Native).to receive(:set_runtime_msb_path)
       Microsandbox.runtime_path = "/custom/path/to/msb"
-      expect(Microsandbox.runtime_path).to eq("/custom/path/to/msb")
+      expect(Microsandbox::Native).to have_received(:set_runtime_msb_path)
+        .with("/custom/path/to/msb")
     end
   end
 

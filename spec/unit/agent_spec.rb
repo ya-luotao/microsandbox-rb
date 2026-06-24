@@ -4,6 +4,30 @@
 # stream iteration, client wrapper). The native transport is stubbed; the real
 # socket round-trip is exercised by the integration specs.
 RSpec.describe "raw agent client" do
+  # The timeout is validated (in the native binding) before any socket I/O, so
+  # a bad value raises deterministically without a running sandbox. Mirrors the
+  # Python SDK, which rejects negative/non-finite timeouts instead of silently
+  # falling back to the default (and treats 0 as an immediate deadline, not nil).
+  describe ".connect_sandbox timeout validation" do
+    it "rejects a negative timeout with a clear error (not a silent default)" do
+      expect { Microsandbox::AgentClient.connect_sandbox("nope", timeout: -1) }
+        .to raise_error(Microsandbox::Error, /timeout/)
+    end
+
+    it "rejects a non-finite timeout" do
+      expect { Microsandbox::AgentClient.connect_sandbox("nope", timeout: Float::INFINITY) }
+        .to raise_error(Microsandbox::Error, /timeout/)
+    end
+
+    it "rejects a finite-but-out-of-range timeout instead of panicking" do
+      # Float::MAX is finite and positive, so it passes the finite/non-negative
+      # guard but overflows Duration::from_secs_f64; the binding must surface a
+      # clean Microsandbox::Error (via try_from_secs_f64), not a Rust panic.
+      expect { Microsandbox::AgentClient.connect_sandbox("nope", timeout: Float::MAX) }
+        .to raise_error(Microsandbox::Error, /timeout/)
+    end
+  end
+
   describe Microsandbox::AgentFrame do
     it "exposes id/flags/body and decodes the flag bits" do
       f = described_class.new("id" => 7, "flags" => 0b0000_0011, "body" => "xx".b)

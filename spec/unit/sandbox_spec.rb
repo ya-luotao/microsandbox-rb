@@ -51,6 +51,24 @@ RSpec.describe Microsandbox::Sandbox do
       expect(Microsandbox).to have_received(:ensure_runtime!)
     end
 
+    it "create_with_progress forwards the same options and returns a PullSession" do
+      session_native = instance_double(Microsandbox::Native::PullSession)
+      allow(Microsandbox::Native::Sandbox).to receive(:create_with_progress)
+        .and_return(session_native)
+      session = Microsandbox::Sandbox.create_with_progress("box", image: "python", cpus: 2)
+      expect(session).to be_a(Microsandbox::PullSession)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create_with_progress)
+        .with("box", hash_including("image" => "python", "cpus" => 2))
+    end
+
+    it "create_with_progress rejects a block (which would silently leak the sandbox)" do
+      allow(Microsandbox::Native::Sandbox).to receive(:create_with_progress)
+      expect do
+        Microsandbox::Sandbox.create_with_progress("box", image: "python") { |sb| sb }
+      end.to raise_error(ArgumentError, /takes no block/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create_with_progress)
+    end
+
     it "flattens registry_auth into registry_username/registry_password" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
@@ -101,7 +119,7 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /:username and :password/)
     end
 
-    it "maps pull_policy and normalizes secrets into [env, value, host] triples" do
+    it "maps pull_policy and normalizes a simple secret (host -> hosts)" do
       Microsandbox::Sandbox.create(
         "box", image: "x", pull_policy: "never",
         secrets: [{env: "OPENAI_API_KEY", value: "sk-123", host: "api.openai.com"}]
@@ -110,21 +128,187 @@ RSpec.describe Microsandbox::Sandbox do
         "box",
         hash_including(
           "pull_policy" => "never",
-          "secrets" => [["OPENAI_API_KEY", "sk-123", "api.openai.com"]]
+          "secrets" => [{"env" => "OPENAI_API_KEY", "value" => "sk-123",
+                         "hosts" => ["api.openai.com"]}]
         )
       )
     end
 
-    it "raises on a malformed secret spec" do
+    it "normalizes the full secret surface (patterns, injection, violation)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        secrets: [{
+          env: "STRIPE_KEY", value: "sk_live", hosts: ["api.stripe.com"],
+          host_patterns: ["*.stripe.com"], placeholder: "$STRIPE", require_tls: true,
+          inject_headers: true, inject_query: false, inject_body: true,
+          on_violation: "block_and_terminate"
+        }],
+        on_secret_violation: {passthrough_hosts: ["10.0.0.1"]}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "secrets" => [{
+            "env" => "STRIPE_KEY", "value" => "sk_live", "hosts" => ["api.stripe.com"],
+            "host_patterns" => ["*.stripe.com"], "placeholder" => "$STRIPE",
+            "require_tls" => true, "inject_headers" => true, "inject_query" => false,
+            "inject_body" => true, "on_violation" => "block_and_terminate"
+          }],
+          "on_secret_violation" => {"passthrough_hosts" => ["10.0.0.1"]}
+        )
+      )
+    end
+
+    it "raises on a secret spec missing env/value" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X"}])
-      end.to raise_error(ArgumentError, /:env, :value, and :host/)
+      end.to raise_error(ArgumentError, /:env and :value/)
+    end
+
+    it "raises on a secret spec with no allowed host" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y"}])
+      end.to raise_error(ArgumentError, /:host, :hosts, or :host_patterns/)
+    end
+
+    it "maps fstype, a String init, and ephemeral" do
+      Microsandbox::Sandbox.create(
+        "box", image: "/img/alpine.raw", fstype: "ext4",
+        init: "/sbin/init", ephemeral: true
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "image" => "/img/alpine.raw", "fstype" => "ext4",
+          "init" => {"cmd" => "/sbin/init"}, "ephemeral" => true
+        )
+      )
+    end
+
+    it "rejects fstype: paired with an OCI image reference" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "python", fstype: "ext4")
+      end.to raise_error(ArgumentError, /fstype: only applies to a disk-image rootfs/)
+    end
+
+    # Pins the disk_image_rootfs? heuristic that gates the fstype:-vs-OCI check.
+    # It hand-mirrors upstream's looks_like_local_path_text (path prefix) +
+    # DiskImageFormat::from_extension (qcow2/raw/vmdk); this guards against drift
+    # if a runtime-tag bump changes either set. Expectations are hardcoded here
+    # (not derived from the constant) so a wrong constant value is caught.
+    describe "disk_image_rootfs? contract" do
+      def disk?(image) = Microsandbox::Sandbox.send(:disk_image_rootfs?, image)
+
+      it "accepts a local-path-looking disk image (any recognized extension, any case)" do
+        expect(disk?("/img/alpine.raw")).to be(true)
+        expect(disk?("./disk.qcow2")).to be(true)
+        expect(disk?("../vm.vmdk")).to be(true)
+        expect(disk?("/img/alpine.RAW")).to be(true) # extension match is case-insensitive
+      end
+
+      it "rejects an OCI ref, a path without a local prefix, and a non-disk extension" do
+        expect(disk?("python")).to be(false)           # bare OCI reference
+        expect(disk?("alpine.raw")).to be(false)        # no /, ./, ../ prefix
+        expect(disk?("/img/rootfs.tar")).to be(false)   # unrecognized extension
+        expect(disk?("/img/rootfs")).to be(false)       # no extension
+      end
+    end
+
+    it "accepts the upstream kebab-case violation spellings" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        secrets: [{env: "K", value: "v", hosts: ["api.example.com"],
+                   on_violation: "block-and-terminate"}],
+        on_secret_violation: "block-and-log"
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "secrets" => [hash_including("on_violation" => "block_and_terminate")],
+          "on_secret_violation" => "block_and_log"
+        )
+      )
+    end
+
+    it "maps the bare \"passthrough\" string to passthrough-all-hosts (SDK parity)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        secrets: [{env: "K", value: "v", hosts: ["api.example.com"], on_violation: "passthrough"}],
+        on_secret_violation: "passthrough"
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "secrets" => [hash_including("on_violation" => {"passthrough_all_hosts" => true})],
+          "on_secret_violation" => {"passthrough_all_hosts" => true}
+        )
+      )
+    end
+
+    it "raises on an unknown violation action string" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", on_secret_violation: "nope"
+        )
+      end.to raise_error(ArgumentError, /unknown on_violation "nope"/)
+    end
+
+    it "rejects an effectively-empty passthrough Hash (a no-op spec)" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", on_secret_violation: {passthrough_hosts: []}
+        )
+      end.to raise_error(ArgumentError, /passthrough on_violation needs at least one/)
+    end
+
+    it "normalizes a Hash init with args and env" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        init: {cmd: "/lib/systemd/systemd", args: ["--unit=multi-user.target"],
+               env: {container: "microsandbox"}}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("init" => {
+          "cmd" => "/lib/systemd/systemd",
+          "args" => ["--unit=multi-user.target"],
+          "env" => {"container" => "microsandbox"}
+        })
+      )
+    end
+
+    it "raises on a Hash init without :cmd" do
+      expect { Microsandbox::Sandbox.create("box", image: "x", init: {args: ["a"]}) }
+        .to raise_error(ArgumentError, /:cmd/)
     end
 
     it "passes the network policy preset string through" do
       Microsandbox::Sandbox.create("box", image: "x", network: :allow_all)
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box", hash_including("network" => "allow_all")
+      )
+    end
+
+    it "normalizes dns/tls/pools/max_connections/trust_host_cas" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        dns: {nameservers: ["1.1.1.1"], rebind_protection: true, query_timeout_ms: 2000},
+        tls: {bypass: ["pinned.example.com"], verify_upstream: false,
+              intercepted_ports: [443, 8443], block_quic: true, intercept_ca_cert: "/ca.pem"},
+        ipv4_pool: "10.0.0.0/24", ipv6_pool: "fd00::/64",
+        max_connections: 128, trust_host_cas: true
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including(
+          "dns" => {"nameservers" => ["1.1.1.1"], "rebind_protection" => true,
+                    "query_timeout_ms" => 2000},
+          "tls" => {"bypass" => ["pinned.example.com"], "verify_upstream" => false,
+                    "intercepted_ports" => [443, 8443], "block_quic" => true,
+                    "intercept_ca_cert" => "/ca.pem"},
+          "ipv4_pool" => "10.0.0.0/24", "ipv6_pool" => "fd00::/64",
+          "max_connections" => 128, "trust_host_cas" => true
+        )
       )
     end
 

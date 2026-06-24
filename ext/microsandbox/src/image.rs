@@ -9,6 +9,7 @@ use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::image::{Image, ImageDetail, ImageHandle, ImagePruneReport};
 
 use crate::backend::with_local_backend;
+use crate::conv;
 use crate::runtime::ruby;
 
 fn handle_to_hash(h: &ImageHandle) -> RHash {
@@ -43,6 +44,11 @@ fn detail_to_hash(detail: ImageDetail) -> RHash {
         let _ = c.aset("entrypoint", config.entrypoint);
         let _ = c.aset("working_dir", config.working_dir);
         let _ = c.aset("user", config.user);
+        // OCI config labels: a free-form JSON object (or nil). Converted to a
+        // Ruby Hash so `ImageDetail#config["labels"]` matches the Python/Node
+        // `config.labels` dict. (The pinned v0.5.8 runtime persists this as
+        // null today; the key exists for forward-compatibility/parity.)
+        let _ = c.aset("labels", config.labels.as_ref().map(conv::json_to_ruby));
         let _ = c.aset("stop_signal", config.stop_signal);
         let _ = hash.aset("config", c);
     } else {

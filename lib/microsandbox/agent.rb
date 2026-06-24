@@ -100,7 +100,9 @@ module Microsandbox
       # Connect to a running sandbox by name (max 128 UTF-8 bytes). With a block,
       # the client is yielded and closed when the block returns.
       # @param name [String]
-      # @param timeout [Numeric, nil] handshake timeout in seconds (default ~10s)
+      # @param timeout [Numeric, nil] handshake timeout in seconds. nil (the
+      #   default) uses the core default (~10s); 0 fails fast (an immediate
+      #   deadline); a negative or non-finite value raises {Error}.
       # @yieldparam client [AgentClient]
       # @return [AgentClient, Object]
       def connect_sandbox(name, timeout: nil, &block)

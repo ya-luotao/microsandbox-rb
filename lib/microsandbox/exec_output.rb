@@ -3,9 +3,9 @@
 module Microsandbox
   # The result of a completed `exec`/`shell` call.
   #
-  # `stdout`/`stderr` return the captured bytes decoded as UTF-8 (lenient — the
-  # bytes are preserved even if they are not valid UTF-8); use `stdout_bytes`/
-  # `stderr_bytes` for the raw ASCII-8BIT bytes.
+  # `stdout`/`stderr` return the captured bytes decoded as UTF-8 (lossy —
+  # invalid byte sequences are replaced with U+FFFD, so the result is always
+  # valid UTF-8); use `stdout_bytes`/`stderr_bytes` for the raw ASCII-8BIT bytes.
   class ExecOutput
     # @return [Integer] the process exit code
     attr_reader :exit_code
@@ -32,14 +32,14 @@ module Microsandbox
       !@success
     end
 
-    # @return [String] stdout decoded as UTF-8
+    # @return [String] stdout decoded as UTF-8 (lossy)
     def stdout
-      @stdout ||= @stdout_bytes.dup.force_encoding(Encoding::UTF_8)
+      @stdout ||= @stdout_bytes.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
-    # @return [String] stderr decoded as UTF-8
+    # @return [String] stderr decoded as UTF-8 (lossy)
     def stderr
-      @stderr ||= @stderr_bytes.dup.force_encoding(Encoding::UTF_8)
+      @stderr ||= @stderr_bytes.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
     # @return [String] stdout decoded as UTF-8 (alias for {#stdout})

@@ -69,6 +69,25 @@ module Microsandbox
       nil
     end
 
+    # Customizable install via the core `Setup` builder. Like {install} but with
+    # control over where and what to install — mirrors the Node `Setup` builder.
+    #
+    # @param base_dir [String, nil] install root (default `~/.microsandbox`)
+    # @param version [String, nil] pin the runtime version to download
+    # @param force [Boolean] re-download even if binaries already exist — the way
+    #   to repair a corrupt/incomplete `~/.microsandbox`
+    # @param skip_verify [Boolean] skip the post-install verification step
+    # @return [nil]
+    def setup(base_dir: nil, version: nil, force: false, skip_verify: false)
+      opts = {}
+      opts["base_dir"] = base_dir.to_s if base_dir
+      opts["version"] = version.to_s if version
+      opts["force"] = true if force
+      opts["skip_verify"] = true if skip_verify
+      Native.setup(opts)
+      nil
+    end
+
     # @return [Boolean] whether the runtime is installed and resolvable
     def installed?
       Native.installed?
@@ -111,7 +130,9 @@ module Microsandbox
     end
 
     # Override the `msb` runtime path (highest-priority SDK tier of the
-    # resolver, below only the `MSB_PATH` environment variable).
+    # resolver, below only the `MSB_PATH` environment variable). Process-level
+    # and set-once: a second call is silently ignored, and the `MSB_PATH`
+    # environment variable still wins. Mirrors {libkrunfw_path=}.
     # @param path [String]
     # @return [void]
     def runtime_path=(path)
@@ -179,6 +200,19 @@ module Microsandbox
     # @return [Hash{String => Metrics}]
     def all_sandbox_metrics
       Native.all_sandbox_metrics.transform_values { |m| Metrics.new(m) }
+    end
+
+    # Coerce write data to a binary-safe String, or raise. Centralizes the
+    # contract every `#write` shares (FS/SftpClient/VolumeFs/ExecStdin/
+    # FsWriteSink): accept a String and reject anything else loudly, instead of
+    # silently writing its `to_s` form (e.g. a StringIO's inspect or "42").
+    # @api private
+    # @param data [Object]
+    # @return [String]
+    # @raise [TypeError] unless +data+ is a String
+    def coerce_write_bytes(data)
+      String.try_convert(data) or
+        raise TypeError, "data must be a String (got #{data.class})"
     end
 
     private

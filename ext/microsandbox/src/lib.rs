@@ -13,6 +13,7 @@ mod backend;
 mod conv;
 mod error;
 mod exec;
+mod fs_stream;
 mod image;
 mod runtime;
 mod sandbox;
@@ -45,6 +46,43 @@ fn all_sandbox_metrics() -> Result<RHash, Error> {
 /// Download and install the `msb` runtime + `libkrunfw` into `~/.microsandbox`.
 fn install() -> Result<(), Error> {
     runtime::block_on(microsandbox::setup::install()).map_err(error::to_ruby)
+}
+
+/// Customizable install via the core `Setup` builder. `opts`: base_dir (install
+/// root), version (pin the runtime version), force (re-download even if present
+/// — repairs a corrupt install), skip_verify. Mirrors the Node `Setup` builder.
+fn setup(opts: RHash) -> Result<(), Error> {
+    use microsandbox::setup::Setup;
+    let base_dir = conv::opt_string(opts, "base_dir")?;
+    let version = conv::opt_string(opts, "version")?;
+    let skip_verify = conv::opt_bool(opts, "skip_verify")?;
+    let force = conv::opt_bool(opts, "force")?;
+    // `Setup` uses a typed-builder whose `strip_option` setters change the type
+    // on each call, so optional fields can't be set conditionally on one binding
+    // — branch on presence instead (matching the Node binding).
+    let setup = match (base_dir, version) {
+        (Some(d), Some(v)) => Setup::builder()
+            .base_dir(d)
+            .version(v)
+            .skip_verify(skip_verify)
+            .force(force)
+            .build(),
+        (Some(d), None) => Setup::builder()
+            .base_dir(d)
+            .skip_verify(skip_verify)
+            .force(force)
+            .build(),
+        (None, Some(v)) => Setup::builder()
+            .version(v)
+            .skip_verify(skip_verify)
+            .force(force)
+            .build(),
+        (None, None) => Setup::builder()
+            .skip_verify(skip_verify)
+            .force(force)
+            .build(),
+    };
+    runtime::block_on(setup.install()).map_err(error::to_ruby)
 }
 
 /// Whether the `msb` runtime + `libkrunfw` are installed and resolvable.
@@ -88,6 +126,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
 
     native.define_singleton_method("version", function!(version, 0))?;
     native.define_singleton_method("install", function!(install, 0))?;
+    native.define_singleton_method("setup", function!(setup, 1))?;
     native.define_singleton_method("installed?", function!(is_installed, 0))?;
     native.define_singleton_method("set_runtime_msb_path", function!(set_runtime_msb_path, 1))?;
     native.define_singleton_method(
@@ -101,6 +140,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     sandbox::define(ruby, &native)?;
     exec::define(ruby, &native)?;
     stream::define(ruby, &native)?;
+    fs_stream::define(ruby, &native)?;
     snapshot::define(ruby, &native)?;
     image::define(ruby, &native)?;
     volume::define(ruby, &native)?;

@@ -8,6 +8,96 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-23
+
+A large parity release closing the binding gaps an audit against the upstream
+Python/Node SDKs (at the wrapped `v0.5.8` runtime) surfaced. The runtime tag is
+unchanged. Two genuine bug fixes; the rest is newly-exposed surface plus a few
+behavior corrections (see **Changed**).
+
+### Fixed
+
+- **Lossy UTF-8 decoding.** `LogEntry#text`, `ExecOutput#stdout`/`#stderr`,
+  `ExecEvent#text`, `SshOutput#stdout`/`#stderr`, and `SftpClient#read_text` now
+  scrub invalid byte sequences (replacing them with U+FFFD) so they always
+  return a *valid* UTF-8 String — matching the Python/Node SDKs. Previously they
+  re-tagged raw bytes as UTF-8 without transcoding, so captured output
+  containing invalid UTF-8 produced strings that raised downstream (regex,
+  concatenation, `JSON.generate`). Raw bytes remain available via `#data` /
+  `#stdout_bytes` / `#stderr_bytes`.
+- **`runtime_path=` spec** no longer pollutes the process-wide set-once
+  `msb`-path `OnceLock` (it now stubs the native setter), removing an
+  order-dependent failure in combined unit+integration runs.
+
+### Added
+
+- **Streaming image-pull progress** — `Sandbox.create_with_progress` returns a
+  `PullSession` (an `Enumerable` of progress-event Hashes) with `#sandbox` for
+  the booted sandbox.
+- **Host-side volume filesystem** — `Volume.fs(name)` / `VolumeInfo#fs` return a
+  `VolumeFs` (read/read_text/write/list/mkdir/remove_file/remove_dir/exists?/
+  copy/rename/stat) that reads and writes a named volume without a running
+  sandbox.
+- **Streaming guest filesystem** — `FS#read_stream` / `FS#write_stream`
+  (`FsReadStream`/`FsWriteSink`) for files too large to buffer in memory.
+- **Full secrets surface** — `secrets:` entries accept `hosts:` / `host_patterns:`
+  (wildcards) allow-lists, `placeholder:`, `require_tls:`, injection toggles
+  (`inject_headers:`/`inject_basic_auth:`/`inject_query:`/`inject_body:`), and
+  per-secret `on_violation:`; plus a sandbox-level `on_secret_violation:`. The
+  block-variant actions accept both the underscore form (`block_and_log`) and the
+  upstream kebab-case wire spelling (`block-and-log`) used by the CLI / Go SDK /
+  config files; the bare `"passthrough"` string (passthrough-all-hosts, as in the
+  Python/Node SDKs) is also accepted, so a policy copied from another SDK ports
+  over unchanged.
+- **Network configuration** — `Sandbox.create` now accepts `dns:` (nameservers/
+  rebind_protection/query_timeout_ms), `tls:` (interception tuning incl. bypass
+  patterns, intercepted ports, block_quic, and CA cert/key paths), `ipv4_pool:`/
+  `ipv6_pool:`, `max_connections:`, and `trust_host_cas:`.
+- **Create options** — `init:`/`init_with` (hand guest PID 1 to an init system),
+  `ephemeral:` (auto-remove state on terminal), and disk-image `fstype:`.
+  `fstype:` is rejected up front unless `image:` is a disk-image path (a local
+  path ending in `.raw`/`.qcow2`/`.vmdk`); pairing it with an OCI reference no
+  longer routes the ref through the disk-image builder and fails at boot.
+- **Full mount options** — `volumes:` now supports `{ tmpfs: }`, `{ disk:,
+  format:, fstype: }`, and per-mount `stat_virtualization:`/`host_permissions:`
+  alongside the existing bind/named + ro/noexec/nosuid/nodev flags. The pre-0.7.0
+  `options: %w[ro noexec]` array form is still honored (translated onto the
+  boolean flags); an unrecognized token now raises rather than being silently
+  dropped, so a requested read-only/noexec mount can't quietly become writable.
+- **Snapshots** — `Snapshot.open`/`list_dir`/`reindex`, `SnapshotInfo#open`/
+  `#remove`, and `SandboxHandle#snapshot`/`#snapshot_to`. `SnapshotInfo` now
+  carries the full manifest (`image_manifest_digest`, `fstype`,
+  `source_sandbox`, `labels`) on the artifact-opening paths.
+- **`SandboxHandle#config` / `#config_json`** — read the stored sandbox config.
+- **Metrics** — `upper_used_bytes`, `upper_free_bytes`,
+  `upper_host_allocated_bytes` (OCI writable-upper-layer accounting).
+- **`ImageDetail#config["labels"]`** — OCI config labels.
+- **`Microsandbox.setup`** — customizable runtime install (`base_dir:`,
+  `version:`, `force:`, `skip_verify:`); `force:` repairs a corrupt install.
+
+### Changed
+
+- **`exec`/`shell` stdin** is now a closed set: `nil`/`:null` = no stdin,
+  `:pipe` = streaming pipe (streaming variants only), a String = bytes. An
+  unrecognized Symbol now raises `ArgumentError` instead of being fed as its
+  characters (so a mistaken `stdin: :null` no longer sends the literal `"null"`).
+- **Write methods reject non-Strings.** `FS#write`, `SftpClient#write`,
+  `ExecStdin#write`, `VolumeFs#write`, and `FsWriteSink#write` now raise
+  `TypeError` for non-String data instead of silently writing its `to_s` form.
+- **Agent connect timeout.** `AgentClient.connect_sandbox`/`connect_path`
+  `timeout:` now treats `0` as an immediate deadline and raises on a
+  negative/non-finite value, instead of silently falling back to the default.
+- **Secrets shorthand** still accepts `{ env:, value:, host: }`; the validation
+  message changed and a host allow-list is now required.
+
+### Docs
+
+- README/DESIGN implemented-surface corrected to match the binding (and to list
+  the few secondary knobs still not exposed); assorted YARD fixes
+  (`runtime_path=` set-once note, `VolumeInfo#kind` `:dir`, `create`'s
+  `volumes:`/`from_snapshot:` params, `log_stream` `'all'` source); CHANGELOG
+  compare links added for 0.5.9–0.5.12.
+
 ## [0.6.0] - 2026-06-23
 
 This release puts the gem on its **own semantic version**, decoupled from the
@@ -291,7 +381,12 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.12...v0.6.0
+[0.5.12]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.11...v0.5.12
+[0.5.11]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.10...v0.5.11
+[0.5.10]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.9...v0.5.10
+[0.5.9]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/superradcompany/microsandbox/releases/tag/v0.5.7

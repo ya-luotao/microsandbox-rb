@@ -35,7 +35,8 @@ module Microsandbox
   class ImageDetail
     # @return [ImageInfo]
     attr_reader :handle
-    # @return [Hash, nil] OCI config (digest, env, cmd, entrypoint, working_dir, user, stop_signal)
+    # @return [Hash, nil] OCI config (digest, env, cmd, entrypoint, working_dir,
+    #   user, labels, stop_signal). `labels` is a Hash (or nil) of OCI config labels.
     attr_reader :config
     # @return [Array<Hash>] layer descriptors
     attr_reader :layers
