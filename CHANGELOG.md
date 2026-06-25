@@ -26,7 +26,7 @@ Runtime-only bump — no public Ruby API change.
   and instead cut a clean **`v0.5.10`** whose tag carries the matching crate
   version `0.5.10` (upstream
   [#1029](https://github.com/superradcompany/microsandbox/issues/1029)). The bump
-  carries two upstream improvements:
+  carries the following upstream changes:
   - **Heartbeat no longer reclaims busy sandboxes** (upstream #1011). The host
     watchdog is now idle-detection only — a healthy sandbox with an active (or
     briefly starved) `exec` session is never killed for a stale heartbeat, the
@@ -35,6 +35,20 @@ Runtime-only bump — no public Ruby API change.
     secret-bearing config (the network blob, env) is handed to the sandbox over
     an inherited, unlinked-tempfile fd instead of `--`-flags, so it no longer
     leaks into `ps` / `/proc/<pid>/cmdline`.
+
+### Changed
+
+- **Directory bind mounts now carry a default 4 GiB guest-write quota**
+  (upstream #1020). Any `volumes:` entry that binds a host directory (e.g.
+  `volumes: { "/out" => "/host/out" }`) is given a `DEFAULT_BIND_QUOTA_MIB`
+  (4096 MiB) guest-write budget by the v0.5.10 runtime when no explicit quota is
+  set, so a sandbox can no longer fill the host disk through a bind mount. This
+  is a **behavior change**: a workload that wrote more than 4 GiB to a bind mount
+  under the `v0.5.8` runtime (`0.7.0`) will now fail with `ENOSPC`. The gem does
+  not yet expose a per-bind quota override (named-volume `Volume.create` accepts
+  `quota_mib:`, but the inline bind-mount path does not) — that escape hatch is a
+  tracked follow-up. Until then, route large-write mounts through a named volume
+  with an explicit `quota_mib:`.
 
 ## [0.7.0] - 2026-06-23
 
