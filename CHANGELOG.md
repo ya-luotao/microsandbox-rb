@@ -8,6 +8,11 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-25
+
+Gem-only release on the `v0.5.10` runtime (unchanged) — the two follow-ups to
+`0.8.0`'s runtime adoption that review surfaced.
+
 ### Added
 
 - **Per-bind-mount guest-write quota override** (issue #19). An inline `volumes:`
