@@ -165,6 +165,20 @@ RSpec.describe "streaming exec, images, volumes" do
       )
     end
 
+    it "forwards a bind-mount quota_mib override" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        volumes: {"/out" => {bind: "/host/out", quota_mib: 16_384}}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("volumes" => [
+          {"guest" => "/out", "kind" => "bind", "source" => "/host/out",
+           "quota_mib" => 16_384}
+        ])
+      )
+    end
+
     it "raises on a malformed volume spec" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", volumes: {"/data" => {wrong: 1}})
