@@ -8,6 +8,34 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-25
+
+Adopts upstream runtime **`v0.5.10`** (up from the `v0.5.8` that `0.7.0` shipped).
+Runtime-only bump — no public Ruby API change.
+
+### Runtime
+
+- **Adopted upstream `v0.5.10`** — the `microsandbox`/`microsandbox-network` git
+  deps and `Microsandbox::RUNTIME_VERSION` now pin `v0.5.10`. This is the runtime
+  bump originally attempted against `v0.5.9` during the `0.7.0` cycle and reverted:
+  upstream's `v0.5.9` git tag predated its own crate-version bump, so the prebuilt
+  runtime-provisioning path (`PREBUILT_VERSION = env!("CARGO_PKG_VERSION")`)
+  resolved to `0.5.8` and downloaded a `msb` that rejected the new `--config-fd`
+  flag the SDK unconditionally passes — every `Sandbox.create` died at boot.
+  Upstream chose not to re-tag (most package registries forbid republishing a tag)
+  and instead cut a clean **`v0.5.10`** whose tag carries the matching crate
+  version `0.5.10` (upstream
+  [#1029](https://github.com/superradcompany/microsandbox/issues/1029)). The bump
+  carries two upstream improvements:
+  - **Heartbeat no longer reclaims busy sandboxes** (upstream #1011). The host
+    watchdog is now idle-detection only — a healthy sandbox with an active (or
+    briefly starved) `exec` session is never killed for a stale heartbeat, the
+    way it could be before.
+  - **Launch config moved off the process argv** (upstream #1006). Bulky and
+    secret-bearing config (the network blob, env) is handed to the sandbox over
+    an inherited, unlinked-tempfile fd instead of `--`-flags, so it no longer
+    leaks into `ps` / `/proc/<pid>/cmdline`.
+
 ## [0.7.0] - 2026-06-23
 
 A large parity release closing the binding gaps an audit against the upstream
