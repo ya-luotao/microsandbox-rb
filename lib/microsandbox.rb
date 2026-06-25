@@ -93,16 +93,27 @@ module Microsandbox
       Native.installed?
     end
 
-    # Ensure the `msb` runtime + `libkrunfw` are present, provisioning them on
-    # first use if not. Called automatically by {Sandbox.create}/{Sandbox.start}
-    # so precompiled-gem users (who never ran the source build) get a working
-    # runtime without a manual {install} step.
+    # Ensure the `msb` runtime + `libkrunfw` are present *and version-matched*,
+    # provisioning them on first use if not. Called automatically by
+    # {Sandbox.create}/{Sandbox.start} so precompiled-gem users (who never ran the
+    # source build) get a working runtime without a manual {install} step.
     #
-    # The download is attempted at most once per process. Opt out by setting
+    # Runs at most once per process. Opt out by setting
     # `MICROSANDBOX_NO_AUTO_INSTALL` (e.g. air-gapped hosts that provision the
-    # runtime out of band); the subsequent operation then surfaces the missing
-    # runtime itself. Already-installed runtimes (e.g. source builds) skip
-    # straight through with only a cheap presence check.
+    # runtime out of band); the runtime is then left untouched and a missing or
+    # stale one surfaces at the operation itself.
+    #
+    # NOTE: this delegates to {install} even when {installed?} is already true,
+    # rather than short-circuiting on presence. {installed?} (upstream
+    # `verify_installation`) only confirms the `msb`/`libkrunfw` files *exist*, not
+    # that their version matches the runtime this gem build links. {install} is
+    # idempotent and *version-correcting*: it runs a cheap `msb --version` and
+    # re-downloads ONLY when the binary is absent or its version differs, then
+    # no-ops. A presence-only short-circuit would let a stale `msb` left in
+    # `~/.microsandbox` by an older gem pass, then fail every {Sandbox.create} on a
+    # host↔guest wire-protocol mismatch (e.g. a `v0.5.8` `msb` rejecting the
+    # `--config-fd` flag the `v0.5.10` runtime passes). Keep the {install} call on
+    # this path — do not "optimize" it back to skip-when-present.
     # @return [nil]
     def ensure_runtime!
       return if @runtime_ready
@@ -111,14 +122,18 @@ module Microsandbox
       # uses the same lazy env/profile/config ladder every operation already
       # consults, so this adds no work for local hosts (the common case).
       return if default_backend_kind == :cloud
-      if installed?
+      # Opted out: the caller manages the runtime out of band, so don't fetch,
+      # verify, or repair it here. Memoize the decision (the env var is stable for
+      # the process); the operation resolves `msb` itself and surfaces any problem.
+      if auto_install_disabled?
         @runtime_ready = true
         return
       end
-      return if auto_install_disabled?
 
-      warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
-           "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip)..."
+      unless installed?
+        warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
+             "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip)..."
+      end
       install
       @runtime_ready = true
       nil

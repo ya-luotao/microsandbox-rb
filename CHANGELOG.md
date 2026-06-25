@@ -19,6 +19,22 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   rejects it on tmpfs/disk/named mounts (set a named volume's quota via
   `Volume.create(quota_mib:)`).
 
+### Fixed
+
+- **Stale local runtime is now re-provisioned instead of boot-failing**
+  (issue #18). `Microsandbox.ensure_runtime!` short-circuited as soon as
+  `installed?` was true, but that check confirms only that the `msb`/`libkrunfw`
+  files *exist*, not that their version matches the runtime this gem build links.
+  An older `msb` left in `~/.microsandbox` by a previous gem version therefore
+  passed and then failed every `Sandbox.create` at boot on a host↔guest
+  wire-protocol mismatch (e.g. a `v0.5.8` `msb` rejecting the `--config-fd` flag
+  the `v0.5.10` runtime passes). `ensure_runtime!` now delegates to the
+  idempotent, version-correcting installer on first use even when the runtime is
+  present (a cheap `msb --version`; re-downloads only on absence/mismatch), so an
+  upgrade-over-stale-install self-heals. Source-gem installs were already
+  corrected at build time; this closes the gap for the precompiled-gem upgrade
+  path. `MICROSANDBOX_NO_AUTO_INSTALL` still fully opts out.
+
 ## [0.8.0] - 2026-06-25
 
 Adopts upstream runtime **`v0.5.10`** (up from the `v0.5.8` that `0.7.0` shipped).
