@@ -8,6 +8,17 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-bind-mount guest-write quota override** (issue #19). An inline `volumes:`
+  bind mount now accepts a `quota_mib:` key to override the runtime's default
+  guest-write budget (4 GiB as of `v0.5.10`, documented in `0.8.0`), e.g.
+  `volumes: { "/out" => { bind: "/host/out", quota_mib: 16_384 } }`. The runtime
+  still applies the 4 GiB default when unset; there is no unbounded option, so
+  raise the value if a workload writes more. Valid on bind mounts only — the core
+  rejects it on tmpfs/disk/named mounts (set a named volume's quota via
+  `Volume.create(quota_mib:)`).
+
 ## [0.8.0] - 2026-06-25
 
 Adopts upstream runtime **`v0.5.10`** (up from the `v0.5.8` that `0.7.0` shipped).

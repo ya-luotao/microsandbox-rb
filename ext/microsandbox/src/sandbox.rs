@@ -122,6 +122,10 @@ impl Sandbox {
                 .ok_or_else(|| error::base_error("volume mount is missing :kind"))?;
             let source = conv::opt_string(m, "source")?;
             let size_mib = conv::opt_u32(m, "size_mib")?;
+            // Bind-mount guest-write quota override (MiB). The core's MountBuilder
+            // applies it to bind mounts only and rejects it on tmpfs/disk/named at
+            // build(); we forward it as-is so that validation lives in one place.
+            let quota_mib = conv::opt_u32(m, "quota_mib")?;
             let fstype = conv::opt_string(m, "fstype")?;
             let readonly = conv::opt_bool(m, "readonly")?;
             let noexec = conv::opt_bool(m, "noexec")?;
@@ -160,6 +164,9 @@ impl Sandbox {
                 };
                 if let Some(n) = size_mib {
                     mb = mb.size(n);
+                }
+                if let Some(q) = quota_mib {
+                    mb = mb.quota(q);
                 }
                 if let Some(f) = format {
                     mb = mb.format(f);

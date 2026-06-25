@@ -230,7 +230,10 @@ module Microsandbox
       #   `{ disk: "/img.raw", format: "raw", fstype: "ext4" }`. Any mount may add
       #   flags `ro:`/`readonly:`, `noexec:`, `nosuid:`, `nodev:`, and (bind/named
       #   only) `stat_virtualization:` (:strict/:relaxed/:off) and
-      #   `host_permissions:` (:private/:mirror).
+      #   `host_permissions:` (:private/:mirror). A bind mount accepts
+      #   `quota_mib:` to override the runtime's default guest-write budget
+      #   (4 GiB as of `v0.5.10`); the core rejects it on tmpfs/disk/named (for a
+      #   named volume, set its quota via {Volume.create}).
       # @param network [String, Symbol, NetworkPolicy, Hash, nil] network policy.
       #   A preset name ("public_only" (default), "none", "allow_all",
       #   "non_local"), a {NetworkPolicy} (e.g. {NetworkPolicy.custom}), or a Hash
@@ -677,11 +680,12 @@ module Microsandbox
       # Hashes for the native layer. A spec is a host path String (a read-write
       # bind mount) or a Hash describing the mount:
       #   { bind: "/host", ro: true, noexec: true }            # host bind mount
+      #   { bind: "/host", quota_mib: 16_384 }                  # raise the 4 GiB cap
       #   { named: "vol" }                                       # named volume
       #   { tmpfs: true, size_mib: 64 }                          # memory-backed
       #   { disk: "/img.raw", format: "raw", fstype: "ext4" }   # disk-image mount
       # Any mount may also carry stat_virtualization: (:strict/:relaxed/:off) and
-      # host_permissions: (:private/:mirror).
+      # host_permissions: (:private/:mirror); a bind mount may carry quota_mib:.
       def normalize_volumes(volumes)
         volumes.map do |guest, spec|
           mount = {"guest" => guest.to_s}
@@ -722,6 +726,12 @@ module Microsandbox
         mount["size_mib"] = Integer(size) if size
         fstype = spec[:fstype] || spec["fstype"]
         mount["fstype"] = fstype.to_s if fstype
+        # Bind-mount guest-write quota (MiB). Overrides the runtime's default
+        # budget (4 GiB as of v0.5.10); the core applies it only to bind mounts
+        # and rejects it on tmpfs/disk/named. `0` is forwarded as-is (a zero
+        # budget), not treated as "unset".
+        quota = spec[:quota_mib] || spec["quota_mib"]
+        mount["quota_mib"] = Integer(quota) if quota
       end
 
       # Apply a volume spec Hash's mount flags. `ro:`/`readonly:` makes the mount
