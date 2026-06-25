@@ -68,20 +68,30 @@ RSpec.describe "Microsandbox runtime helpers" do
       Microsandbox.instance_variable_set(:@runtime_ready, nil)
     end
 
-    it "is a no-op (no install) when the runtime is already present" do
+    it "still runs the version-correcting installer when the runtime is present" do
+      # Regression guard for the stale-runtime boot failure (issue #18):
+      # `installed?` checks file *presence* only, so a stale msb left by an older
+      # gem passes it. `install` is idempotent + version-correcting (cheap
+      # `msb --version`, re-downloads only on mismatch), so ensure_runtime! must
+      # delegate to it even when present rather than short-circuit. It must NOT
+      # warn in this case (nothing is missing).
       allow(Microsandbox).to receive(:installed?).and_return(true)
       allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:warn)
       Microsandbox.ensure_runtime!
-      expect(Microsandbox).not_to have_received(:install)
+      Microsandbox.ensure_runtime! # second call is memoized, not re-checked
+      expect(Microsandbox).to have_received(:install).once
+      expect(Microsandbox).not_to have_received(:warn)
     end
 
-    it "auto-installs once when the runtime is missing" do
+    it "auto-installs once (with a notice) when the runtime is missing" do
       allow(Microsandbox).to receive(:installed?).and_return(false)
       allow(Microsandbox).to receive(:install)
       allow(Microsandbox).to receive(:warn)
       Microsandbox.ensure_runtime!
       Microsandbox.ensure_runtime! # second call should be memoized, not re-install
       expect(Microsandbox).to have_received(:install).once
+      expect(Microsandbox).to have_received(:warn).once
     end
 
     it "does not auto-install when MICROSANDBOX_NO_AUTO_INSTALL is set" do
@@ -99,6 +109,17 @@ RSpec.describe "Microsandbox runtime helpers" do
       stub_const("ENV", ENV.to_h.merge("MICROSANDBOX_NO_AUTO_INSTALL" => "false"))
       Microsandbox.ensure_runtime!
       expect(Microsandbox).to have_received(:install)
+    end
+
+    it "skips the local-runtime check entirely under a cloud backend" do
+      # A cloud backend has no local msb/libkrunfw to provision, so neither the
+      # presence/version check nor a download should run.
+      allow(Microsandbox).to receive(:default_backend_kind).and_return(:cloud)
+      allow(Microsandbox).to receive(:installed?)
+      allow(Microsandbox).to receive(:install)
+      Microsandbox.ensure_runtime!
+      expect(Microsandbox).not_to have_received(:installed?)
+      expect(Microsandbox).not_to have_received(:install)
     end
   end
 end
