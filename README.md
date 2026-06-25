@@ -383,8 +383,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.6.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.5.8"  (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.8.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.5.10"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
@@ -396,6 +396,8 @@ Microsandbox.runtime_version   # => "v0.5.8"  (the embedded upstream runtime tag
 | `0.5.11` | `v0.5.8` | gem-only revision |
 | `0.5.12` | `v0.5.8` | gem-only revision |
 | `0.6.0`  | `v0.5.8` | gem version decoupled from the upstream tag; adds `runtime_version` |
+| `0.7.0`  | `v0.5.8` | SDK parity release (large binding-gap closure) |
+| `0.8.0`  | `v0.5.10` | adopts upstream `v0.5.10` (idle-only heartbeat, config-fd hardening, **4 GiB default bind-mount quota**); supersedes the reverted `v0.5.9` attempt |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:
