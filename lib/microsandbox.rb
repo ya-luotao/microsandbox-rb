@@ -2,12 +2,16 @@
 
 require_relative "microsandbox/version"
 
-# Load the compiled native extension. Precompiled platform gems ship a
-# version-specific subdirectory (e.g. lib/microsandbox/3.4/microsandbox_rb.bundle);
-# fall back to the flat path used by source builds.
+# Load the compiled native extension. Precompiled platform gems stage the
+# binary under a major.minor subdirectory (e.g.
+# lib/microsandbox/3.4/microsandbox_rb.bundle) — that is the directory
+# rake-compiler builds (it matches the `ruby_version` against /(\d+\.\d+)/), NOT
+# the API string "3.4.0" that RbConfig::CONFIG["ruby_version"] returns. Use
+# RUBY_VERSION's major.minor so the require hits the staged path; fall back to
+# the flat path source builds produce.
 begin
-  ruby_version = RbConfig::CONFIG["ruby_version"].to_s
-  require_relative "microsandbox/#{ruby_version}/microsandbox_rb"
+  abi_version = RUBY_VERSION[/\d+\.\d+/]
+  require_relative "microsandbox/#{abi_version}/microsandbox_rb"
 rescue LoadError
   require_relative "microsandbox/microsandbox_rb"
 end
