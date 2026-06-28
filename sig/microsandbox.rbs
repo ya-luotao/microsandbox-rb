@@ -1,4 +1,12 @@
 # Type signatures for the public microsandbox Ruby API.
+#
+# Convention: native-backed value, stream, and handle objects (e.g. ExecOutput,
+# Metrics, SandboxHandle, the Ssh* clients, AgentClient/AgentStream, PullSession,
+# Snapshot*/Image*/Volume* types) are NOT user-constructible — they are returned
+# by the SDK and built from an internal native handle or data hash. Their
+# `initialize` is therefore intentionally omitted here; declaring it would
+# document an internal constructor users never call. Only document `initialize`
+# for a type if it is part of the public API (none currently are).
 
 module Microsandbox
   VERSION: String
@@ -49,7 +57,6 @@ module Microsandbox
   class UnsupportedError < Error end
 
   class ExecOutput
-    def initialize: (Hash[String, untyped] data) -> void
     def exit_code: () -> Integer
     def success?: () -> bool
     def failure?: () -> bool
@@ -241,7 +248,6 @@ module Microsandbox
 
   class PullSession
     include Enumerable[Hash[String, untyped]]
-    def initialize: (untyped native) -> void
     def each: () { (Hash[String, untyped]) -> void } -> self
             | () -> Enumerator[Hash[String, untyped], self]
     def sandbox: () -> Sandbox
@@ -347,7 +353,6 @@ module Microsandbox
   end
 
   class VolumeFs
-    def initialize: (untyped native) -> void
     def read: (String path) -> String
     def read_text: (String path) -> String
     def write: (String path, String data) -> nil
@@ -452,12 +457,10 @@ module Microsandbox
                       ?rules: Array[Hash[untyped, untyped]], ?deny_domains: Array[String],
                       ?deny_domain_suffixes: Array[String]) -> NetworkPolicy
     def self.coerce: (untyped network) -> Hash[String, untyped]
-    def initialize: (Hash[String, untyped] wire) -> void
     def to_h: () -> Hash[String, untyped]
   end
 
   class AgentFrame
-    def initialize: (Hash[String, untyped] data) -> void
     def id: () -> Integer
     def flags: () -> Integer
     def body: () -> String
@@ -482,7 +485,6 @@ module Microsandbox
     def self.connect_sandbox: (String name, ?timeout: Numeric?) ?{ (AgentClient) -> untyped } -> untyped
     def self.connect_path: (String path, ?timeout: Numeric?) ?{ (AgentClient) -> untyped } -> untyped
     def self.socket_path: (String name) -> String
-    def initialize: (untyped native) -> void
     def request: (Integer flags, String body) -> AgentFrame
     def stream: (Integer flags, String body) -> AgentStream
     def send_frame: (Integer id, Integer flags, String body) -> nil
@@ -491,7 +493,6 @@ module Microsandbox
   end
 
   class SshOutput
-    def initialize: (Hash[String, untyped] data) -> void
     def status: () -> Integer
     def success?: () -> bool
     def failure?: () -> bool
@@ -503,7 +504,6 @@ module Microsandbox
   end
 
   class SftpClient
-    def initialize: (untyped native) -> void
     def read: (String path) -> String
     def read_text: (String path) -> String
     def write: (String path, String data) -> nil
@@ -518,7 +518,6 @@ module Microsandbox
   end
 
   class SshClient
-    def initialize: (untyped native) -> void
     def exec: (String command, ?tty: bool) -> SshOutput
     def attach: (?term: String?, ?detach_keys: String?) -> Integer
     def sftp: () ?{ (SftpClient) -> untyped } -> untyped
@@ -526,13 +525,11 @@ module Microsandbox
   end
 
   class SshServer
-    def initialize: (untyped native) -> void
     def serve_connection: () -> nil
     def close: () -> nil
   end
 
   class SshOps
-    def initialize: (untyped native) -> void
     def open_client: (?user: String, ?term: String?, ?sftp: bool) ?{ (SshClient) -> untyped } -> untyped
     def prepare_server: (?host_key_path: String?, ?authorized_keys_path: String?,
                          ?user: String?, ?sftp: bool) -> SshServer

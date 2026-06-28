@@ -199,6 +199,11 @@ module Microsandbox
   # A streaming reader over a guest file, from {FS#read_stream}. Iterate it (it
   # is {Enumerable}) to consume byte chunks (ASCII-8BIT) as they arrive, or call
   # {#read} to drain it into one String.
+  #
+  # @note **Single-pass, forward-only, single-consumer.** `each`/`read` drain a
+  #   one-shot native channel — not rewindable, and not safe to share across
+  #   threads. Consume it once: a second `each`, or `read` after a partial
+  #   `each`, yields only the remaining bytes.
   class FsReadStream
     include Enumerable
 
