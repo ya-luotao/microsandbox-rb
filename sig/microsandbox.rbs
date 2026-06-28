@@ -38,6 +38,11 @@ module Microsandbox
   class ImageNotFoundError < Error end
   class ImageInUseError < Error end
   class ImagePullFailedError < Error end
+  class SnapshotNotFoundError < Error end
+  class SnapshotAlreadyExistsError < Error end
+  class SnapshotSandboxRunningError < Error end
+  class SnapshotImageMissingError < Error end
+  class SnapshotIntegrityError < Error end
   class NetworkPolicyError < Error end
   class SecretViolationError < Error end
   class TlsError < Error end
