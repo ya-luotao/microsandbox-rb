@@ -8,6 +8,32 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Security
+
+- **Secret values no longer leak into `ArgumentError` messages** (issue #23).
+  `Sandbox.create(secrets:)` validation interpolated the whole secret spec via
+  `spec.inspect` into two error messages — and because the `:value`-present
+  guard runs first, the "needs `:host`/`:hosts`/`:host_patterns`" error *always*
+  embedded the cleartext secret value (and the env/value error did whenever a
+  value was supplied). Such messages routinely reach logs and error trackers.
+  Both messages now report the spec's keys only (`spec.keys.inspect`), mirroring
+  the existing `registry_auth` handling, with a unit spec asserting the value
+  is never present in the raised message.
+
+### Fixed
+
+- **Native duration parsing is panic-free regardless of the Ruby layer**
+  (issue #30). The native binding called `Duration::from_secs_f64` directly at
+  five sites (`exec`/`shell` timeout, `stop_with_timeout`, `kill_with_timeout`,
+  `metrics_stream` interval, `replace_with_timeout`); that panics on NaN/Inf/
+  negative *and on finite-but-out-of-range* values (e.g. `Float::MAX`), which
+  surfaced as an ugly panic-turned-exception. The Ruby `coerce_duration` guard
+  set no upper bound, so a large finite value still reached and panicked the
+  native layer. All five sites now route through a `secs_to_duration` helper
+  (`try_from_secs_f64` + a clean `Microsandbox::Error`), matching the existing
+  agent-client pattern — defense in depth so the native layer is panic-free on
+  its own.
+
 ## [0.8.1] - 2026-06-25
 
 Gem-only release on the `v0.5.10` runtime (unchanged) — the two follow-ups to

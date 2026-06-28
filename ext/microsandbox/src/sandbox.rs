@@ -40,6 +40,21 @@ use crate::exec::ExecHandle;
 use crate::runtime::{block_on, ruby};
 use crate::stream::{LogStream, MetricsStream};
 
+/// Convert a seconds `f64` into a `Duration`, surfacing a clean Ruby error
+/// instead of the panic `Duration::from_secs_f64` raises on NaN/Inf/negative —
+/// *and on finite-but-out-of-range* values (e.g. `Float::MAX`). The Ruby
+/// `coerce_duration` already guards the public paths, but it sets no upper
+/// bound, so a large finite value would still reach (and panic) the native
+/// layer; this keeps the native layer panic-free regardless of the Ruby layer,
+/// mirroring `agent::dur`.
+fn secs_to_duration(secs: f64) -> Result<Duration, Error> {
+    Duration::try_from_secs_f64(secs).map_err(|e| {
+        error::base_error(format!(
+            "duration must be a non-negative, finite number of seconds in range (got {secs}: {e})"
+        ))
+    })
+}
+
 #[magnus::wrap(class = "Microsandbox::Native::Sandbox", free_immediately, size)]
 pub struct Sandbox {
     inner: microsandbox::Sandbox,
@@ -380,7 +395,7 @@ impl Sandbox {
             b = b.detached(true);
         }
         if let Some(secs) = conv::opt_f64(opts, "replace_with_timeout")? {
-            b = b.replace_with_timeout(Duration::from_secs_f64(secs));
+            b = b.replace_with_timeout(secs_to_duration(secs)?);
         } else if conv::opt_bool(opts, "replace")? {
             b = b.replace();
         }
@@ -579,14 +594,22 @@ impl Sandbox {
 
     /// Stream metrics snapshots at `interval` seconds. Returns a MetricsStream
     /// to pull snapshots from.
-    fn metrics_stream(&self, interval: f64) -> MetricsStream {
-        let dur = Duration::from_secs_f64(if interval <= 0.0 { 1.0 } else { interval });
+    fn metrics_stream(&self, interval: f64) -> Result<MetricsStream, Error> {
+        // `interval <= 0.0` (0 or negative) keeps the prior 1s-default behavior;
+        // NaN (for which `<= 0.0` is false) and finite-but-out-of-range values
+        // fall through to `secs_to_duration`, which errors cleanly rather than
+        // letting `from_secs_f64` panic across the FFI boundary.
+        let dur = if interval <= 0.0 {
+            Duration::from_secs(1)
+        } else {
+            secs_to_duration(interval)?
+        };
         // `metrics_stream` is synchronous but builds a `tokio::time::interval`,
         // which panics ("no reactor running") unless constructed inside the
         // runtime context — so build it under `block_on`. (`log_stream` is async
         // and already runs inside `block_on`, so it needs no such wrapper.)
         let stream = block_on(async { self.inner.metrics_stream(dur) });
-        MetricsStream::from_stream(stream)
+        Ok(MetricsStream::from_stream(stream))
     }
 
     /// Stream captured logs as they appear. `opts`: sources, since_ms,
@@ -1544,7 +1567,9 @@ impl ExecOpts {
             cwd: conv::opt_string(opts, "cwd")?,
             user: conv::opt_string(opts, "user")?,
             env: conv::opt_string_map(opts, "env")?,
-            timeout: conv::opt_f64(opts, "timeout")?.map(Duration::from_secs_f64),
+            timeout: conv::opt_f64(opts, "timeout")?
+                .map(secs_to_duration)
+                .transpose()?,
             tty: conv::opt_bool(opts, "tty")?,
             stdin,
             stdin_pipe: conv::opt_bool(opts, "stdin_pipe")?,
@@ -1907,8 +1932,7 @@ impl SbHandle {
 
     /// Graceful stop with a custom escalation timeout (seconds).
     fn stop_with_timeout(&self, secs: f64) -> Result<(), Error> {
-        block_on(self.inner.stop_with_timeout(Duration::from_secs_f64(secs)))
-            .map_err(error::to_ruby)
+        block_on(self.inner.stop_with_timeout(secs_to_duration(secs)?)).map_err(error::to_ruby)
     }
 
     /// Force kill (SIGKILL) and wait.
@@ -1918,8 +1942,7 @@ impl SbHandle {
 
     /// Force kill, waiting up to `secs` for the process to disappear.
     fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
-        block_on(self.inner.kill_with_timeout(Duration::from_secs_f64(secs)))
-            .map_err(error::to_ruby)
+        block_on(self.inner.kill_with_timeout(secs_to_duration(secs)?)).map_err(error::to_ruby)
     }
 
     /// Send the graceful-shutdown request and return without waiting.
