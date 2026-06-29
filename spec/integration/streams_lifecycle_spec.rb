@@ -58,6 +58,11 @@ RSpec.describe "lifecycle controls + streaming", :integration do
 
     it "streams metrics snapshots" do
       Microsandbox::Sandbox.create(unique_sandbox_name, image: image) do |sb|
+        # Wait out the post-create metrics-slot startup window before opening the
+        # stream: the stream's first tick fires immediately and would otherwise
+        # race the slot (and a single-pass stream can't be re-iterated once that
+        # first tick errors). See wait_for_metrics_slot.
+        wait_for_metrics_slot(sb)
         snapshot = sb.metrics_stream(interval: 0.2).first
         expect(snapshot).to be_a(Microsandbox::Metrics)
         expect(snapshot.uptime_secs).to be >= 0
