@@ -176,5 +176,76 @@ jobs:
           shopt -s nullglob
           for gem in dist/*.gem; do
             echo "Pushing $gem"
-            gem push "$gem"
+            # Idempotent: RubyGems rejects re-pushing an existing version. Tolerate
+            # that specific rejection so a re-run (e.g. after a later job failed, or
+            # a partial multi-gem push) succeeds instead of dead-ending here — any
+            # other failure still aborts the publish. The `if` guard is required so
+            # `set -e` (Actions' default `bash -eo pipefail`) does not exit on the
+            # push before we can inspect the rejection message.
+            if out="$(gem push "$gem" 2>&1)"; then
+              printf '%s\n' "$out"
+            else
+              rc=$?
+              printf '%s\n' "$out"
+              if printf '%s' "$out" | grep -qiE 'already been pushed|Repushing of gem versions|already exists'; then
+                echo "::notice::$gem is already on RubyGems — skipping (idempotent re-run)"
+              else
+                exit "$rc"
+              fi
+            fi
           done
+
+  github-release:
+    name: GitHub Release
+    # Create the GitHub Release once the gem is published, so a tag produces BOTH
+    # the RubyGems publish and a Releases-page entry. release.yml historically did
+    # only the former, leaving every tag's GitHub Release to be made by hand. Notes
+    # are sliced from the matching CHANGELOG.md section on the tagged commit; gated
+    # on `needs: [publish]` so a failed gem push never yields a dangling Release.
+    needs: [publish]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write # create/edit the GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true # need every version tag to decide if this one is newest
+      - name: Create GitHub Release from CHANGELOG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"   # vX.Y.Z
+          ver="${tag#v}"             # X.Y.Z
+          notes="$(mktemp)"
+          # Slice the [X.Y.Z] section out of the Keep-a-Changelog file.
+          awk -v ver="$ver" '
+            $0 ~ ("^## \\[" ver "\\]") { grab = 1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > "$notes"
+          [ -s "$notes" ] || echo "::warning::no CHANGELOG section for $ver; falling back to generated notes"
+          # Only claim the "Latest" badge when this tag is the highest version, so a
+          # backport tag pushed after a newer release does NOT seize Latest (a bare
+          # --latest would force it unconditionally). create_latest is always explicit;
+          # on the re-run/edit path we pass --latest only when newest and otherwise
+          # leave the existing flag untouched.
+          newest="$(git tag --sort=-v:refname | head -n1)"
+          create_latest=(--latest); edit_latest=(--latest)
+          if [ "$tag" != "$newest" ]; then create_latest=(--latest=false); edit_latest=(); fi
+          echo "newest version tag: $newest; this tag: $tag -> ${create_latest[*]}"
+          # Idempotent: a re-run of a tag may find the Release already created.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag exists — refreshing notes"
+            if [ -s "$notes" ]; then
+              gh release edit "$tag" "${edit_latest[@]}" --notes-file "$notes"
+            elif [ "${#edit_latest[@]}" -gt 0 ]; then
+              gh release edit "$tag" "${edit_latest[@]}"
+            else
+              echo "nothing to update (release exists, no CHANGELOG section, not newest)"
+            fi
+          elif [ -s "$notes" ]; then
+            gh release create "$tag" --title "$tag" "${create_latest[@]}" --verify-tag --notes-file "$notes"
+          else
+            gh release create "$tag" --title "$tag" "${create_latest[@]}" --verify-tag --generate-notes
+          fi
