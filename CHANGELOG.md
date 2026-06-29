@@ -6,7 +6,12 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
-## [Unreleased]
+## [0.8.2] - 2026-06-29
+
+Gem-only release on the `v0.5.10` runtime (unchanged). Bundles the post-`0.8.1`
+audit follow-ups: a secret-leak fix, typed snapshot errors, panic-free duration
+parsing, the precompiled fat-gem loader + `extconf` preflight corrections, and a
+sweep of threading/streaming/SSH documentation.
 
 ### Documentation
 
@@ -14,9 +19,12 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   released during native calls so *other* threads keep running, but the
   *calling* thread blocks uninterruptibly until the call returns —
   `Timeout::timeout`/`Thread#kill`/Ctrl-C can't interrupt it. README and
-  DESIGN.md now state this and steer callers to the explicit `exec(timeout:)` /
-  `shell(timeout:)` / `AgentClient(timeout:)` knobs for bounding long or
-  unbounded/streaming calls, rather than `Timeout::timeout`.
+  DESIGN.md now state this and steer callers to the genuinely-bounding
+  `exec(timeout:)` / `shell(timeout:)` knobs, and clarify that
+  `AgentClient.connect_sandbox`/`connect_path`'s `timeout:` bounds only the
+  connect handshake while `AgentClient#request`/`#stream` and the streaming
+  paths have no timeout knob and can block indefinitely — rather than reaching
+  for `Timeout::timeout`.
 - **`exec` `timeout: 0` semantics clarified** (issue #29). The `@param timeout`
   doc now notes the asymmetry: omit or `nil` means *no* timeout, while `0` is an
   immediate (zero) deadline that kills the command before any output and raises
@@ -40,10 +48,13 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 - **`DESIGN.md` refreshed** (issue #35). The stale runtime-pin references
   (`v0.5.7`/`v0.5.8`) now point at `v0.5.10` via `RUNTIME_VERSION`, and the
   hard-coded unit-example count is replaced with rot-proof phrasing.
-- **RBS `initialize` convention made consistent** (issue #36). Native-backed,
-  non-user-constructible value/handle/stream types no longer declare an internal
-  `initialize` in `sig/microsandbox.rbs` (previously declared on 11 of them,
-  omitted on peers of identical role); a top-of-file note records the convention.
+- **RBS gains a note on SDK-constructed types** (issue #36). `sig/microsandbox.rbs`
+  now carries a top-of-file note explaining that native-backed value/handle/stream
+  types are constructed by the SDK from an internal native handle or data hash, not
+  by user code. Their `initialize` signatures are kept: RBS derives `new` from
+  `initialize`, so omitting them would not hide the constructor — it would
+  synthesize a misleading zero-arg `() -> instance` that Ruby actually rejects.
+
 ### Fixed
 
 - **Precompiled fat-gem loader now finds the staged binary** (issue #25). The
@@ -55,16 +66,15 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   failed at `require "microsandbox"` the moment precompiled gems are promoted.
   The loader now derives the subdir from `RUBY_VERSION[/\d+\.\d+/]` (`"3.4"`),
   matching the staged path; the flat-path rescue still covers source builds.
-- **`extconf` MSRV preflight probes the toolchain the build actually uses**
+- **`extconf` MSRV preflight probes the compiler the build actually runs**
   (issue #39). The preflight ran a bare `rustc --version` and hard-aborted when
-  `< 1.91`, but the build is driven by `cargo` — and a rustup `cargo` shim honors
-  this gem's `rust-toolchain.toml` (`stable`), which a bare `rustc` first on PATH
-  does not reflect. A non-rustup `rustc` shadowing a rustup `cargo` shim could
-  therefore false-abort a build that `cargo` would complete. The preflight now
-  probes the `rustc` sitting alongside the `cargo` that drives the build (from
-  the same directory, so the toolchain override is discovered the way the build
-  discovers it) — correctly mirroring both the false-abort case and the genuine
-  too-old case it still guards.
+  `< 1.91`, but the build is driven by `cargo`, which resolves its compiler from
+  `$RUSTC` if set, otherwise the bare `rustc` on PATH — it never uses the `rustc`
+  beside the `cargo` binary, and the rustup `cargo` shim neither sets `$RUSTC` nor
+  reorders PATH. The preflight now mirrors that exact resolution (`$RUSTC`, else
+  PATH `rustc`), so it neither false-passes when a stale non-rustup `rustc`
+  shadows a rustup `cargo` (the build would compile with that stale `rustc` and
+  fail deep in smoltcp) nor false-aborts when `$RUSTC` points at a newer compiler.
 
 ### Internal
 
