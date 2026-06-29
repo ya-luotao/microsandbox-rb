@@ -5,33 +5,28 @@ require "rb_sys/mkmf"
 require "shellwords"
 
 # Preflight: the embedded microsandbox core is edition 2024 and pulls smoltcp,
-# which sets a Minimum Supported Rust Version of 1.91. A `cargo` from an older
-# toolchain (commonly Homebrew's rustc, which shadows a newer rustup on PATH and
-# ignores this gem's rust-toolchain.toml) fails deep in the build with a cryptic
-# "rustc X is not supported by smoltcp" error. Detect it up front and explain
-# the fix instead.
+# which sets a Minimum Supported Rust Version of 1.91. An older rustc (commonly
+# Homebrew's, which shadows a newer rustup on PATH and ignores this gem's
+# rust-toolchain.toml) fails deep in the build with a cryptic "rustc X is not
+# supported by smoltcp" error. Detect it up front and explain the fix instead.
 #
-# Probe the rustc the BUILD will actually use — not whichever rustc happens to
-# be first on PATH. create_rust_makefile drives the build through `cargo` (the
-# Makefile's `CARGO ?= cargo`, so the `CARGO` env var if set — e.g. a
-# cross-compile wrapper — else the `cargo` resolved on PATH), and cargo invokes
-# the `rustc` that sits alongside it: a rustup `cargo` shim and its sibling
-# `rustc` shim both honor this gem's rust-toolchain.toml (pinning `stable`),
-# while a Homebrew `cargo`+`rustc` pair both ignore it. So a bare `rustc
-# --version` can false-abort a build that would succeed (a non-rustup rustc
-# shadowing a rustup `cargo` shim) — yet still correctly catch the real too-old
-# case. Resolving the rustc beside the build's `cargo`, from this same directory
-# (so the toolchain override is discovered the way the build discovers it),
-# mirrors both cases.
+# Probe the *same* rustc the build will invoke. create_rust_makefile drives the
+# build through `cargo`, and cargo resolves its compiler exactly as: the `RUSTC`
+# env var if set, otherwise the bare `rustc` found on PATH. It does NOT use the
+# `rustc` sitting beside the `cargo` binary, and the rustup `cargo` shim neither
+# sets `RUSTC` nor prepends its toolchain bin to PATH — toolchain selection
+# survives only because the PATH `rustc` is normally itself a rustup shim that
+# honors rust-toolchain.toml. So a non-rustup rustc earlier on PATH (which reads
+# neither RUSTUP_TOOLCHAIN nor the toolchain file) is what the build actually
+# runs. Mirroring cargo's RUSTC-then-PATH resolution is the only probe that
+# neither false-passes (the trap of checking the cargo sibling, which stays a
+# valid rustup shim while the build silently uses the stale PATH rustc) nor
+# false-aborts (when `RUSTC` points at a newer compiler than the PATH `rustc`).
 MSRV = Gem::Version.new("1.91")
 
 def build_rustc
-  cargo = ENV["CARGO"].to_s
-  cargo = `command -v cargo 2>/dev/null`.strip if cargo.empty?
-  sibling = File.join(File.dirname(cargo), "rustc") unless cargo.empty?
-  (sibling && File.exist?(sibling)) ? sibling : "rustc"
-rescue
-  "rustc"
+  rustc = ENV["RUSTC"].to_s.strip
+  rustc.empty? ? "rustc" : rustc
 end
 
 rustc = build_rustc
@@ -57,8 +52,12 @@ if rustc_version && rustc_version < MSRV
           rustup install stable && rustup default stable
       • Or upgrade your system Rust to >= #{MSRV}.
 
-    (This gem ships a rust-toolchain.toml pinning `stable`; the rustup `cargo`
-    shim honors it, but a non-rustup `cargo` does not.)
+      • Or point `RUSTC` at a recent compiler (cargo honors it over PATH):
+          RUSTC="$HOME/.cargo/bin/rustc" gem install microsandbox-rb
+
+    (This gem ships a rust-toolchain.toml pinning `stable`, but only a rustup
+    `rustc` shim reads it — a non-rustup `rustc` ahead on PATH ignores it, and
+    cargo invokes that PATH `rustc` unless `RUSTC` says otherwise.)
   MSG
 end
 
