@@ -210,7 +210,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-tags: true # need every version tag to decide if this one is newest
+          # Full history + all tags, so the "is this the newest tag?" check below
+          # (git tag --sort=-v:refname) sees every version. NOT fetch-tags:true —
+          # on a tag-triggered run checkout resolves github.ref to the commit SHA
+          # and fetch-tags then races the tag onto the same ref, failing with
+          # "Cannot fetch both <sha> and refs/tags/<tag>" (actions/checkout#1781).
+          fetch-depth: 0
       - name: Create GitHub Release from CHANGELOG
         env:
           GH_TOKEN: ${{ github.token }}
