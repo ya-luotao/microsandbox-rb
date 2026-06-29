@@ -8,6 +8,24 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Added
+
+- **Typed snapshot error classes** (issue #28). The five core snapshot error
+  variants — reachable through the gem's fully-wired `Snapshot` API — previously
+  collapsed to the base `Microsandbox::Error`, forcing callers to string-match
+  the message. They now raise typed subclasses:
+  `SnapshotNotFoundError` (`snapshot-not-found`),
+  `SnapshotAlreadyExistsError` (`snapshot-already-exists`),
+  `SnapshotSandboxRunningError` (`snapshot-sandbox-running`),
+  `SnapshotImageMissingError` (`snapshot-image-missing`), and
+  `SnapshotIntegrityError` (`snapshot-integrity`). This goes **beyond** the
+  Python SDK mirror (which defines no snapshot classes), matching the Go SDK's
+  per-variant coverage — a deliberate divergence. Additionally, the previously
+  orphaned `NetworkPolicyError` now also carries the core's `NetworkBuilder`
+  build/validation error (a `network(|n| ...)` failure), which previously fell
+  through to the base `Error`. All additive — existing `rescue Microsandbox::Error`
+  handlers still catch them.
+
 ## [0.8.1] - 2026-06-25
 
 Gem-only release on the `v0.5.10` runtime (unchanged) — the two follow-ups to
