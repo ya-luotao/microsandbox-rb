@@ -34,6 +34,22 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         // client's `UnsupportedOperation` above.
         CloudHttp { .. } => "CloudHttpError",
         Unsupported { .. } => "UnsupportedError",
+        // Snapshot operations, all reachable through the gem's fully-wired
+        // `Snapshot` API. Upstream raises these un-wrapped, so without a mapping
+        // they collapse to the base `Error` and callers must string-match the
+        // message. This goes BEYOND the Python mirror (which has no Snapshot
+        // classes and matches the Go SDK's per-variant coverage instead) — a
+        // deliberate divergence noted in `lib/microsandbox/errors.rb`.
+        SnapshotNotFound(_) => "SnapshotNotFoundError",
+        SnapshotAlreadyExists(_) => "SnapshotAlreadyExistsError",
+        SnapshotSandboxRunning(_) => "SnapshotSandboxRunningError",
+        SnapshotImageMissing(_) => "SnapshotImageMissingError",
+        SnapshotIntegrity(_) => "SnapshotIntegrityError",
+        // Give the already-defined-but-orphaned `NetworkPolicyError` a mapping:
+        // a builder parse/validation error from `network(|n| ...)`. The gem
+        // unconditionally enables the core's `net` feature (default-features),
+        // so this variant is always present.
+        NetworkBuilder(_) => "NetworkPolicyError",
         _ => "Error",
     }
 }
