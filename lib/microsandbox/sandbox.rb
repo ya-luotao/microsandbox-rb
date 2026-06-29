@@ -526,7 +526,10 @@ module Microsandbox
         env = spec[:env] || spec["env"]
         value = spec[:value] || spec["value"]
         unless env && value
-          raise ArgumentError, "secret spec needs :env and :value (got #{spec.inspect})"
+          # Report only the keys given, never the values — a secret spec carries
+          # the cleartext :value, and exception messages routinely land in logs
+          # and error trackers. Mirrors apply_registry_opts above.
+          raise ArgumentError, "secret spec needs :env and :value (got keys: #{spec.keys.inspect})"
         end
         out = {"env" => env.to_s, "value" => value.to_s}
         hosts = Array(spec[:hosts] || spec["hosts"]).map(&:to_s)
@@ -534,8 +537,10 @@ module Microsandbox
         hosts << single.to_s if single
         patterns = Array(spec[:host_patterns] || spec["host_patterns"]).map(&:to_s)
         if hosts.empty? && patterns.empty?
+          # Keys only — this branch runs after :value is confirmed present, so
+          # spec.inspect would always embed the cleartext secret value.
           raise ArgumentError,
-            "secret spec needs :host, :hosts, or :host_patterns (got #{spec.inspect})"
+            "secret spec needs :host, :hosts, or :host_patterns (got keys: #{spec.keys.inspect})"
         end
         out["hosts"] = hosts unless hosts.empty?
         out["host_patterns"] = patterns unless patterns.empty?

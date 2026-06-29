@@ -51,7 +51,22 @@ module Microsandbox
   define_error(:ImageInUseError, "image-in-use")
   define_error(:ImagePullFailedError, "image-pull-failed")
 
+  # Snapshot errors ---------------------------------------------------------
+  # These go BEYOND the Python SDK mirror (which has no Snapshot classes and
+  # collapses all five to its base error) — a deliberate divergence matching the
+  # Go SDK's per-variant coverage, so callers can rescue a missing/duplicate/
+  # running-source/missing-image/corrupt snapshot specifically. The native layer
+  # (ext/microsandbox/src/error.rs) maps the five core Snapshot* variants here.
+  define_error(:SnapshotNotFoundError, "snapshot-not-found")
+  define_error(:SnapshotAlreadyExistsError, "snapshot-already-exists")
+  define_error(:SnapshotSandboxRunningError, "snapshot-sandbox-running")
+  define_error(:SnapshotImageMissingError, "snapshot-image-missing")
+  define_error(:SnapshotIntegrityError, "snapshot-integrity")
+
   # Networking / secrets errors ---------------------------------------------
+  # NetworkPolicyError now also carries the core's `NetworkBuilder` build/parse
+  # error (a `network(|n| ...)` validation failure), which was previously
+  # unmapped and fell through to the base Error.
   define_error(:NetworkPolicyError, "network-policy-error")
   define_error(:SecretViolationError, "secret-violation")
   define_error(:TlsError, "tls-error")

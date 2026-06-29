@@ -55,6 +55,47 @@ jobs:
       - name: Run unit specs
         run: bundle exec rake spec
 
+  # Build the gem and install it from the packed artifact, exercising the
+  # from-gem source-compile path end to end. Every other job compiles the
+  # working tree in place (`rake compile`), so the gemspec `spec.files` glob and
+  # the from-gem build are never validated — a packaging regression (an omitted
+  # source file, a stale/absent Cargo.lock or rust-toolchain.toml, a renamed
+  # path) would reach RubyGems and break `gem install microsandbox-rb` (the
+  # default install for every non-fat-gem platform) with no pre-publish signal.
+  # No KVM/microVM boot, so it runs cheaply on a hosted runner.
+  package:
+    name: package (install built source gem)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev gcc make flex bison libelf-dev bc python3-pyelftools
+
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+        with:
+          ruby-version: "3.4"
+          rustup-toolchain: stable
+          bundler-cache: true
+          cargo-cache: true
+
+      - name: Build the gem (packs spec.files)
+        run: bundle exec rake build
+
+      # Compile from the PACKED source (extconf.rb + cargo against the packed
+      # root Cargo.toml/Cargo.lock/rust-toolchain.toml + ext/ sources), then load
+      # it from outside the repo so the installed gem — not the working-tree
+      # lib/ — is what `require` resolves. Plain `ruby` (not `bundle exec`, which
+      # would load the local source gem via the Gemfile `gemspec`).
+      - name: Install the packed gem and require it
+        run: |
+          gem install pkg/microsandbox-rb-*.gem
+          cd "$RUNNER_TEMP"
+          ruby -e 'require "microsandbox"; puts "version=#{Microsandbox.version} runtime=#{Microsandbox.runtime_version}"'
+
   # Real-microVM integration tests — the round-trip verification that the unit
   # suite (which stubs the native layer) cannot provide. Boots actual sandboxes
   # from an OCI image and exercises exec/shell/fs/metrics/logs end-to-end.
