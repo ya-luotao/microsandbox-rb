@@ -215,6 +215,9 @@ end
 
 ```ruby
 Microsandbox::Sandbox.create("obs", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
+  # On the v0.6.1 runtime the metrics slot goes live a beat after create returns,
+  # so `metrics` can briefly raise "no live metrics slot" right after boot —
+  # retry for a few hundred ms rather than treating the first failure as fatal.
   m = sb.metrics                       # => Microsandbox::Metrics
   m.cpu_percent
   m.memory_bytes
@@ -390,8 +393,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.8.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.5.10"  (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.9.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.6.1"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
