@@ -23,6 +23,11 @@ RSpec.describe "Microsandbox error hierarchy" do
     "ImageNotFoundError" => "image-not-found",
     "ImageInUseError" => "image-in-use",
     "ImagePullFailedError" => "image-pull-failed",
+    "SnapshotNotFoundError" => "snapshot-not-found",
+    "SnapshotAlreadyExistsError" => "snapshot-already-exists",
+    "SnapshotSandboxRunningError" => "snapshot-sandbox-running",
+    "SnapshotImageMissingError" => "snapshot-image-missing",
+    "SnapshotIntegrityError" => "snapshot-integrity",
     "NetworkPolicyError" => "network-policy-error",
     "SecretViolationError" => "secret-violation",
     "TlsError" => "tls-error",
@@ -62,5 +67,24 @@ RSpec.describe "Microsandbox error hierarchy" do
     err = Microsandbox::SandboxNotFoundError.new("no such sandbox")
     expect(err.message).to eq("no such sandbox")
     expect(err).to be_a(StandardError)
+  end
+
+  # Exercises the REAL native error mapping (not just the Ruby class table):
+  # opening a snapshot at a path that cannot exist routes the core's
+  # SnapshotNotFound variant through ext/microsandbox/src/error.rs::class_name to
+  # the typed SnapshotNotFoundError. Disk-only, no microVM/runtime — deterministic
+  # in CI. Guards against the variant silently falling back to the base Error.
+  #
+  # Pin the local backend explicitly: snapshot ops require it, and on a non-local
+  # process-wide backend the open would raise UnsupportedError instead, masking
+  # the mapping under test.
+  it "maps a core Snapshot* variant to its typed class via the native layer" do
+    Microsandbox.with_backend(:local) do
+      expect do
+        Microsandbox::Snapshot.open("/nonexistent/microsandbox-rb-spec/snap-xyz.msbsnap")
+      end.to raise_error(Microsandbox::SnapshotNotFoundError) { |e|
+        expect(e.code).to eq("snapshot-not-found")
+      }
+    end
   end
 end

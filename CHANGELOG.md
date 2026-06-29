@@ -44,6 +44,48 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   which the gemspec packs. A release that bumped `version.rb` + `Cargo.toml` but
   forgot to refresh the lock would ship a stale lock (and a `--locked` build
   would reject it) — a recurring release mistake this now catches.
+### Security
+
+- **Secret values no longer leak into `ArgumentError` messages** (issue #23).
+  `Sandbox.create(secrets:)` validation interpolated the whole secret spec via
+  `spec.inspect` into two error messages — and because the `:value`-present
+  guard runs first, the "needs `:host`/`:hosts`/`:host_patterns`" error *always*
+  embedded the cleartext secret value (and the env/value error did whenever a
+  value was supplied). Such messages routinely reach logs and error trackers.
+  Both messages now report the spec's keys only (`spec.keys.inspect`), mirroring
+  the existing `registry_auth` handling, with a unit spec asserting the value
+  is never present in the raised message.
+
+### Fixed
+
+- **Native duration parsing is panic-free regardless of the Ruby layer**
+  (issue #30). The native binding called `Duration::from_secs_f64` directly at
+  five sites (`exec`/`shell` timeout, `stop_with_timeout`, `kill_with_timeout`,
+  `metrics_stream` interval, `replace_with_timeout`); that panics on NaN/Inf/
+  negative *and on finite-but-out-of-range* values (e.g. `Float::MAX`), which
+  surfaced as an ugly panic-turned-exception. The Ruby `coerce_duration` guard
+  set no upper bound, so a large finite value still reached and panicked the
+  native layer. All five sites now route through a `secs_to_duration` helper
+  (`try_from_secs_f64` + a clean `Microsandbox::Error`), matching the existing
+  agent-client pattern — defense in depth so the native layer is panic-free on
+  its own.
+### Added
+
+- **Typed snapshot error classes** (issue #28). The five core snapshot error
+  variants — reachable through the gem's fully-wired `Snapshot` API — previously
+  collapsed to the base `Microsandbox::Error`, forcing callers to string-match
+  the message. They now raise typed subclasses:
+  `SnapshotNotFoundError` (`snapshot-not-found`),
+  `SnapshotAlreadyExistsError` (`snapshot-already-exists`),
+  `SnapshotSandboxRunningError` (`snapshot-sandbox-running`),
+  `SnapshotImageMissingError` (`snapshot-image-missing`), and
+  `SnapshotIntegrityError` (`snapshot-integrity`). This goes **beyond** the
+  Python SDK mirror (which defines no snapshot classes), matching the Go SDK's
+  per-variant coverage — a deliberate divergence. Additionally, the previously
+  orphaned `NetworkPolicyError` now also carries the core's `NetworkBuilder`
+  build/validation error (a `network(|n| ...)` failure), which previously fell
+  through to the base `Error`. All additive — existing `rescue Microsandbox::Error`
+  handlers still catch them.
 
 ## [0.8.1] - 2026-06-25
 

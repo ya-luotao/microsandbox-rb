@@ -165,10 +165,32 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /:env and :value/)
     end
 
+    it "never embeds the cleartext secret value in the env/value error" do
+      # env missing but value present: the :env-and-:value guard fires while a
+      # value is in hand — the message must report keys only, not the secret.
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{value: "sk_live_LEAK"}])
+      end.to raise_error(ArgumentError) { |e|
+        expect(e.message).to match(/:env and :value/)
+        expect(e.message).not_to include("sk_live_LEAK")
+      }
+    end
+
     it "raises on a secret spec with no allowed host" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y"}])
       end.to raise_error(ArgumentError, /:host, :hosts, or :host_patterns/)
+    end
+
+    it "never embeds the cleartext secret value in the host error" do
+      # The host guard runs only after :value is confirmed present, so a naive
+      # spec.inspect would always leak the live credential into the message.
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "sk_live_LEAK"}])
+      end.to raise_error(ArgumentError) { |e|
+        expect(e.message).to match(/:host, :hosts, or :host_patterns/)
+        expect(e.message).not_to include("sk_live_LEAK")
+      }
     end
 
     it "maps fstype, a String init, and ephemeral" do
@@ -675,5 +697,30 @@ RSpec.describe "Microsandbox.all_sandbox_metrics" do
     expect(metrics.keys).to eq(["box"])
     expect(metrics["box"]).to be_a(Microsandbox::Metrics)
     expect(metrics["box"].cpu_percent).to eq(12.5)
+  end
+end
+
+# The native binding parses durations with try_from_secs_f64, so a bad value is
+# rejected as a clean Microsandbox::Error *before* any microVM boot — never a
+# Rust panic across the FFI boundary. This exercises the REAL native layer (no
+# stub): build_builder validates replace_with_timeout while constructing the
+# builder, so it raises without ever calling .create(). Mirrors the agent
+# client's timeout-validation specs. (The other native duration sites — exec
+# timeout, stop/kill_with_timeout, metrics_stream interval — reach the same
+# secs_to_duration helper but only via a live Sandbox/SandboxHandle instance,
+# which the unit suite can't construct without a microVM, so they are covered by
+# the integration suite; the Ruby coerce_duration guard for them is unit-tested
+# above with the native layer stubbed. Note metrics_stream keeps a `<= 0.0`
+# branch that defaults 0/negative to 1s, so only NaN/out-of-range reach
+# secs_to_duration there — that NaN-specific branch is integration-only.)
+RSpec.describe "native duration validation (panic-free)" do
+  [Float::MAX, Float::INFINITY, -Float::INFINITY, Float::NAN].each do |bad|
+    it "rejects #{bad.inspect} replace_with_timeout as a clean error, never a panic" do
+      expect do
+        Microsandbox::Native::Sandbox.create(
+          "duration-probe", {"image" => "x", "replace_with_timeout" => bad}
+        )
+      end.to raise_error(Microsandbox::Error, /duration must be a non-negative, finite number/)
+    end
   end
 end
