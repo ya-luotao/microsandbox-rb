@@ -406,6 +406,7 @@ Microsandbox.runtime_version   # => "v0.5.10"  (the embedded upstream runtime ta
 | `0.7.0`  | `v0.5.8` | SDK parity release (large binding-gap closure) |
 | `0.8.0`  | `v0.5.10` | adopts upstream `v0.5.10` (idle-only heartbeat, config-fd hardening, **4 GiB default bind-mount quota**); supersedes the reverted `v0.5.9` attempt |
 | `0.8.1`  | `v0.5.10` | gem-only: re-provision a stale local runtime; per-bind-mount `quota_mib:` override |
+| `0.8.2`  | `v0.5.10` | gem-only: redact secrets from errors, typed snapshot errors, panic-free durations, fat-gem loader + `extconf` preflight fixes, threading/streaming docs |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:
