@@ -8,6 +8,42 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Calling-thread non-preemption is now documented** (issue #24). The GVL is
+  released during native calls so *other* threads keep running, but the
+  *calling* thread blocks uninterruptibly until the call returns —
+  `Timeout::timeout`/`Thread#kill`/Ctrl-C can't interrupt it. README and
+  DESIGN.md now state this and steer callers to the explicit `exec(timeout:)` /
+  `shell(timeout:)` / `AgentClient(timeout:)` knobs for bounding long or
+  unbounded/streaming calls, rather than `Timeout::timeout`.
+- **`exec` `timeout: 0` semantics clarified** (issue #29). The `@param timeout`
+  doc now notes the asymmetry: omit or `nil` means *no* timeout, while `0` is an
+  immediate (zero) deadline that kills the command before any output and raises
+  `ExecTimeoutError` — so use `nil`/omit, never `0`, for "no limit". Also noted
+  that `exec_stream`/`shell_stream` accept `timeout:` but do **not** apply it
+  (the streaming path discards it).
+- **Streaming classes documented as single-pass / single-consumer** (issues #34,
+  #31). `ExecHandle`, `LogStream`, `MetricsStream`, `FsReadStream`,
+  `PullSession`, and `AgentStream` are `Enumerable` but drain a one-shot native
+  channel: forward-only, not rewindable, and meant for one consumer on one
+  thread. A second `each` (or a combinator after a partial drain) silently
+  yields nothing. Noted on each class and in a README streaming caveat.
+- **SSH `close` disconnect behavior documented** (issue #33). `SshClient#close` /
+  `SftpClient#close` send the graceful protocol disconnect; relying on GC skips
+  it (only the in-process server task is aborted). The block-less
+  `open_client`/`sftp` docs now tell callers to `close` (or use the block form)
+  for a clean disconnect.
+
+### Internal
+
+- **`DESIGN.md` refreshed** (issue #35). The stale runtime-pin references
+  (`v0.5.7`/`v0.5.8`) now point at `v0.5.10` via `RUNTIME_VERSION`, and the
+  hard-coded unit-example count is replaced with rot-proof phrasing.
+- **RBS `initialize` convention made consistent** (issue #36). Native-backed,
+  non-user-constructible value/handle/stream types no longer declare an internal
+  `initialize` in `sig/microsandbox.rbs` (previously declared on 11 of them,
+  omitted on peers of identical role); a top-of-file note records the convention.
 ### Fixed
 
 - **Precompiled fat-gem loader now finds the staged binary** (issue #25). The

@@ -1,4 +1,13 @@
 # Type signatures for the public microsandbox Ruby API.
+#
+# Note: value, stream, and handle types (e.g. ExecOutput, Metrics, SandboxHandle,
+# the Ssh* clients, AgentClient/AgentStream, PullSession, Snapshot*/Image*/Volume*)
+# are constructed by the SDK from an internal native handle or data hash, not by
+# user code — you receive them from SDK calls. Their `initialize` is documented
+# below only to keep `new`'s synthesized signature accurate (RBS derives `new`
+# from `initialize`; omitting it does NOT hide the constructor — it falls back to
+# a misleading zero-arg `() -> instance` that Ruby actually rejects). Treat these
+# constructors as internal.
 
 module Microsandbox
   VERSION: String

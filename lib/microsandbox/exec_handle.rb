@@ -86,6 +86,13 @@ module Microsandbox
   # Iterate it (it is {Enumerable}) to consume {ExecEvent}s as they arrive, or
   # call {#collect} to drain it into an {ExecOutput}.
   #
+  # @note **Single-pass, forward-only, single-consumer.** `each`/`collect` drain
+  #   a one-shot native event channel, so the handle is *not* rewindable: a
+  #   second `each`, or `collect` after a partial `each` (and vice versa),
+  #   yields only what is left. Consume it once, from one thread. (An
+  #   out-of-band {#kill}/{#signal} via the control channel is the exception —
+  #   it can unblock a parked `each` from another thread.)
+  #
   # @example
   #   handle = sb.exec_stream("python", ["-u", "script.py"])
   #   handle.each do |event|

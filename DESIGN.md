@@ -58,6 +58,23 @@ only (never touches the Ruby C API) and uses `catch_unwind` so a Rust panic is
 captured and re-raised *after* the GVL is re-acquired rather than unwinding
 across the C frame (which would be UB).
 
+**The *calling* thread is not preemptible during the call.** `nogvl` passes a
+null unblock-function to `rb_thread_call_without_gvl`, and Ruby only checks
+pending interrupts *before* and *after* the GVL-released region — so while a
+native call blocks, the thread that issued it cannot be interrupted:
+`Timeout::timeout` (which relies on `Thread#raise`), `Thread#kill`, and `SIGINT`
+(Ctrl-C) are all deferred until the call returns on its own. The GVL release
+keeps *other* threads live; it does **not** make the calling thread
+cancelable. This is harmless for the bounded calls (`exec`/`shell` with a
+`timeout:`, `AgentClient` with a `timeout:`) because the deadline fires inside
+the future, but the unbounded/streaming paths — `exec`/`shell` with
+`timeout: nil`, `ExecHandle#recv`/`#wait`, `log_stream`/`metrics_stream` `recv`
+(especially `follow: true`), `Sandbox#wait`/`SandboxHandle#wait_until_stopped`,
+and `AgentClient#request` with no timeout — can block their caller indefinitely
+if the guest wedges or a relay drops. **Bound such calls with the explicit
+`timeout:` knobs rather than wrapping them in `Timeout::timeout`**, which will
+not fire while the native call is in flight.
+
 ## Error mapping
 
 The core returns one big `MicrosandboxError` enum. `error.rs` maps each variant
@@ -88,7 +105,8 @@ out (air-gapped hosts that provision out of band). libkrunfw is `dlopen`'d by
 ## Core-crate dependency (self-contained)
 
 `ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
-(`microsandbox` / `microsandbox-network` at `v0.5.7`), so the gem builds anywhere
+(`microsandbox` / `microsandbox-network`, pinned to the same tag as
+`Microsandbox::RUNTIME_VERSION` — currently `v0.5.10`), so the gem builds anywhere
 — CI, `rake-compiler-dock` release containers, and end-user source installs —
 without an adjacent checkout. For fast local development against a sibling
 microsandbox checkout, copy `.cargo/config.toml.example` to `.cargo/config.toml`
@@ -166,8 +184,8 @@ Create options now cover `image`, `cpus`, `memory`, `oci_upper_size`, `env`,
 
 The binding is verified at four levels:
 
-1. **Unit** (192 examples) — the Ruby layer's option normalization and value
-   objects, with the native layer stubbed.
+1. **Unit** (several hundred examples) — the Ruby layer's option normalization
+   and value objects, with the native layer stubbed.
 2. **Real-microVM integration** (`spec/integration`, opt-in via
    `MICROSANDBOX_INTEGRATION=1`) — boots actual sandboxes and round-trips
    `exec`/`shell`/`fs`/`metrics`/`logs`/streaming/snapshots. Run locally on
@@ -193,7 +211,7 @@ create options, full mount options (tmpfs/disk + stat-virtualization/
 host-permissions), and snapshot inspection (`open`/`list_dir`/`reindex`).
 
 A few **secondary** upstream knobs remain unexposed (a genuine binding gap, not
-upstream-gated — they exist at the pinned `v0.5.8`): per-published-port host
+upstream-gated — they exist at the pinned `v0.5.10` runtime): per-published-port host
 **bind address** (ports always bind loopback), network **interface overrides**,
 and inline **named-volume create-mode** (pre-create with `Volume.create`, then
 mount with `{ named: }`). These slot in module-by-module exactly as the existing

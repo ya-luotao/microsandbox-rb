@@ -825,7 +825,11 @@ module Microsandbox
     # @param cwd [String, nil] working directory
     # @param user [String, nil] user to run as
     # @param env [Hash, nil] extra environment variables
-    # @param timeout [Numeric, nil] kill after N seconds
+    # @param timeout [Numeric, nil] kill the command after N seconds and raise
+    #   {ExecTimeoutError}. Omit or pass +nil+ for *no* timeout. Note the
+    #   asymmetry: +0+ is **not** "disable" — it is an immediate (zero) deadline,
+    #   so the command is killed before producing any output and {ExecTimeoutError}
+    #   is raised. Use +nil+/omit, never +0+, to mean "no limit".
     # @param tty [Boolean] allocate a pseudo-terminal
     # @param stdin [String, Symbol, nil] bytes to feed to stdin, or +:pipe+ to
     #   open a streaming stdin pipe (write/close it via {ExecHandle#stdin}; only
@@ -848,6 +852,11 @@ module Microsandbox
     # Pass +stdin: :pipe+ to feed the process interactively: {ExecHandle#stdin}
     # then returns a writable sink; close it to send EOF (a process like +cat+
     # that reads until EOF will otherwise block forever).
+    #
+    # @note +timeout:+ is accepted for signature symmetry with {#exec} but is
+    #   **not applied** on the streaming path (the runtime discards it). Enforce a
+    #   deadline yourself around the iteration, or use blocking {#exec} with
+    #   +timeout:+ for the kill-after-N-seconds behavior.
     # @return [ExecHandle]
     # @see ExecHandle
     def exec_stream(command, args = [], cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
@@ -856,6 +865,8 @@ module Microsandbox
     end
 
     # Run a shell script and stream its output as it arrives.
+    # @note Like {#exec_stream}, +timeout:+ is accepted but **not applied** on
+    #   the streaming path.
     # @return [ExecHandle]
     def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.shell_stream(script.to_s,
@@ -1087,6 +1098,12 @@ module Microsandbox
   # pulls, then call {#sandbox} to get the booted {Sandbox}. Each event Hash has a
   # "kind" key (e.g. "resolving", "resolved", "layer_download_progress",
   # "layer_materialize_progress", "complete") plus kind-specific fields.
+  #
+  # @note **Single-pass, forward-only, single-consumer.** `each` drains a
+  #   one-shot native progress channel — not rewindable, iterate once from a
+  #   single thread. {#sandbox} works whether or not you iterated (it awaits the
+  #   create either way), so you can skip `each` entirely; but don't expect a
+  #   second `each` to replay the events.
   #
   # @example
   #   session = Microsandbox::Sandbox.create_with_progress("box", image: "python")

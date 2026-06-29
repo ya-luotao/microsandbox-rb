@@ -121,7 +121,10 @@ module Microsandbox
       @native.read_link(path.to_s)
     end
 
-    # Close the SFTP session. Idempotent.
+    # Close the SFTP session. Idempotent. Sends the graceful SFTP close;
+    # relying on GC to reclaim an unclosed session drops it abruptly (no
+    # graceful close), so call this — or use the block form of
+    # {SshClient#sftp} — for a clean shutdown.
     # @return [nil]
     def close
       @native.close
@@ -161,7 +164,9 @@ module Microsandbox
     end
 
     # Open an SFTP session over this connection. With a block, the session is
-    # yielded and closed when the block returns.
+    # yielded and closed when the block returns. Without a block you own the
+    # returned {SftpClient} and must call {SftpClient#close} (letting it GC skips
+    # the graceful disconnect).
     # @yieldparam sftp [SftpClient]
     # @return [SftpClient, Object]
     def sftp
@@ -175,7 +180,11 @@ module Microsandbox
       end
     end
 
-    # Close the SSH client session. Idempotent.
+    # Close the SSH client session. Idempotent. Sends the graceful protocol
+    # disconnect (russh `Disconnect::ByApplication`); if the client is instead
+    # left to GC, only the in-process server task is aborted and that disconnect
+    # is skipped. Prefer the block form of {SshOps#open_client}, or call this in
+    # an `ensure`, so the session closes cleanly.
     # @return [nil]
     def close
       @native.close
@@ -216,7 +225,9 @@ module Microsandbox
     end
 
     # Open a native in-process SSH client to the sandbox. With a block, the
-    # client is yielded and closed when the block returns.
+    # client is yielded and closed when the block returns. Without a block you
+    # own the returned {SshClient} and must call {SshClient#close} for a clean
+    # protocol disconnect (letting it GC only aborts the in-process server task).
     # @param user [String] guest user to authenticate as (default "root")
     # @param term [String, nil] TERM value for the session
     # @param sftp [Boolean] enable the SFTP subsystem (default true)

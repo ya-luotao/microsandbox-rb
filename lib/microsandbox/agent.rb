@@ -35,6 +35,10 @@ module Microsandbox
   # consume {AgentFrame}s until the stream ends (the terminal frame is delivered,
   # then iteration stops). Mirrors the official SDKs' `AgentStream`.
   #
+  # @note **Single-pass, forward-only, single-consumer.** `each` drains a
+  #   one-shot native channel — not rewindable, iterate once from a single
+  #   thread; a second pass or a post-drain combinator yields nothing.
+  #
   # @example
   #   stream = client.stream(0, request_body)
   #   stream.each { |frame| handle(frame) }
