@@ -6,6 +6,38 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.9.0] - 2026-06-29
+
+Adopts upstream runtime **`v0.5.10` → `v0.6.1`** (spanning the upstream `v0.6.0`
+and `v0.6.1` releases). The upstream public SDK surface is purely additive — no
+items were removed or re-signatured — so the gem's Ruby API is unchanged and the
+existing bindings compile against `v0.6.1` untouched. Per the README's versioning
+policy, adopting a new upstream runtime moves the gem onto its own `0.9` line.
+
+### Changed
+
+- **Embedded runtime is now `v0.6.1`** (`Microsandbox::RUNTIME_VERSION` /
+  `Microsandbox.runtime_version`). Upstream fixes inherited by the synchronous
+  Ruby API:
+  - **Zombie sandbox runtimes no longer block** (upstream #1036): the SDK stops
+    waiting on a sandbox runtime that has already exited, so lifecycle calls
+    return promptly instead of hanging on a dead child.
+  - **Secrets are substituted through `CONNECT` proxies** (upstream #1022):
+    `microsandbox-network` now applies secret injection on tunnelled (HTTPS
+    `CONNECT`) requests, not only on plain-HTTP ones.
+  - **Stale sandboxes are stopped and cleaned up** (upstream #1050).
+  - Windows host support, `msb` CLI additions (`--no-tty`, self-downgrade,
+    cross-platform `doctor`), and the `msb_krun` `0.1.17 → 0.1.19` bump are
+    inherited but do not affect the macOS/Linux Ruby build or API surface.
+
+### Notes
+
+- The new upstream **host-directory bind rootfs** (`ImageBuilder::bind`, upstream
+  #1021) is intentionally **not** exposed in this release: it requires a real
+  microVM boot to exercise, and the Python SDK parity reference only stubs the
+  type without wiring it into the sandbox builder. Tracked as a possible
+  follow-up.
+
 ## [0.8.2] - 2026-06-29
 
 Gem-only release on the `v0.5.10` runtime (unchanged). Bundles the post-`0.8.1`
@@ -580,7 +612,11 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.2...v0.9.0
+[0.8.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.12...v0.6.0
 [0.5.12]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.5.11...v0.5.12

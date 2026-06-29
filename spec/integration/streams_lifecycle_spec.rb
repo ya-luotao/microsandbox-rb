@@ -49,15 +49,26 @@ RSpec.describe "lifecycle controls + streaming", :integration do
       name = unique_sandbox_name
       Microsandbox::Sandbox.create(name, image: image) do |sb|
         sb.exec("true")
+        # Wait out the post-create metrics-slot startup window so the new sandbox
+        # actually appears in the registry snapshot. Without it, all.key?(name) is
+        # false during the ~0.2-0.5s window on the v0.6.1 runtime and the
+        # assertion below would silently no-op (passing green having asserted
+        # nothing). See wait_for_metrics_slot.
+        wait_for_metrics_slot(sb)
         all = Microsandbox.all_sandbox_metrics
         expect(all).to be_a(Hash)
-        # The running sandbox should appear with a Metrics snapshot.
-        expect(all[name]).to be_a(Microsandbox::Metrics) if all.key?(name)
+        # The running sandbox must now appear with a Metrics snapshot.
+        expect(all[name]).to be_a(Microsandbox::Metrics)
       end
     end
 
     it "streams metrics snapshots" do
       Microsandbox::Sandbox.create(unique_sandbox_name, image: image) do |sb|
+        # Wait out the post-create metrics-slot startup window before opening the
+        # stream: the stream's first tick fires immediately and would otherwise
+        # race the slot (and a single-pass stream can't be re-iterated once that
+        # first tick errors). See wait_for_metrics_slot.
+        wait_for_metrics_slot(sb)
         snapshot = sb.metrics_stream(interval: 0.2).first
         expect(snapshot).to be_a(Microsandbox::Metrics)
         expect(snapshot.uptime_secs).to be >= 0
