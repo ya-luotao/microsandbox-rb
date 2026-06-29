@@ -43,7 +43,7 @@ them. Our deepest thanks to the maintainers and community. 🙏
 - **SSH & SFTP** — native in-process SSH client/server and file transfer (`Sandbox#ssh`)
 - **Raw agent client** — byte-level access to the guest `agentd` protocol (`Microsandbox::AgentClient`)
 - **Idiomatic Ruby** — keyword arguments, block-scoped lifecycle, a typed error hierarchy
-- **Thread-friendly** — the GVL is released during sandbox calls, so _other_ Ruby threads keep running. The _calling_ thread blocks uninterruptibly until the call returns (`Timeout::timeout`/`Thread#kill`/Ctrl-C can't interrupt a blocked native call), so bound a long or unbounded call with the explicit `exec(timeout:)` / `shell(timeout:)` / `AgentClient(timeout:)` knobs — see DESIGN.md
+- **Thread-friendly** — the GVL is released during sandbox calls, so _other_ Ruby threads keep running. The _calling_ thread blocks uninterruptibly until the call returns (`Timeout::timeout`/`Thread#kill`/Ctrl-C can't interrupt a blocked native call), so bound long-running work with a real deadline where one exists: `exec(timeout:)` / `shell(timeout:)` kill the guest command after N seconds, and `AgentClient.connect_sandbox`/`connect_path` take a `timeout:` that bounds only the connect handshake. The streaming paths and `AgentClient#request`/`#stream` have no timeout knob and can block indefinitely if the guest wedges — see DESIGN.md
 
 ## Requirements
 
