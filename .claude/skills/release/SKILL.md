@@ -42,10 +42,19 @@ version with the user before pushing the tag.
    git tag v$ARGUMENTS && git push origin main v$ARGUMENTS
    ```
 
-8. **Publishing happens in CI.** `.github/workflows/release.yml` builds the source gem and pushes
-   to RubyGems via Trusted Publishing (OIDC) on the `v*` tag. There is no API key to handle.
+8. **CI does the rest on the `v*` tag** (`.github/workflows/release.yml`):
+   - `source gem` + `publish to RubyGems` build the source gem and push it via Trusted Publishing
+     (OIDC) — no API key.
+   - `GitHub Release` then creates the GitHub Release from the matching `CHANGELOG.md` section
+     (the `## [X.Y.Z]` heading the awk slice keys on, so keep step 4's format) and marks it latest.
+     It is idempotent on re-runs. If a Release ever needs doing by hand — e.g. backfilling an old
+     tag — slice the section and `gh release create vX.Y.Z --title vX.Y.Z --notes-file notes.md
+     --latest --verify-tag` (use `--latest=false` for non-newest backfills, then
+     `gh release edit <newest> --latest`).
+
    Precompiled platform gems are NOT published by this tag flow — they require manual
    `workflow_dispatch` and per-platform validation. Mention this if the user expected fat gems.
 
 Report what you changed and the tag you pushed, and link the user to the Actions run if `gh` is
-available (`gh run list --workflow=release.yml`).
+available (`gh run list --workflow=release.yml`). Confirm the GitHub Release was created
+(`gh release view vX.Y.Z`).
