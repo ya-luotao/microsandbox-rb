@@ -15,6 +15,18 @@ RSpec.describe Microsandbox do
     it "agrees with the native extension version" do
       expect(Microsandbox::Native.version).to eq(Microsandbox::VERSION)
     end
+
+    # The version lives in three committed places: version.rb (here), the ext
+    # Cargo.toml [package] (covered indirectly by Native.version, which returns
+    # CARGO_PKG_VERSION), and the root Cargo.lock. The gemspec packs Cargo.lock,
+    # so a release that bumps version.rb + Cargo.toml but forgets to refresh the
+    # lock would ship a stale lock — and a --locked/strict-downstream build would
+    # reject it. Guard the lock copy too (mirrors the runtime-tag guard below).
+    it "agrees with the microsandbox_rb version in the committed Cargo.lock" do
+      lock = File.read(File.expand_path("../../Cargo.lock", __dir__))
+      locked = lock[/^name = "microsandbox_rb"\n(?:.*\n)*?version = "([^"]+)"/, 1]
+      expect(locked).to eq(Microsandbox::VERSION)
+    end
   end
 
   describe "RUNTIME_VERSION" do

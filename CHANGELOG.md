@@ -8,6 +8,42 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Precompiled fat-gem loader now finds the staged binary** (issue #25). The
+  native-extension require used `RbConfig::CONFIG["ruby_version"]` — the API
+  string `"3.4.0"` — but rake-compiler stages a multi-version fat gem's binaries
+  under the **major.minor** subdir (`3.4`), so the versioned require always
+  missed and fell to the flat-path rescue, which is **absent** in a precompiled
+  gem (only the versioned binary is packed). Every fat-gem install would have
+  failed at `require "microsandbox"` the moment precompiled gems are promoted.
+  The loader now derives the subdir from `RUBY_VERSION[/\d+\.\d+/]` (`"3.4"`),
+  matching the staged path; the flat-path rescue still covers source builds.
+- **`extconf` MSRV preflight probes the toolchain the build actually uses**
+  (issue #39). The preflight ran a bare `rustc --version` and hard-aborted when
+  `< 1.91`, but the build is driven by `cargo` — and a rustup `cargo` shim honors
+  this gem's `rust-toolchain.toml` (`stable`), which a bare `rustc` first on PATH
+  does not reflect. A non-rustup `rustc` shadowing a rustup `cargo` shim could
+  therefore false-abort a build that `cargo` would complete. The preflight now
+  probes the `rustc` sitting alongside the `cargo` that drives the build (from
+  the same directory, so the toolchain override is discovered the way the build
+  discovers it) — correctly mirroring both the false-abort case and the genuine
+  too-old case it still guards.
+
+### Internal
+
+- **CI now installs the packed gem from source** (issue #37). A new `package`
+  job runs `rake build`, `gem install`s the packed gem (exercising the gemspec
+  `spec.files` glob and the full from-gem `extconf` + `cargo` compile against the
+  packed `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml`), and requires it from
+  outside the repo. Previously every job compiled the working tree in place, so
+  a packaging regression could reach RubyGems undetected.
+- **`version_spec` now guards the `Cargo.lock` version** (issue #38). The spec
+  already asserted `Native.version == VERSION` and the runtime-tag pin, but
+  nothing checked the `microsandbox_rb` version in the committed `Cargo.lock`,
+  which the gemspec packs. A release that bumped `version.rb` + `Cargo.toml` but
+  forgot to refresh the lock would ship a stale lock (and a `--locked` build
+  would reject it) — a recurring release mistake this now catches.
 ### Security
 
 - **Secret values no longer leak into `ArgumentError` messages** (issue #23).
