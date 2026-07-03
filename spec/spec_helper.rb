@@ -77,7 +77,7 @@ end
 
 # Block until a freshly-created sandbox's metrics slot is live, returning the
 # first successful Metrics snapshot. The per-sandbox metrics slot goes live a
-# beat AFTER Sandbox.create returns on the v0.6.1 runtime — the spawn handshake
+# beat AFTER Sandbox.create returns on v0.6.x runtimes — the spawn handshake
 # (upstream #1036) no longer blocks create until the first sample is written, so
 # `metrics`/`metrics_stream` briefly raise "sandbox N has no live metrics slot"
 # right after boot. Poll past that startup window so streaming assertions don't

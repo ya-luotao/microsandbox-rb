@@ -931,7 +931,7 @@ module Microsandbox
     #
     # Raises a {Microsandbox::Error} ("sandbox N has no live metrics slot") when
     # called in the brief window right after {Sandbox.create} returns, before the
-    # runtime has registered the sandbox's metrics slot. On the `v0.6.1` runtime
+    # runtime has registered the sandbox's metrics slot. On `v0.6.x` runtimes
     # the spawn handshake no longer blocks create until the first sample is
     # written, so the slot goes live a beat *after* boot (within a few hundred
     # milliseconds); retry for that window rather than treating the first failure

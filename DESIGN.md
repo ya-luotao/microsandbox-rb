@@ -106,7 +106,7 @@ out (air-gapped hosts that provision out of band). libkrunfw is `dlopen`'d by
 
 `ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
 (`microsandbox` / `microsandbox-network`, pinned to the same tag as
-`Microsandbox::RUNTIME_VERSION` — currently `v0.6.1`), so the gem builds anywhere
+`Microsandbox::RUNTIME_VERSION` — currently `v0.6.2`), so the gem builds anywhere
 — CI, `rake-compiler-dock` release containers, and end-user source installs —
 without an adjacent checkout. For fast local development against a sibling
 microsandbox checkout, copy `.cargo/config.toml.example` to `.cargo/config.toml`
@@ -211,7 +211,7 @@ create options, full mount options (tmpfs/disk + stat-virtualization/
 host-permissions), and snapshot inspection (`open`/`list_dir`/`reindex`).
 
 A few **secondary** upstream knobs remain unexposed (a genuine binding gap, not
-upstream-gated — they exist at the pinned `v0.6.1` runtime): per-published-port host
+upstream-gated — they exist at the pinned `v0.6.2` runtime): per-published-port host
 **bind address** (ports always bind loopback), network **interface overrides**,
 and inline **named-volume create-mode** (pre-create with `Volume.create`, then
 mount with `{ named: }`). These slot in module-by-module exactly as the existing

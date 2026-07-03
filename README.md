@@ -394,7 +394,7 @@ of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
 Microsandbox::VERSION          # => "0.9.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.1"  (the embedded upstream runtime tag)
+Microsandbox.runtime_version   # => "v0.6.2"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
