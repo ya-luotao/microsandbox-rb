@@ -6,6 +6,25 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.9.1] - 2026-07-03
+
+Adopts upstream runtime **`v0.6.1` → `v0.6.2`**. The upstream SDK crate's public
+API is unchanged in this release — the only surface change attempted upstream (a
+`disk_size` builder rename, #983) was reverted before the release cut (#1078) —
+so this is a pure runtime bump with no Ruby API change.
+
+### Changed
+
+- **Embedded runtime is now `v0.6.2`** (`Microsandbox::RUNTIME_VERSION` /
+  `Microsandbox.runtime_version`). Upstream improvements inherited by the gem:
+  - **Faster image loads and pulls** (upstream #1075): an early cache gate skips
+    already-imported layers and OCI layer decompression switches to zlib-rs.
+    Inherited transitively through the SDK crate's `microsandbox-image`
+    dependency, so `Sandbox.create` image pulls benefit directly.
+  - `msb` CLI polish (terminal-aware help colors, aligned `doctor` runtime
+    diagnostics, image-load progress) ships in the prebuilt runtime binary but
+    does not affect the Ruby API surface.
+
 ## [0.9.0] - 2026-06-29
 
 Adopts upstream runtime **`v0.5.10` → `v0.6.1`** (spanning the upstream `v0.6.0`
