@@ -215,7 +215,7 @@ end
 
 ```ruby
 Microsandbox::Sandbox.create("obs", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
-  # On the v0.6.1 runtime the metrics slot goes live a beat after create returns,
+  # On v0.6.x runtimes the metrics slot goes live a beat after create returns,
   # so `metrics` can briefly raise "no live metrics slot" right after boot —
   # retry for a few hundred ms rather than treating the first failure as fatal.
   m = sb.metrics                       # => Microsandbox::Metrics
@@ -394,7 +394,7 @@ of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
 Microsandbox::VERSION          # => "0.9.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.1"  (the embedded upstream runtime tag)
+Microsandbox.runtime_version   # => "v0.6.2"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
@@ -411,6 +411,7 @@ Microsandbox.runtime_version   # => "v0.6.1"  (the embedded upstream runtime tag
 | `0.8.1`  | `v0.5.10` | gem-only: re-provision a stale local runtime; per-bind-mount `quota_mib:` override |
 | `0.8.2`  | `v0.5.10` | gem-only: redact secrets from errors, typed snapshot errors, panic-free durations, fat-gem loader + `extconf` preflight fixes, threading/streaming docs |
 | `0.9.0`  | `v0.6.1` | adopts upstream `v0.6.0`+`v0.6.1` (zombie-runtime wait fix, secret substitution through CONNECT proxies, stale-sandbox cleanup); upstream public API is additive — no Ruby surface change |
+| `0.9.1`  | `v0.6.2` | adopts upstream `v0.6.2` (faster image loads/pulls via early cache gate + zlib-rs); upstream API unchanged — no Ruby surface change |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:

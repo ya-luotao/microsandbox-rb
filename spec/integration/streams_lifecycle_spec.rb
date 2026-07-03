@@ -51,7 +51,7 @@ RSpec.describe "lifecycle controls + streaming", :integration do
         sb.exec("true")
         # Wait out the post-create metrics-slot startup window so the new sandbox
         # actually appears in the registry snapshot. Without it, all.key?(name) is
-        # false during the ~0.2-0.5s window on the v0.6.1 runtime and the
+        # false during the ~0.2-0.5s window on v0.6.x runtimes and the
         # assertion below would silently no-op (passing green having asserted
         # nothing). See wait_for_metrics_slot.
         wait_for_metrics_slot(sb)
