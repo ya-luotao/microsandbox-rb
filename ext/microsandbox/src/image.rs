@@ -82,12 +82,12 @@ fn report_to_hash(report: ImagePruneReport) -> RHash {
 }
 
 fn get(reference: String) -> Result<RHash, Error> {
-    let handle = with_local_backend(async |local| Image::get(local, &reference).await)?;
+    let handle = with_local_backend(async |local| Image::get_local(local, &reference).await)?;
     Ok(handle_to_hash(&handle))
 }
 
 fn list() -> Result<RArray, Error> {
-    let handles = with_local_backend(async |local| Image::list(local).await)?;
+    let handles = with_local_backend(async |local| Image::list_local(local).await)?;
     let arr = ruby().ary_new();
     for h in handles.iter() {
         arr.push(handle_to_hash(h))?;
@@ -96,16 +96,16 @@ fn list() -> Result<RArray, Error> {
 }
 
 fn inspect(reference: String) -> Result<RHash, Error> {
-    let detail = with_local_backend(async |local| Image::inspect(local, &reference).await)?;
+    let detail = with_local_backend(async |local| Image::inspect_local(local, &reference).await)?;
     Ok(detail_to_hash(detail))
 }
 
 fn remove(reference: String, force: bool) -> Result<(), Error> {
-    with_local_backend(async |local| Image::remove(local, &reference, force).await)
+    with_local_backend(async |local| Image::remove_local(local, &reference, force).await)
 }
 
 fn prune() -> Result<RHash, Error> {
-    let report = with_local_backend(async |local| Image::prune(local).await)?;
+    let report = with_local_backend(async |local| Image::prune_local(local).await)?;
     Ok(report_to_hash(report))
 }
 

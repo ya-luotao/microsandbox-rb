@@ -6,6 +6,36 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.9.2] - 2026-07-08
+
+Adopts upstream runtime **`v0.6.2` → `v0.6.3`**. No Ruby API change; the
+native glue moves to the explicit-backend variants of a few SDK calls that
+went "ambient config" upstream (#1091).
+
+### Fixed
+
+- **DNS no longer advertises unreachable address families to the guest**
+  (upstream #1083): on hosts without a working IPv6 route the sandbox is
+  IPv4-only, but the DNS forwarder previously still returned real AAAA
+  records, so v6-preferring resolvers inside the guest (gRPC/c-ares
+  foremost) tried IPv6 first and failed with unreachable-network errors.
+  AAAA queries in a v4-only sandbox (and A queries in a v6-only one) now
+  synthesize an empty NOERROR answer, steering guests to the usable family.
+  Also normalizes IPv4-mapped IPv6 addresses for policy/rebind/resolved-
+  hostname checks.
+
+### Changed
+
+- **Embedded runtime is now `v0.6.3`** (`Microsandbox::RUNTIME_VERSION` /
+  `Microsandbox.runtime_version`). Also inherited: upstream TLS interception
+  scopes upstream-certificate verification per destination (#1073).
+- Native glue adapted to the upstream v0.6.3 SDK surface (#1091 restored
+  "ambient local config" as the public shape): `Image.get/list/inspect/
+  remove/prune` and `all_sandbox_metrics` now call the explicit
+  `*_local(backend, …)` variants, and the resolved-`msb`-path probe uses the
+  `LocalConfig#resolve_msb_path` method form. Behavior is identical — the
+  gem already held an explicit local backend at every call site.
+
 ## [0.9.1] - 2026-07-03
 
 Adopts upstream runtime **`v0.6.1` → `v0.6.2`**. The upstream SDK crate's public
