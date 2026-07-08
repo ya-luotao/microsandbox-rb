@@ -6,6 +6,44 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.10.0] - 2026-07-09
+
+Ruby bindings for the additive `v0.6.6` SDK surface (upstream #1099 / #1128),
+bringing the gem to parity with the Python and Node SDKs, which already ship
+this API. The embedded runtime tag is unchanged (`v0.6.6`); this is a pure
+binding addition with no breaking change.
+
+### Added
+
+- **Live sandbox modification** — `Sandbox#modify` and `SandboxHandle#modify`
+  plan or apply a change to a running (or stopped) sandbox without recreating
+  it: resize CPU/memory (`cpus:`, `max_cpus:`, `memory:`, `max_memory:`, MiB),
+  adjust `env:`/`remove_env:`, `labels:`/`remove_labels:`, and `workdir:`, and
+  rotate/remove secrets (`secrets:` keyed by name with mutually-exclusive
+  `env:`/`store:`/`value:` plus `placeholder:`/`allowed_hosts:`,
+  `remove_secrets:`). `policy:` selects `:no_restart` (default), `:next_start`,
+  or `:restart`; `dry_run: true` computes the plan without applying it. Returns
+  a typed `ModificationPlan` (`#sandbox`, `#status`, `#applied?`, `#policy`,
+  `#changes`, `#conflicts`, `#warnings`, `#resize_status`) whose nested entries
+  are frozen, symbol-keyed Hashes carrying the runtime's canonical snake_case
+  fields verbatim.
+- **Health checks** — `Sandbox#ping` / `SandboxHandle#ping` return a
+  `PingResult` (`#name`, `#latency` in seconds, `#latency_ms`) confirming the
+  guest agent is reachable **without** refreshing the idle timer; `#touch`
+  returns a `TouchResult` (`#name`, `#activity_seq`) that explicitly refreshes
+  the idle-activity timer. On the handle, both raise `SandboxNotRunningError`
+  for a stopped sandbox (it is not started implicitly).
+- **Create-time resource ceilings** — `Sandbox.create` accepts `max_cpus:` and
+  `max_memory:` (MiB), the boot-time maxima a later live `modify` can grow up
+  to (each defaults to its `cpus:`/`memory:` value and must be >= it).
+- **`SandboxNotRunningError`** is now raised by the runtime's not-running guard
+  (the class already existed; the new core `SandboxNotRunning` variant is now
+  mapped to it instead of falling back to the base `Error`).
+
+Deliberately **not** exposed, matching the Python and Node SDKs (both surface
+these only through the CLI): `modify`'s `oci_upper_size` overlay-grow field, and
+the `SandboxMetricsReport` / per-sandbox metrics-report helpers.
+
 ## [0.9.3] - 2026-07-09
 
 Adopts upstream runtime **`v0.6.3` → `v0.6.6`** (spanning upstream `v0.6.4` and

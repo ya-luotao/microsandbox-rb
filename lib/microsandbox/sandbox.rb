@@ -116,6 +116,30 @@ module Microsandbox
       JSON.parse(@native.config_json)
     end
 
+    # Health-check the guest agent without refreshing the idle timer. Connects
+    # to the running sandbox and sends `core.ping`; a stopped sandbox raises
+    # {SandboxNotRunningError} (it is not started implicitly). Mirrors the
+    # official SDKs' `ping`.
+    # @return [PingResult]
+    def ping
+      PingResult.new(@native.ping)
+    end
+
+    # Explicitly refresh this sandbox's idle-activity timer. A stopped sandbox
+    # raises {SandboxNotRunningError}. Mirrors the official SDKs' `touch`.
+    # @return [TouchResult]
+    def touch
+      TouchResult.new(@native.touch)
+    end
+
+    # Plan or apply a live modification of this sandbox. See {Sandbox#modify} for
+    # the full option set.
+    # @return [ModificationPlan]
+    def modify(**kwargs)
+      opts = Sandbox.send(:build_modify_opts, **kwargs)
+      ModificationPlan.new(JSON.parse(@native.modify(opts)))
+    end
+
     # Snapshot this (stopped) sandbox under a bare name, resolved under the
     # snapshots dir. Convenience equivalent of
     # `Snapshot.create(name, name: <snapshot-name>)` addressed by this handle.
@@ -213,7 +237,12 @@ module Microsandbox
       # @param name [String] sandbox name (max 128 UTF-8 bytes)
       # @param image [String, nil] OCI image reference (e.g. "python")
       # @param cpus [Integer, nil] number of vCPUs
+      # @param max_cpus [Integer, nil] boot-time maximum vCPU ceiling a later live
+      #   {Sandbox#modify} can grow up to (defaults to `cpus`; must be >= `cpus`)
       # @param memory [Integer, nil] memory in MiB
+      # @param max_memory [Integer, nil] boot-time maximum memory ceiling (MiB) a
+      #   later live {Sandbox#modify} can grow up to (defaults to `memory`; must
+      #   be >= `memory`)
       # @param env [Hash, nil] environment variables
       # @param workdir [String, nil] working directory inside the guest
       # @param shell [String, nil] default shell (for {#shell})
@@ -334,7 +363,8 @@ module Microsandbox
 
       # @api private
       # Shared keyword-option builder for {create}/{create_with_progress}.
-      def build_create_opts(image: nil, cpus: nil, memory: nil, env: nil, workdir: nil,
+      def build_create_opts(image: nil, cpus: nil, max_cpus: nil, memory: nil, max_memory: nil,
+        env: nil, workdir: nil,
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
         entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
@@ -370,7 +400,9 @@ module Microsandbox
         opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
         opts["fstype"] = fstype.to_s if fstype
         opts["cpus"] = Integer(cpus) if cpus
+        opts["max_cpus"] = Integer(max_cpus) if max_cpus
         opts["memory"] = Integer(memory) if memory
+        opts["max_memory"] = Integer(max_memory) if max_memory
         opts["workdir"] = workdir.to_s if workdir
         opts["shell"] = shell.to_s if shell
         opts["user"] = user.to_s if user
@@ -520,6 +552,99 @@ module Microsandbox
       # {#normalize_violation}).
       def normalize_secrets(secrets)
         Array(secrets).map { |spec| normalize_secret(spec) }
+      end
+
+      # @api private
+      # Shared keyword-option builder for {Sandbox#modify}/{SandboxHandle#modify}.
+      # Produces the string-keyed Hash the native `modify` reads. `policy` is
+      # always set (defaulting to "no_restart"); everything else is included only
+      # when provided so an unset option means "leave unchanged".
+      def build_modify_opts(cpus: nil, max_cpus: nil, memory: nil, max_memory: nil,
+        env: nil, remove_env: nil, labels: nil, remove_labels: nil, workdir: nil,
+        secrets: nil, remove_secrets: nil, policy: nil, dry_run: false)
+        opts = {}
+        opts["cpus"] = Integer(cpus) if cpus
+        opts["max_cpus"] = Integer(max_cpus) if max_cpus
+        opts["memory"] = Integer(memory) if memory
+        opts["max_memory"] = Integer(max_memory) if max_memory
+        opts["env"] = stringify(env) if env
+        opts["remove_env"] = Array(remove_env).map(&:to_s) if remove_env
+        opts["labels"] = stringify(labels) if labels
+        opts["remove_labels"] = Array(remove_labels).map(&:to_s) if remove_labels
+        opts["workdir"] = workdir.to_s if workdir
+        opts["secrets"] = normalize_modify_secrets(secrets) if secrets
+        opts["remove_secrets"] = Array(remove_secrets).map(&:to_s) if remove_secrets
+        opts["policy"] = normalize_modify_policy(policy)
+        opts["dry_run"] = true if dry_run
+        opts
+      end
+
+      # Normalize the `secrets:` modify option — a Hash of `{ name => spec }` —
+      # into the native array of specs, sorted by name for deterministic patch
+      # (and plan) ordering. The modify secret vocabulary differs from create's
+      # (source-or-value with `env:`/`store:`/`value:` mutually exclusive, keyed
+      # by secret name), mirroring the upstream `SecretModifySpec`.
+      def normalize_modify_secrets(secrets)
+        unless secrets.is_a?(Hash)
+          raise ArgumentError, "secrets: must be a Hash of { name => spec } (got #{secrets.class})"
+        end
+        out = secrets.map { |name, spec| normalize_modify_secret(name, spec) }
+          .sort_by { |h| h["name"] }
+        # A Symbol and a String key stringify to the same secret name, yielding
+        # two same-name specs. Upstream's fluent API dedupes those; the patch
+        # path we drive does not, and duplicates make the live value and the
+        # persisted config diverge nondeterministically — reject them loudly.
+        dup = out.group_by { |h| h["name"] }.find { |_, specs| specs.size > 1 }
+        if dup
+          raise ArgumentError,
+            "secrets: duplicate entries for #{dup.first.inspect} (a Symbol and a String key stringify to the same name)"
+        end
+        out
+      end
+
+      def normalize_modify_secret(name, spec)
+        spec ||= {}
+        unless spec.is_a?(Hash)
+          # Reject before any spec access: a non-Hash spec (e.g. the tempting
+          # `{ name => raw_value }` shorthand) must never reach a method call
+          # whose NoMethodError would embed the receiver — cleartext — in the
+          # message on Ruby < 3.3.
+          raise ArgumentError,
+            "secret #{name.to_s.inspect}: spec must be a Hash (e.g. { value: ... } or { env: ... }), got #{spec.class}"
+        end
+        env = fetch_opt(spec, :env)
+        value = fetch_opt(spec, :value)
+        store = fetch_opt(spec, :store)
+        present = {"env" => env, "value" => value, "store" => store}.reject { |_, v| v.nil? }
+        if present.size > 1
+          # Report only the conflicting KEYS, never the values — a secret spec's
+          # :value is cleartext and error messages routinely land in logs and
+          # error trackers. Mirrors normalize_secret above.
+          keys = present.keys.map(&:inspect).join(" and ")
+          raise ArgumentError,
+            "secret #{name.to_s.inspect}: #{keys} are mutually exclusive; set at most one"
+        end
+        out = {"name" => name.to_s}
+        out["env"] = env.to_s if env
+        out["value"] = value.to_s if value
+        out["store"] = store.to_s if store
+        pl = fetch_opt(spec, :placeholder)
+        out["placeholder"] = pl.to_s if pl
+        hosts = spec[:allowed_hosts] || spec["allowed_hosts"]
+        out["allowed_hosts"] = Array(hosts).map(&:to_s) if hosts
+        out
+      end
+
+      # Normalize the `policy:` modify option (Symbol or String) to the native
+      # string, defaulting to "no_restart".
+      def normalize_modify_policy(policy)
+        return "no_restart" if policy.nil?
+        s = policy.to_s
+        unless %w[no_restart next_start restart].include?(s)
+          raise ArgumentError,
+            "policy: must be :no_restart, :next_start, or :restart (got #{policy.inspect})"
+        end
+        s
       end
 
       def normalize_secret(spec)
@@ -939,6 +1064,57 @@ module Microsandbox
     # @return [Metrics]
     def metrics
       Metrics.new(@native.metrics)
+    end
+
+    # Health-check the guest agent without refreshing the idle timer. Sends
+    # `core.ping` to the running sandbox and reports the round-trip latency.
+    # Mirrors the official SDKs' `ping`.
+    # @return [PingResult]
+    def ping
+      PingResult.new(@native.ping)
+    end
+
+    # Explicitly refresh this sandbox's idle-activity timer (resetting any
+    # `idle_timeout:` countdown). Mirrors the official SDKs' `touch`.
+    # @return [TouchResult]
+    def touch
+      TouchResult.new(@native.touch)
+    end
+
+    # Plan or apply a live modification of this sandbox: resize CPU/memory,
+    # adjust env/labels/workdir, and rotate/remove secrets, without recreating
+    # the sandbox. The apply is all-or-nothing under the chosen `policy:`: the
+    # default `:no_restart` applies only changes that are live-capable *right
+    # now* and raises if any requested change needs a restart (on a running
+    # sandbox that includes env/labels/workdir and *adding* a secret — rotating
+    # or removing an existing one is live). Pass `policy: :next_start` to
+    # persist restart-required changes for the next start, or `:restart` to
+    # restart and apply them now; use `dry_run: true` to preview each change's
+    # disposition without applying anything. Mirrors the official SDKs'
+    # `modify`. Returns a {ModificationPlan} classifying each change.
+    #
+    # @param cpus [Integer, nil] desired effective vCPU count
+    # @param max_cpus [Integer, nil] desired boot-time maximum vCPU ceiling
+    # @param memory [Integer, nil] desired effective guest memory in MiB
+    # @param max_memory [Integer, nil] desired boot-time maximum memory (MiB)
+    # @param env [Hash, nil] environment variables to set for future execs
+    # @param remove_env [Array<String>, nil] environment variable names to remove
+    # @param labels [Hash, nil] labels to set
+    # @param remove_labels [Array<String>, nil] label keys to remove
+    # @param workdir [String, nil] desired working directory for future execs
+    # @param secrets [Hash, nil] desired secret specs keyed by secret name. Each
+    #   spec is a Hash with at most one of `env:` (host env var to read),
+    #   `store:` (host secret-store reference), or `value:` (raw material), plus
+    #   optional `placeholder:` and `allowed_hosts:` (Array of host patterns).
+    # @param remove_secrets [Array<String>, nil] secret names to remove
+    # @param policy [Symbol, String, nil] `:no_restart` (default — apply only
+    #   changes that need no restart), `:next_start` (persist for the next
+    #   start), or `:restart` (restart to apply restart-required changes)
+    # @param dry_run [Boolean] compute the plan without applying anything
+    # @return [ModificationPlan]
+    def modify(**kwargs)
+      opts = Sandbox.send(:build_modify_opts, **kwargs)
+      ModificationPlan.new(JSON.parse(@native.modify(opts)))
     end
 
     # Read captured logs.

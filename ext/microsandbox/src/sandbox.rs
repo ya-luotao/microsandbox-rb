@@ -18,10 +18,11 @@ use microsandbox::logs::{
     LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
 use microsandbox::sandbox::{
-    AttachOptionsBuilder, DiskImageFormat, FsEntry, FsEntryKind, FsMetadata, HostPermissions,
-    Patch, PullPolicy, PullProgress, PullProgressHandle, RlimitResource, SandboxBuilder,
-    SandboxFilter, SandboxHandle, SandboxMetrics, SandboxStatus, SandboxStopResult, SecretBuilder,
-    SecurityProfile, StatVirtualization,
+    AttachOptionsBuilder, DiskImageFormat, EnvVar, FsEntry, FsEntryKind, FsMetadata,
+    HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle, RlimitResource,
+    SandboxBuilder, SandboxFilter, SandboxHandle, SandboxMetrics, SandboxModificationBuilder,
+    SandboxModificationPatch, SandboxStatus, SandboxStopResult, SecretBuilder,
+    SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
 };
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
@@ -92,8 +93,18 @@ impl Sandbox {
         if let Some(v) = conv::opt_u8(opts, "cpus")? {
             b = b.cpus(v);
         }
+        // v0.6.6 (#1099): boot-time maximum vCPU / memory ceilings that a later
+        // live `modify` can grow up to. `cpus`/`memory` above already raise these
+        // to their own value if lower, so a bare `cpus`/`memory` still works;
+        // setting these explicitly reserves headroom for a live resize.
+        if let Some(v) = conv::opt_u8(opts, "max_cpus")? {
+            b = b.max_cpus(v);
+        }
         if let Some(v) = conv::opt_u32(opts, "memory")? {
             b = b.memory(v);
+        }
+        if let Some(v) = conv::opt_u32(opts, "max_memory")? {
+            b = b.max_memory(v);
         }
         if let Some(v) = conv::opt_string(opts, "workdir")? {
             b = b.workdir(v);
@@ -582,6 +593,34 @@ impl Sandbox {
     fn metrics(&self) -> Result<RHash, Error> {
         let m = block_on(self.inner.metrics()).map_err(error::to_ruby)?;
         Ok(metrics_to_hash(&m))
+    }
+
+    //----------------------------------------------------------------------
+    // Health & modification (v0.6.6 / #1099)
+    //----------------------------------------------------------------------
+
+    /// Health-check the guest agent without refreshing the idle timer. Returns
+    /// `{ name, latency_secs }` (round-trip latency as f64 seconds; the Ruby
+    /// layer exposes both seconds and milliseconds).
+    fn ping(&self) -> Result<RHash, Error> {
+        let result = block_on(self.inner.ping()).map_err(error::to_ruby)?;
+        Ok(ping_result_to_hash(&result))
+    }
+
+    /// Explicitly refresh the idle-activity timer. Returns
+    /// `{ name, activity_seq }`.
+    fn touch(&self) -> Result<RHash, Error> {
+        let result = block_on(self.inner.touch()).map_err(error::to_ruby)?;
+        Ok(touch_result_to_hash(&result))
+    }
+
+    /// Plan or apply a live sandbox modification. `opts` is the string-keyed
+    /// modify Hash normalized by the Ruby layer; returns the resulting
+    /// `SandboxModificationPlan` as a JSON string, which the Ruby layer parses
+    /// into a `ModificationPlan`. Mirrors the Node native binding (native returns
+    /// JSON, the wrapper shapes it).
+    fn modify(&self, opts: RHash) -> Result<String, Error> {
+        run_modify(self.inner.modify(), opts)
     }
 
     /// Read captured logs as an Array of Hashes. `opts`: tail, since_ms,
@@ -1737,6 +1776,133 @@ fn stop_result_to_hash(result: &SandboxStopResult) -> RHash {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Health & live modification (v0.6.6 / #1099)
+//--------------------------------------------------------------------------------------------------
+
+/// A `SandboxPingResult` as `{ name, latency_secs }`. Latency is a `Duration`;
+/// we hand it to Ruby as f64 seconds and let the Ruby layer derive milliseconds
+/// (the Python/Node SDKs expose only `latency_ms`).
+fn ping_result_to_hash(result: &microsandbox::sandbox::SandboxPingResult) -> RHash {
+    let hash = ruby().hash_new();
+    let _ = hash.aset("name", result.name.clone());
+    let _ = hash.aset("latency_secs", result.latency.as_secs_f64());
+    hash
+}
+
+/// A `SandboxTouchResult` as `{ name, activity_seq }`.
+fn touch_result_to_hash(result: &microsandbox::sandbox::SandboxTouchResult) -> RHash {
+    let hash = ruby().hash_new();
+    let _ = hash.aset("name", result.name.clone());
+    let _ = hash.aset("activity_seq", result.activity_seq);
+    hash
+}
+
+/// Drive a modify builder to a plan (dry-run or apply) and return it serialized
+/// as a JSON string. Shared by `Sandbox::modify` and `SbHandle::modify`. The
+/// canonical `SandboxModificationPlan` serde shape (snake_case keys, literal-space
+/// enum strings) is parsed verbatim by the Ruby layer — matching the Python SDK's
+/// raw-dict contract rather than re-casing it.
+fn run_modify(builder: SandboxModificationBuilder, opts: RHash) -> Result<String, Error> {
+    let patch = build_modify_patch(opts)?;
+    let policy = conv::opt_string(opts, "policy")?.unwrap_or_else(|| "no_restart".to_string());
+    let dry_run = conv::opt_bool(opts, "dry_run")?;
+    let builder = apply_modify_policy(builder.with_patch(patch), &policy)?;
+    let plan = block_on(async move {
+        if dry_run {
+            builder.dry_run().await
+        } else {
+            builder.apply().await
+        }
+    })
+    .map_err(error::to_ruby)?;
+    serde_json::to_string(&plan)
+        .map_err(|e| error::base_error(format!("failed to serialize modification plan: {e}")))
+}
+
+/// Build the canonical `SandboxModificationPatch` from the modify Hash. Env and
+/// label pairs are sorted so repeated calls with the same arguments produce the
+/// same patch (and plan) ordering, mirroring the Python binding. `oci_upper_size`
+/// is deliberately not surfaced (CLI-only upstream; the Python/Node SDKs omit it
+/// too), so it stays unset via `..Default::default()`.
+fn build_modify_patch(opts: RHash) -> Result<SandboxModificationPatch, Error> {
+    let mut env_pairs = conv::opt_string_map(opts, "env")?;
+    env_pairs.sort();
+    let mut label_pairs = conv::opt_string_map(opts, "labels")?;
+    label_pairs.sort();
+
+    Ok(SandboxModificationPatch {
+        cpus: conv::opt_u8(opts, "cpus")?,
+        max_cpus: conv::opt_u8(opts, "max_cpus")?,
+        memory_mib: conv::opt_u32(opts, "memory")?,
+        max_memory_mib: conv::opt_u32(opts, "max_memory")?,
+        env: env_pairs
+            .into_iter()
+            .map(|(k, v)| EnvVar::new(k, v))
+            .collect(),
+        env_remove: conv::opt_string_vec(opts, "remove_env")?,
+        labels: label_pairs,
+        labels_remove: conv::opt_string_vec(opts, "remove_labels")?,
+        workdir: conv::opt_string(opts, "workdir")?,
+        secrets: parse_modify_secrets(opts)?,
+        secrets_remove: conv::opt_string_vec(opts, "remove_secrets")?,
+        ..Default::default()
+    })
+}
+
+/// Parse the `secrets` modify option (an Array of string-keyed Hashes normalized
+/// by the Ruby layer) into canonical `SecretModificationPatch`es. Each Hash
+/// carries `name` plus at most one of `env`/`store` (source) or `value` (raw
+/// material) — the Ruby layer enforces that mutual exclusion — plus optional
+/// `placeholder` and `allowed_hosts`. The raw `value` moves straight into the
+/// `Zeroizing` field; it is never echoed in an error.
+fn parse_modify_secrets(opts: RHash) -> Result<Vec<SecretModificationPatch>, Error> {
+    let mut out = Vec::new();
+    for h in conv::opt_hash_vec(opts, "secrets")? {
+        let name = conv::opt_string(h, "name")?
+            .ok_or_else(|| error::base_error("secret modification spec requires :name"))?;
+        let env = conv::opt_string(h, "env")?;
+        let store = conv::opt_string(h, "store")?;
+        let value = conv::opt_string(h, "value")?;
+        let source = match (env, store) {
+            (Some(var), None) => Some(SecretSource::Env { var }),
+            (None, Some(reference)) => Some(SecretSource::Store { reference }),
+            (None, None) => None,
+            // The Ruby layer rejects >1 source; guard defensively without
+            // echoing any value.
+            (Some(_), Some(_)) => {
+                return Err(error::base_error(format!(
+                    "secret {name:?}: \"env\" and \"store\" are mutually exclusive"
+                )))
+            }
+        };
+        out.push(SecretModificationPatch {
+            name,
+            source,
+            value: value.unwrap_or_default().into(),
+            placeholder: conv::opt_string(h, "placeholder")?,
+            allowed_hosts: conv::opt_string_vec(h, "allowed_hosts")?,
+        });
+    }
+    Ok(out)
+}
+
+/// Apply the parsed `policy` string to a modify builder. `no_restart` (default)
+/// leaves the builder untouched; `next_start`/`restart` select those policies.
+fn apply_modify_policy(
+    builder: SandboxModificationBuilder,
+    policy: &str,
+) -> Result<SandboxModificationBuilder, Error> {
+    match policy {
+        "no_restart" => Ok(builder),
+        "next_start" => Ok(builder.next_start()),
+        "restart" => Ok(builder.restart()),
+        other => Err(error::base_error(format!(
+            "unknown policy {other:?}; expected \"no_restart\", \"next_start\", or \"restart\""
+        ))),
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // Pull progress (streaming image-pull during create_with_progress)
 //--------------------------------------------------------------------------------------------------
 
@@ -1987,6 +2153,27 @@ impl SbHandle {
         let snap = block_on(self.inner.snapshot_to(path)).map_err(error::to_ruby)?;
         Ok(crate::snapshot::snapshot_to_hash(&snap))
     }
+
+    /// Health-check the guest agent without refreshing the idle timer. A stopped
+    /// sandbox raises `SandboxNotRunningError` (the handle does not start it
+    /// implicitly). Returns `{ name, latency_secs }`.
+    fn ping(&self) -> Result<RHash, Error> {
+        let result = block_on(self.inner.ping()).map_err(error::to_ruby)?;
+        Ok(ping_result_to_hash(&result))
+    }
+
+    /// Explicitly refresh the idle-activity timer. A stopped sandbox raises
+    /// `SandboxNotRunningError`. Returns `{ name, activity_seq }`.
+    fn touch(&self) -> Result<RHash, Error> {
+        let result = block_on(self.inner.touch()).map_err(error::to_ruby)?;
+        Ok(touch_result_to_hash(&result))
+    }
+
+    /// Plan or apply a live sandbox modification (see `Sandbox::modify`). Returns
+    /// the `SandboxModificationPlan` as a JSON string.
+    fn modify(&self, opts: RHash) -> Result<String, Error> {
+        run_modify(self.inner.modify(), opts)
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2100,6 +2287,9 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("owns_lifecycle", method!(Sandbox::owns_lifecycle, 0))?;
     class.define_method("detach", method!(Sandbox::detach, 0))?;
     class.define_method("metrics", method!(Sandbox::metrics, 0))?;
+    class.define_method("ping", method!(Sandbox::ping, 0))?;
+    class.define_method("touch", method!(Sandbox::touch, 0))?;
+    class.define_method("modify", method!(Sandbox::modify, 1))?;
     class.define_method("metrics_stream", method!(Sandbox::metrics_stream, 1))?;
     class.define_method("logs", method!(Sandbox::logs, 1))?;
     class.define_method("log_stream", method!(Sandbox::log_stream, 1))?;
@@ -2148,6 +2338,9 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     handle.define_method("config_json", method!(SbHandle::config_json, 0))?;
     handle.define_method("snapshot", method!(SbHandle::snapshot, 1))?;
     handle.define_method("snapshot_to", method!(SbHandle::snapshot_to, 1))?;
+    handle.define_method("ping", method!(SbHandle::ping, 0))?;
+    handle.define_method("touch", method!(SbHandle::touch, 0))?;
+    handle.define_method("modify", method!(SbHandle::modify, 1))?;
 
     let session = native.define_class("PullSession", ruby.class_object())?;
     session.define_method("recv", method!(PullSession::recv, 0))?;
