@@ -229,6 +229,55 @@ Microsandbox::Sandbox.create("obs", image: "public.ecr.aws/docker/library/alpine
 end
 ```
 
+### Live modification & health
+
+Resize, reconfigure, or rotate secrets on a sandbox **without recreating it**,
+and probe the guest agent's liveness. To leave headroom for a live CPU/memory
+resize, reserve a ceiling at create time with `max_cpus:`/`max_memory:`:
+
+```ruby
+Microsandbox::Sandbox.create("live", image: "public.ecr.aws/docker/library/alpine:latest",
+  cpus: 1, max_cpus: 4, memory: 512, max_memory: 2048) do |sb|
+  # Health check — does NOT refresh the idle timer:
+  ping = sb.ping                       # => Microsandbox::PingResult
+  ping.latency_ms                      # round-trip latency
+
+  # Explicitly refresh the idle-activity timer (resets any idle_timeout:):
+  sb.touch.activity_seq                # => Microsandbox::TouchResult
+
+  # Preview a change without applying it:
+  plan = sb.modify(cpus: 2, memory: 1024, dry_run: true)
+  plan.applied?                        # => false
+  plan.changes                         # => [{ kind: "config", field: "cpus", ... }, ...]
+
+  # Live resize — applies to the running VM under the default :no_restart policy:
+  sb.modify(cpus: 2, memory: 1024)
+
+  # env/labels/workdir changes on a *running* sandbox require a restart, so the
+  # default :no_restart policy rejects the whole apply (it raises rather than
+  # partially applying). Persist them for the next start — or restart now —
+  # by saying so explicitly:
+  sb.modify(env: { "TIER" => "prod" }, remove_env: ["DEBUG"],
+    labels: { "role" => "worker" }, policy: :next_start)  # or policy: :restart
+
+  # Rotating/removing an *existing* secret (or updating its allowed hosts) is
+  # live; *adding* a new secret is restart-required, like env. Specs are keyed
+  # by name; env:/store:/value: are mutually exclusive:
+  sb.modify(
+    secrets: { "API_KEY" => { env: "HOST_API_KEY", allowed_hosts: ["api.example.com"] } },
+    remove_secrets: ["OLD_TOKEN"],
+  )
+end
+```
+
+The apply is **all-or-nothing**: under a given `policy:` every planned change
+must be applicable, or the whole `modify` raises — nothing is partially
+applied. Use `dry_run: true` to inspect each change's `disposition` (`"live"`,
+`"next start"`, `"requires restart"`) before committing.
+
+`SandboxHandle` (from `Sandbox.get`/`list`) carries the same `#ping`/`#touch`/
+`#modify`; on a stopped sandbox `#ping`/`#touch` raise `SandboxNotRunningError`.
+
 ### Streaming output
 
 For long-running commands, stream events as they arrive instead of waiting:
@@ -393,7 +442,7 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.9.3"  (the gem's own version)
+Microsandbox::VERSION          # => "0.10.0"  (the gem's own version)
 Microsandbox.runtime_version   # => "v0.6.6"  (the embedded upstream runtime tag)
 ```
 
@@ -414,6 +463,7 @@ Microsandbox.runtime_version   # => "v0.6.6"  (the embedded upstream runtime tag
 | `0.9.1`  | `v0.6.2` | adopts upstream `v0.6.2` (faster image loads/pulls via early cache gate + zlib-rs); upstream API unchanged — no Ruby surface change |
 | `0.9.2`  | `v0.6.3` | adopts upstream `v0.6.3` (v4-only sandboxes stop advertising AAAA DNS answers — fixes guest gRPC/c-ares preferring unreachable IPv6; scoped upstream TLS verification); glue moves to `*_local` SDK variants — no Ruby surface change |
 | `0.9.3`  | `v0.6.6` | adopts upstream `v0.6.4`+`v0.6.6` (`v0.6.5` was yanked upstream): snapshot restore by pinned digest — fixes fatal restore-after-tag-republish bug, fragmented-UDP/PMTU relay fixes, exec kills the whole process group, ephemeral stop-wait tolerance, readdir RSS-leak fix; upstream API growth is additive-only — no Ruby surface change |
+| `0.10.0` | `v0.6.6` | `v0.6.6` API parity: live `modify`/resize, `ping`/`touch`, create `max_cpus`/`max_memory` |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:

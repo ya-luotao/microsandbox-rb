@@ -46,6 +46,15 @@ RSpec.describe Microsandbox::Sandbox do
       )
     end
 
+    it "passes through max_cpus / max_memory resource ceilings (v0.6.6)" do
+      Microsandbox::Sandbox.create("box", image: "alpine", cpus: 1, max_cpus: 4,
+        memory: 512, max_memory: 2048)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("cpus" => 1, "max_cpus" => 4, "memory" => 512, "max_memory" => 2048)
+      )
+    end
+
     it "ensures the runtime is provisioned before creating" do
       Microsandbox::Sandbox.create("box", image: "x")
       expect(Microsandbox).to have_received(:ensure_runtime!)

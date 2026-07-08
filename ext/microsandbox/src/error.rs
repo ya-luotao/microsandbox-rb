@@ -17,6 +17,12 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         SandboxNotFound(_) => "SandboxNotFoundError",
         SandboxAlreadyExists(_) => "SandboxAlreadyExistsError",
         SandboxStillRunning(_) => "SandboxStillRunningError",
+        // v0.6.6 (#1099): the sandbox exists but isn't running. Raised by the
+        // handle's exec/attach/ping/touch not-running guards and the fs
+        // agent-endpoint lookup. The `SandboxNotRunningError` class already
+        // existed (mirroring the Python SDK); this wires the new core variant to
+        // it instead of letting it collapse to the base `Error`.
+        SandboxNotRunning(_) => "SandboxNotRunningError",
         ExecTimeout(_) => "ExecTimeoutError",
         ExecFailed(_) => "ExecFailedError",
         SandboxFsOps(_) => "FilesystemError",

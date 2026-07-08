@@ -8,7 +8,7 @@ module Microsandbox
   # Versioning section of the README for the full gem-to-runtime map. Must equal
   # the native ext's Cargo crate version (`Native.version`), enforced by
   # spec/unit/version_spec.rb.
-  VERSION = "0.9.3"
+  VERSION = "0.10.0"
 
   # The upstream microsandbox runtime release this gem build embeds — the `tag`
   # pinned on the `microsandbox`/`microsandbox-network` git deps in
