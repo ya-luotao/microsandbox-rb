@@ -34,7 +34,7 @@ fn version() -> String {
 /// helpers (Python/Node/Go).
 fn all_sandbox_metrics() -> Result<RHash, Error> {
     let map = backend::with_local_backend(async |local| {
-        microsandbox::sandbox::all_sandbox_metrics(local).await
+        microsandbox::sandbox::all_sandbox_metrics_local(local).await
     })?;
     let hash = runtime::ruby().hash_new();
     for (name, metrics) in &map {
@@ -113,7 +113,7 @@ fn resolved_msb_path() -> Result<String, Error> {
             available_when: "with the local backend".into(),
         })
     })?;
-    let path = microsandbox::config::resolve_msb_path(local.config()).map_err(error::to_ruby)?;
+    let path = local.config().resolve_msb_path().map_err(error::to_ruby)?;
     Ok(path.to_string_lossy().into_owned())
 }
 

@@ -393,8 +393,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.9.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.2"  (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.9.2"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.6.3"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
@@ -412,6 +412,7 @@ Microsandbox.runtime_version   # => "v0.6.2"  (the embedded upstream runtime tag
 | `0.8.2`  | `v0.5.10` | gem-only: redact secrets from errors, typed snapshot errors, panic-free durations, fat-gem loader + `extconf` preflight fixes, threading/streaming docs |
 | `0.9.0`  | `v0.6.1` | adopts upstream `v0.6.0`+`v0.6.1` (zombie-runtime wait fix, secret substitution through CONNECT proxies, stale-sandbox cleanup); upstream public API is additive — no Ruby surface change |
 | `0.9.1`  | `v0.6.2` | adopts upstream `v0.6.2` (faster image loads/pulls via early cache gate + zlib-rs); upstream API unchanged — no Ruby surface change |
+| `0.9.2`  | `v0.6.3` | adopts upstream `v0.6.3` (v4-only sandboxes stop advertising AAAA DNS answers — fixes guest gRPC/c-ares preferring unreachable IPv6; scoped upstream TLS verification); glue moves to `*_local` SDK variants — no Ruby surface change |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:
