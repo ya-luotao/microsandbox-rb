@@ -6,6 +6,49 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.9.3] - 2026-07-09
+
+Adopts upstream runtime **`v0.6.3` → `v0.6.6`** (spanning upstream `v0.6.4` and
+`v0.6.6`; `v0.6.5` was yanked upstream — its GitHub release was pulled and the
+type-model refactor it shipped, #1014, was reverted in `v0.6.6`, #1143). The
+upstream SDK crate's public API grew only *additive* surface (live
+modify/resize, ping/touch — Ruby bindings for these land in the next minor),
+so this is a pure runtime bump with no Ruby API change.
+
+### Fixed
+
+- **Snapshot restore survives upstream tag republishes** (upstream #1130):
+  restore now pulls the OCI image by its pinned manifest digest
+  (`<repo>@sha256:…`) instead of re-resolving the mutable tag, fixing a fatal
+  `v0.6.3` regression where a republished base-image tag made existing
+  snapshots unrestorable.
+- **Fragmented UDP and PMTU relay traffic is forwarded correctly** (upstream
+  #1086) by the sandbox network relay.
+- **`exec` termination kills the whole process group, not just the direct
+  child** (upstream #1104): guest commands that spawn children (e.g. shell
+  pipelines) no longer leave orphaned grandchildren running after a kill.
+- **Stop waits tolerate ephemeral cleanup** (upstream #1087, inherited in
+  `Sandbox#stop`/`SandboxHandle#wait_until_stopped`): if an ephemeral
+  sandbox's persisted state is cleaned up while a stop wait is in flight, the
+  wait now resolves to a synthetic `stopped` result instead of raising
+  `SandboxNotFoundError`. Persistent sandboxes are unaffected.
+- **Filesystem snapshot `readdir` streams entries** (upstream #1133), fixing
+  unbounded memory growth (RSS leak) when listing very large directories.
+
+### Changed
+
+- **Embedded runtime is now `v0.6.6`** (`Microsandbox::RUNTIME_VERSION` /
+  `Microsandbox.runtime_version`). Also inherited:
+  - `Sandbox.create`/`.start` persist an active-config snapshot of the booted
+    sandbox in the runtime database (upstream SDK behavior; groundwork for
+    live modification).
+  - The runtime's shutdown flush timeout can be overridden via the
+    `MSB_SHUTDOWN_FLUSH_TIMEOUT_MS` environment variable (upstream #1088).
+  - The prebuilt `msb` binary gains `modify`/`ping`/`restart`/`touch`
+    subcommands and `metrics --watch`; these are CLI-level for now — the
+    corresponding Ruby APIs (`#modify`, `#ping`, `#touch`) ship in the next
+    minor release.
+
 ## [0.9.2] - 2026-07-08
 
 Adopts upstream runtime **`v0.6.2` → `v0.6.3`**. No Ruby API change; the
