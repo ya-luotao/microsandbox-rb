@@ -43,7 +43,8 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
    change bumps the minor and a fix bumps the patch. See the Versioning section of `README.md` for
    the gem→runtime map.
 2. **Upstream runtime tag** — the `microsandbox` and `microsandbox-network` git deps in
-   `ext/microsandbox/Cargo.toml` are pinned to a `tag` (currently `v0.5.8`). This tracks the
+   `ext/microsandbox/Cargo.toml` are pinned to a `tag` (see `Microsandbox::RUNTIME_VERSION` for
+   the current pin — the hardcoded value here kept going stale). This tracks the
    upstream runtime, NOT the gem version. Bump it only when adopting a new upstream release, keep
    both deps on the same tag, AND update `Microsandbox::RUNTIME_VERSION` in
    `lib/microsandbox/version.rb` to match — `spec/unit/version_spec.rb` asserts the constant equals
