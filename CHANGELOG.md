@@ -28,7 +28,9 @@ could make a later CLI copy-out overwrite an arbitrary host file — the SDK
   that migration guidance. `network: :none`/`:allow_all` (and their aliases)
   and `network: :default` keep working unchanged. In the Hash form,
   `profiles:` composes with `rules:`/`default_egress:`/`default_ingress:`/deny
-  lists (the profile rules form the base; explicit rules append after).
+  lists; explicit `rules:` are evaluated **before** the profile expansion
+  (matching the upstream CLI), so a narrower override such as
+  `Rule.deny_dns` wins over a profile's allows under first-match-wins.
 - **`Snapshot.create` is re-keyed by the snapshot's own name** (upstream
   #1118): `Snapshot.create(name, from_sandbox:, dest_dir:, labels:, force:,
   record_integrity:, resumable:)` — the positional argument is now the

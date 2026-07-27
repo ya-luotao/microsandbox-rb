@@ -110,5 +110,21 @@ RSpec.describe "patches and network", :integration do
         expect(probe.stdout).to include("public-OK")
       end
     end
+
+    it "lets an explicit rule override the profile base (deny_dns beats public's allow)" do
+      # Ordering regression guard: caller rules must be evaluated before the
+      # profile expansion, or this deny would be dead behind the profile's
+      # allow_dns under first-match-wins.
+      Microsandbox::Sandbox.create(
+        unique_sandbox_name, image: image,
+        network: {profiles: [:public], rules: [Microsandbox::Rule.deny_dns]}
+      ) do |sb|
+        probe = sb.shell(
+          "nslookup example.com >/dev/null 2>&1 && echo dns-OK || echo dns-FAIL",
+          timeout: 20
+        )
+        expect(probe.stdout).to include("dns-FAIL")
+      end
+    end
   end
 end

@@ -1283,12 +1283,14 @@ fn parse_tls(t: RHash) -> Result<TlsSpec, Error> {
 /// a core `NetworkPolicy`. Returns `None` when the option is absent (bare
 /// presets travel via the separate `network` key handled in `create`).
 ///
-/// Composition (mirrors the Go SDK's `NetworkConfig`): bulk domain-deny rules
-/// come first (so they outrank later allow rules), then a preset's rules (if a
-/// preset base is given), then the caller's explicit `rules`. Per-direction
-/// defaults come from the explicit `default_egress`/`default_ingress` when set,
-/// else the preset's defaults, else the asymmetric default (deny egress / allow
-/// ingress).
+/// Composition order (first-match-wins per direction): bulk domain-deny rules
+/// come first (so they outrank everything), then the caller's explicit
+/// `rules`, then the profile/preset base's expansion LAST — the same order the
+/// upstream CLI composes `--net` with explicit rules, so a narrower caller
+/// override (e.g. `Rule.deny_dns`) beats the base's allows instead of dying
+/// behind them. Per-direction defaults come from the explicit
+/// `default_egress`/`default_ingress` when set, else the base's defaults, else
+/// the asymmetric default (deny egress / allow ingress).
 fn parse_network_policy(opts: RHash) -> Result<Option<NetworkPolicy>, Error> {
     let Some(np) = conv::opt::<RHash>(opts, "network_policy")? else {
         return Ok(None);
@@ -1327,6 +1329,14 @@ fn parse_network_policy(opts: RHash) -> Result<Option<NetworkPolicy>, Error> {
             .collect::<Result<Vec<_>, Error>>()?;
         Some(NetworkPolicy::from_profiles(profiles))
     };
+    // Caller's explicit rules go BEFORE the base expansion: under
+    // first-match-wins, appending them after would make any override of a
+    // base-allowed destination silently dead (a more permissive policy than
+    // requested). Mirrors the upstream CLI's `--net` + rules composition.
+    for rd in conv::opt_hash_vec(np, "rules")? {
+        rules.push(parse_rule(rd)?);
+    }
+
     let (preset_egress, preset_ingress) = match base {
         Some(mut base) => {
             rules.append(&mut base.rules);
@@ -1334,11 +1344,6 @@ fn parse_network_policy(opts: RHash) -> Result<Option<NetworkPolicy>, Error> {
         }
         None => (None, None),
     };
-
-    // Caller's explicit rules come after preset rules.
-    for rd in conv::opt_hash_vec(np, "rules")? {
-        rules.push(parse_rule(rd)?);
-    }
 
     let default_egress = match conv::opt_string(np, "default_egress")? {
         Some(s) => action_from_str(&s)?,

@@ -39,12 +39,23 @@ RSpec.describe "snapshots + pull policy", :integration do
 
         Microsandbox::Snapshot.remove(snap, force: true)
         loaded = Microsandbox::Snapshot.load(archive)
+        # Digest identity is what load guarantees (mirrors upstream's own
+        # round-trip tests): the name alias is an index-level property that
+        # `remove` already dropped, so the loaded artifact re-registers by
+        # digest only.
         expect(loaded.digest).to eq(info.digest)
-        expect(Microsandbox::Snapshot.list.map(&:name)).to include(snap)
+        expect(Microsandbox::Snapshot.list.map(&:digest)).to include(info.digest)
       end
     ensure
       begin
         Microsandbox::Snapshot.remove(snap, force: true)
+      rescue
+        Microsandbox::Error
+      end
+      # The loaded copy is indexed by digest (its name alias is gone) — remove
+      # it by digest so a run doesn't leak the re-imported artifact.
+      begin
+        Microsandbox::Snapshot.remove(info.digest, force: true) if info
       rescue
         Microsandbox::Error
       end

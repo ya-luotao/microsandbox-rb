@@ -407,6 +407,37 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /unknown root_disk kind/)
     end
 
+    it "rejects out-of-u32-range root_disk sizes with a clear error" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", root_disk: -1)
+      end.to raise_error(ArgumentError, /positive size in MiB.*got -1/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", root_disk: 2**40)
+      end.to raise_error(ArgumentError, /fits in 32 bits/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", root_disk: {kind: :tmpfs, size_mib: -5})
+      end.to raise_error(ArgumentError, /root_disk size_mib:.*got -5/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "rejects follow_root_symlinks: on tmpfs/disk mounts (no host root to protect)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        volumes: {"/data" => {bind: "/host", follow_root_symlinks: true}}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("volumes" => [hash_including("follow_root_symlinks" => true)])
+      )
+
+      expect do
+        Microsandbox::Sandbox.create(
+          "box2", image: "x",
+          volumes: {"/scratch" => {tmpfs: true, follow_root_symlinks: true}}
+        )
+      end.to raise_error(ArgumentError, /follow_root_symlinks: only applies to bind\/named/)
+    end
+
     it "raises when both image: and from_snapshot: are given" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", from_snapshot: "snap")
