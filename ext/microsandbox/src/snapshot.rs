@@ -1,16 +1,21 @@
 //! Snapshot management: `Microsandbox::Native::Snapshot`.
 //!
-//! Snapshots capture a stopped sandbox's upper layer into a portable artifact
+//! Snapshots capture a stopped sandbox's disk state into a portable artifact
 //! that a later `Sandbox.create(from_snapshot:)` can boot from. Exposed as
 //! singleton functions returning plain Hashes/Arrays (shaped into value objects
 //! by the Ruby layer) — there is no long-lived handle to own.
+//!
+//! v0.6.7 descriptor contract: an artifact is identified by its own `name`
+//! (`Snapshot::builder(name).from_sandbox(src)`), lives at `dest_dir/<name>`,
+//! and its descriptor file is `snapshot.json`. `manifest.json` artifacts from
+//! v0.6.6 are auto-migrated by the core on first backend connect.
 
 use std::path::{Path, PathBuf};
 
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::snapshot::{
-    ExportOpts, Snapshot, SnapshotDestination, SnapshotFormat, SnapshotHandle,
-    SnapshotVerifyReport, UpperVerifyStatus,
+    SaveOpts, Snapshot, SnapshotFormat, SnapshotHandle, SnapshotScope, SnapshotVerifyReport,
+    UpperVerifyStatus,
 };
 
 use crate::conv;
@@ -24,6 +29,13 @@ fn format_str(format: SnapshotFormat) -> &'static str {
     }
 }
 
+fn scope_str(scope: SnapshotScope) -> &'static str {
+    match scope {
+        SnapshotScope::Disk => "disk",
+        SnapshotScope::Resumable => "resumable",
+    }
+}
+
 /// Parse a manifest's RFC 3339 `created_at` into epoch-ms (nil if unparseable).
 fn created_at_ms(rfc3339: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(rfc3339)
@@ -33,18 +45,31 @@ fn created_at_ms(rfc3339: &str) -> Option<i64> {
 
 /// Convert a fully-opened `Snapshot` into the `SnapshotInfo` Hash. Unlike a
 /// `SnapshotHandle` (a lightweight index row), an opened snapshot carries the
-/// full manifest, so this is the richest shape — `create`/`open`/`list_dir`
-/// and the `SandboxHandle#snapshot`/`#snapshot_to` shortcuts all funnel here.
+/// full descriptor, so this is the richest shape — `create`/`open`/`list_dir`
+/// and the `SandboxHandle#snapshot` shortcut all funnel here. `format`/
+/// `fstype`/`size_bytes` are nil for checkpoint-state snapshots, and the
+/// `checkpoint_*` keys are nil for file-state ones — the two state families
+/// are disjoint by contract.
 pub(crate) fn snapshot_to_hash(snap: &Snapshot) -> RHash {
     let m = snap.manifest();
+    let state = snap.state();
+    let file = state.as_file();
+    let checkpoint = state.as_checkpoint();
     let hash = ruby().hash_new();
     let _ = hash.aset("digest", snap.digest().to_string());
     let _ = hash.aset("path", snap.path().to_string_lossy().into_owned());
     let _ = hash.aset("size_bytes", snap.size_bytes());
+    let _ = hash.aset("scope", scope_str(m.scope));
+    let _ = hash.aset("state_kind", state.kind());
     let _ = hash.aset("image_ref", m.image.reference.clone());
     let _ = hash.aset("image_manifest_digest", m.image.manifest_digest.clone());
-    let _ = hash.aset("format", format_str(m.format));
-    let _ = hash.aset("fstype", m.fstype.clone());
+    let _ = hash.aset("format", file.map(|f| format_str(f.format)));
+    let _ = hash.aset("fstype", file.map(|f| f.fstype.clone()));
+    let _ = hash.aset("checkpoint_id", checkpoint.map(|c| c.checkpoint_id.clone()));
+    let _ = hash.aset(
+        "checkpoint_manifest_digest",
+        checkpoint.map(|c| c.manifest.clone()),
+    );
     let _ = hash.aset("parent_digest", m.parent.clone());
     let _ = hash.aset("created_at_ms", created_at_ms(&m.created_at));
     let _ = hash.aset("source_sandbox", m.source_sandbox.clone());
@@ -56,18 +81,21 @@ pub(crate) fn snapshot_to_hash(snap: &Snapshot) -> RHash {
     hash
 }
 
-/// Create a snapshot of a stopped sandbox. `opts`: name | path (destination),
-/// labels, force, record_integrity. Returns {digest, path, size_bytes}.
-fn create(source_sandbox: String, opts: RHash) -> Result<RHash, Error> {
-    let mut b = Snapshot::builder(source_sandbox);
-    if let Some(name) = conv::opt_string(opts, "name")? {
-        b = b.destination(SnapshotDestination::Name(name));
-    } else if let Some(path) = conv::opt_string(opts, "path")? {
-        b = b.destination(SnapshotDestination::Path(PathBuf::from(path)));
-    } else {
-        return Err(error::base_error(
-            "snapshot create needs a destination: pass name: or path:",
-        ));
+/// Create a snapshot artifact named `name` from a stopped sandbox. `opts`:
+/// from_sandbox (required), dest_dir, labels, force, record_integrity,
+/// resumable. Returns the full SnapshotInfo Hash.
+fn create(name: String, opts: RHash) -> Result<RHash, Error> {
+    let mut b = Snapshot::builder(name);
+    match conv::opt_string(opts, "from_sandbox")? {
+        Some(src) => b = b.from_sandbox(src),
+        None => {
+            return Err(error::base_error(
+                "snapshot create needs from_sandbox: (the source sandbox name)",
+            ));
+        }
+    }
+    if let Some(dir) = conv::opt_string(opts, "dest_dir")? {
+        b = b.dest_dir(PathBuf::from(dir));
     }
     for (k, v) in conv::opt_string_map(opts, "labels")? {
         b = b.label(k, v);
@@ -77,6 +105,9 @@ fn create(source_sandbox: String, opts: RHash) -> Result<RHash, Error> {
     }
     if conv::opt_bool(opts, "record_integrity")? {
         b = b.record_integrity();
+    }
+    if conv::opt_bool(opts, "resumable")? {
+        b = b.resumable();
     }
 
     let snap = block_on(b.create()).map_err(error::to_ruby)?;
@@ -92,8 +123,8 @@ fn open(path_or_name: String) -> Result<RHash, Error> {
     Ok(snapshot_to_hash(&snap))
 }
 
-/// Walk `dir` and parse each subdirectory's `manifest.json` without touching the
-/// local index — for enumerating external/un-imported snapshot collections.
+/// Walk `dir` and parse each subdirectory's `snapshot.json` without touching
+/// the local index — for enumerating external/un-imported snapshot collections.
 fn list_dir(dir: String) -> Result<RArray, Error> {
     let snaps = block_on(Snapshot::list_dir(Path::new(&dir))).map_err(error::to_ruby)?;
     let arr = ruby().ary_new();
@@ -140,7 +171,9 @@ fn remove(name_or_path: String, force: bool) -> Result<(), Error> {
 }
 
 /// Verify a snapshot's recorded upper-layer integrity. Returns
-/// {digest, path, upper_status, upper_algorithm?, upper_digest?}.
+/// {digest, path, upper_status, upper_algorithm, upper_digest}. Schema-1
+/// descriptors always record integrity, so the status is always "verified"
+/// on success (mismatches raise SnapshotIntegrityError instead).
 fn verify(name_or_path: String) -> Result<RHash, Error> {
     let snap = block_on(Snapshot::open(&name_or_path)).map_err(error::to_ruby)?;
     let report = block_on(snap.verify()).map_err(error::to_ruby)?;
@@ -149,25 +182,25 @@ fn verify(name_or_path: String) -> Result<RHash, Error> {
 
 /// Bundle a snapshot into a `.tar.zst` (or plain `.tar`) archive. `opts`:
 /// with_parents, with_image, plain_tar.
-fn export(name_or_path: String, out_path: String, opts: RHash) -> Result<(), Error> {
-    let export_opts = ExportOpts {
+fn save(name_or_path: String, out_path: String, opts: RHash) -> Result<(), Error> {
+    let save_opts = SaveOpts {
         with_parents: conv::opt_bool(opts, "with_parents")?,
         with_image: conv::opt_bool(opts, "with_image")?,
         plain_tar: conv::opt_bool(opts, "plain_tar")?,
     };
-    block_on(Snapshot::export(
+    block_on(Snapshot::save(
         &name_or_path,
         std::path::Path::new(&out_path),
-        export_opts,
+        save_opts,
     ))
     .map_err(error::to_ruby)
 }
 
-/// Unpack a snapshot archive into the snapshots dir. Returns the imported
+/// Unpack a snapshot archive into the snapshots dir. Returns the loaded
 /// snapshot's metadata hash. `dest` is an optional explicit directory.
-fn import(archive_path: String, dest: Option<String>) -> Result<RHash, Error> {
+fn load(archive_path: String, dest: Option<String>) -> Result<RHash, Error> {
     let dest_path = dest.map(PathBuf::from);
-    let handle = block_on(Snapshot::import(
+    let handle = block_on(Snapshot::load(
         std::path::Path::new(&archive_path),
         dest_path.as_deref(),
     ))
@@ -180,9 +213,23 @@ fn handle_to_hash(handle: &SnapshotHandle) -> RHash {
     let _ = hash.aset("digest", handle.digest().to_string());
     let _ = hash.aset("name", handle.name().map(str::to_string));
     let _ = hash.aset("parent_digest", handle.parent_digest().map(str::to_string));
+    let _ = hash.aset("scope", scope_str(handle.scope()));
+    let _ = hash.aset("state_kind", handle.state_kind().to_string());
     let _ = hash.aset("image_ref", handle.image_ref().to_string());
-    let _ = hash.aset("format", format_str(handle.format()));
+    let _ = hash.aset("format", handle.format().map(format_str));
+    let _ = hash.aset("fstype", handle.fstype().map(str::to_string));
+    let _ = hash.aset(
+        "checkpoint_manifest_digest",
+        handle.checkpoint_manifest_digest().map(str::to_string),
+    );
     let _ = hash.aset("size_bytes", handle.size_bytes());
+    let _ = hash.aset("locality", handle.locality().to_string());
+    let _ = hash.aset("availability", handle.availability().to_string());
+    let _ = hash.aset("migration_state", handle.migration_state().to_string());
+    let _ = hash.aset(
+        "migration_error_code",
+        handle.migration_error_code().map(str::to_string),
+    );
     let _ = hash.aset("path", handle.path().to_string_lossy().into_owned());
     let _ = hash.aset(
         "created_at_ms",
@@ -196,9 +243,6 @@ fn verify_report_to_hash(report: &SnapshotVerifyReport) -> RHash {
     let _ = hash.aset("digest", report.digest.clone());
     let _ = hash.aset("path", report.path.to_string_lossy().into_owned());
     match &report.upper {
-        UpperVerifyStatus::NotRecorded => {
-            let _ = hash.aset("upper_status", "not_recorded");
-        }
         UpperVerifyStatus::Verified { algorithm, digest } => {
             let _ = hash.aset("upper_status", "verified");
             let _ = hash.aset("upper_algorithm", algorithm.clone());
@@ -218,7 +262,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_singleton_method("reindex", function!(reindex, 1))?;
     class.define_singleton_method("remove", function!(remove, 2))?;
     class.define_singleton_method("verify", function!(verify, 1))?;
-    class.define_singleton_method("export", function!(export, 3))?;
-    class.define_singleton_method("import", function!(import, 2))?;
+    class.define_singleton_method("save", function!(save, 3))?;
+    class.define_singleton_method("load", function!(load, 2))?;
     Ok(())
 }

@@ -142,18 +142,14 @@ module Microsandbox
 
     # Snapshot this (stopped) sandbox under a bare name, resolved under the
     # snapshots dir. Convenience equivalent of
-    # `Snapshot.create(name, name: <snapshot-name>)` addressed by this handle.
+    # `Snapshot.create(<snapshot-name>, from_sandbox: <this sandbox>)`.
+    # (`snapshot_to(path)` was removed in 0.11.0 with runtime v0.6.7 — for
+    # explicit placement use `Snapshot.create(name, from_sandbox:, dest_dir:)`;
+    # the artifact lands at `dest_dir/<name>`.)
     # @param name [String] destination snapshot name
     # @return [SnapshotInfo]
     def snapshot(name)
       SnapshotInfo.new(@native.snapshot(name.to_s))
-    end
-
-    # Snapshot this (stopped) sandbox to an explicit filesystem path.
-    # @param path [String] destination directory
-    # @return [SnapshotInfo]
-    def snapshot_to(path)
-      SnapshotInfo.new(@native.snapshot_to(path.to_s))
     end
 
     def inspect
@@ -262,13 +258,18 @@ module Microsandbox
       #   `host_permissions:` (:private/:mirror). A bind mount accepts
       #   `quota_mib:` to override the runtime's default guest-write budget
       #   (4 GiB as of `v0.5.10`); the core rejects it on tmpfs/disk/named (for a
-      #   named volume, set its quota via {Volume.create}).
-      # @param network [String, Symbol, NetworkPolicy, Hash, nil] network policy.
-      #   A preset name ("public_only" (default), "none", "allow_all",
-      #   "non_local"), a {NetworkPolicy} (e.g. {NetworkPolicy.custom}), or a Hash
-      #   describing a custom policy (`default_egress:`, `default_ingress:`,
-      #   `rules:`, `deny_domains:`, `deny_domain_suffixes:`). See {NetworkPolicy}
-      #   and {Rule}.
+      #   named volume, set its quota via {Volume.create}). Bind/named mounts
+      #   also accept `follow_root_symlinks: true` to opt out of the default-on
+      #   mount-root symlink protection (runtime v0.6.7).
+      # @param network [Array, String, Symbol, NetworkPolicy, Hash, nil] network
+      #   policy. Composable profiles (`[:public]` (the default), `[:public,
+      #   :private]`, `:host`, …), a terminal preset (:none, :allow_all), a
+      #   {NetworkPolicy} (e.g. {NetworkPolicy.from_profiles},
+      #   {NetworkPolicy.custom}), or a Hash describing a custom policy
+      #   (`profiles:`, `default_egress:`, `default_ingress:`, `rules:`,
+      #   `deny_domains:`, `deny_domain_suffixes:`). See {NetworkPolicy} and
+      #   {Rule}. The v0.6.6 `public_only`/`non_local` presets were removed in
+      #   runtime v0.6.7 — use `[:public]` / `[:public, :private]`.
       # @param dns [Hash, nil] custom DNS: `{ nameservers: [...],
       #   rebind_protection: true, query_timeout_ms: 2000 }`
       # @param tls [Hash, nil] TLS-interception tuning: `{ bypass: [...patterns],
@@ -296,7 +297,16 @@ module Microsandbox
       # @param log_level ["error","warn","info","debug","trace", nil] guest log verbosity
       # @param quiet_logs [Boolean] suppress sandbox process logs
       # @param security ["default", "restricted", nil] exec security profile
-      # @param oci_upper_size [Integer, nil] writable upper-layer size cap, in MiB
+      # @param root_disk [Integer, Hash, nil] the OCI sandbox's writable root
+      #   disk (runtime v0.6.7). An Integer is the managed ext4 upper's size cap
+      #   in MiB (default kind, 4 GiB when unset); a Hash picks a kind via the
+      #   {RootDisk} factory — `RootDisk.managed(8192)`, `RootDisk.tmpfs(2048)`
+      #   (RAM-backed, pristine on every boot), or
+      #   `RootDisk.disk("./scratch.img", format: "raw", fstype: "ext4")`
+      #   (user-supplied image attached writable).
+      # @param oci_upper_size [Integer, nil] deprecated alias for
+      #   `root_disk: <Integer>` (the managed kind); warns, and conflicts with
+      #   `root_disk:`
       # @param max_duration [Integer, nil] hard wall-clock lifetime, in seconds
       # @param idle_timeout [Integer, nil] stop after this many idle seconds
       # @param rlimits [Hash, nil] resource limits: { resource => limit } or
@@ -372,7 +382,7 @@ module Microsandbox
         patches: nil,
         from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
         log_level: nil, quiet_logs: false, security: nil,
-        oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
+        root_disk: nil, oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
         pull_policy: nil, registry_auth: nil, registry_insecure: false,
         registry_ca_certs: nil, secrets: nil, on_secret_violation: nil,
         detached: false, replace: false, replace_with_timeout: nil)
@@ -381,6 +391,9 @@ module Microsandbox
         # clearly here (the Python SDK validates this the same way).
         if image && from_snapshot
           raise ArgumentError, "provide either image: or from_snapshot:, not both"
+        end
+        if root_disk && oci_upper_size
+          raise ArgumentError, "pass either root_disk: or oci_upper_size:, not both"
         end
         Microsandbox.ensure_runtime!
         # `fstype:` names the inner filesystem of a disk-image rootfs, so it only
@@ -425,7 +438,14 @@ module Microsandbox
         opts["log_level"] = log_level.to_s if log_level
         opts["quiet_logs"] = true if quiet_logs
         opts["security"] = security.to_s if security
-        opts["oci_upper_size"] = Integer(oci_upper_size) if oci_upper_size
+        if oci_upper_size
+          warn "Microsandbox: oci_upper_size: is deprecated; use root_disk: " \
+               "(an Integer size in MiB, or RootDisk.managed/tmpfs/disk)",
+            uplevel: 2
+          opts["root_disk"] = coerce_root_disk_size(oci_upper_size, "oci_upper_size:")
+        elsif root_disk
+          opts["root_disk"] = normalize_root_disk(root_disk)
+        end
         opts["max_duration"] = Integer(max_duration) if max_duration
         opts["idle_timeout"] = Integer(idle_timeout) if idle_timeout
         opts["rlimits"] = normalize_rlimits(rlimits) if rlimits
@@ -816,6 +836,58 @@ module Microsandbox
       #   { disk: "/img.raw", format: "raw", fstype: "ext4" }   # disk-image mount
       # Any mount may also carry stat_virtualization: (:strict/:relaxed/:off) and
       # host_permissions: (:private/:mirror); a bind mount may carry quota_mib:.
+      # Coerce the `root_disk:` argument — an Integer (managed size in MiB), a
+      # {RootDisk} factory Hash, or an equivalent hand-written Hash — into the
+      # wire shape, validating kind/field combinations up front (mirrors the
+      # Python SDK's extract_root_disk guards).
+      def normalize_root_disk(root_disk)
+        return coerce_root_disk_size(root_disk, "root_disk:") unless root_disk.is_a?(Hash)
+
+        spec = root_disk.transform_keys(&:to_s)
+        kind = (spec["kind"] || "managed").to_s
+        case kind
+        when "managed", "tmpfs"
+          %w[path format fstype].each do |key|
+            if spec[key]
+              raise ArgumentError, "root_disk #{key}: is only valid for the disk kind"
+            end
+          end
+          h = {"kind" => kind}
+          if spec["size_mib"]
+            h["size_mib"] = coerce_root_disk_size(spec["size_mib"], "root_disk size_mib:")
+          end
+          h
+        when "disk", "disk-image", "disk_image"
+          path = spec["path"]
+          if path.nil? || path.to_s.empty?
+            raise ArgumentError, "root_disk disk kind requires path:"
+          end
+          if spec["size_mib"]
+            raise ArgumentError, "root_disk size_mib: is not valid for a disk image " \
+              "(the image file determines the size)"
+          end
+          h = {"kind" => "disk", "path" => path.to_s}
+          h["format"] = spec["format"].to_s if spec["format"]
+          h["fstype"] = spec["fstype"].to_s if spec["fstype"]
+          h
+        else
+          raise ArgumentError,
+            "unknown root_disk kind #{kind.inspect} (expected managed/tmpfs/disk)"
+        end
+      end
+
+      # Coerce + range-check a root-disk size. The wire carries u32 MiB; an
+      # out-of-range value would otherwise surface as a confusing ext-level
+      # type error (or a raw RangeError from the native conversion).
+      def coerce_root_disk_size(value, label)
+        mib = Integer(value)
+        unless mib.positive? && mib <= 4_294_967_295
+          raise ArgumentError,
+            "#{label} must be a positive size in MiB that fits in 32 bits (got #{mib})"
+        end
+        mib
+      end
+
       def normalize_volumes(volumes)
         volumes.map do |guest, spec|
           mount = {"guest" => guest.to_s}
@@ -868,6 +940,9 @@ module Microsandbox
       # read-only; `noexec:`/`nosuid:`/`nodev:` set the matching flags;
       # `stat_virtualization:`/`host_permissions:` set the passthrough policies
       # (only valid on bind/named — the core rejects them on tmpfs/disk).
+      # `follow_root_symlinks:` opts out of the default-on mount-root symlink
+      # protection (runtime v0.6.7; bind/named only — the core silently ignores
+      # it on tmpfs/disk mounts, so reject those here instead).
       def apply_mount_flags(mount, spec)
         mount["readonly"] = true if spec[:ro] || spec["ro"] || spec[:readonly] || spec["readonly"]
         mount["noexec"] = true if spec[:noexec] || spec["noexec"]
@@ -878,6 +953,15 @@ module Microsandbox
         mount["stat_virtualization"] = sv.to_s if sv
         hp = spec[:host_permissions] || spec["host_permissions"]
         mount["host_permissions"] = hp.to_s if hp
+        follow = spec.fetch(:follow_root_symlinks, spec["follow_root_symlinks"])
+        unless follow.nil?
+          unless %w[bind named].include?(mount["kind"])
+            raise ArgumentError,
+              "follow_root_symlinks: only applies to bind/named mounts " \
+              "(got a #{mount["kind"]} mount); a #{mount["kind"]} mount has no host root to protect"
+          end
+          mount["follow_root_symlinks"] = !!follow
+        end
       end
 
       # Translate the pre-0.7.0 `options:` array form (e.g. options: %w[ro noexec])
@@ -918,16 +1002,18 @@ module Microsandbox
         end
       end
 
-      # Route the `network:` argument to either the preset path
-      # (`opts["network"]`, the original string-preset behavior) or the custom
-      # policy path (`opts["network_policy"]`). Accepts a preset String/Symbol, a
-      # {NetworkPolicy}, or a plain Hash.
+      # Route the `network:` argument to the preset path (`opts["network"]`),
+      # the composed-profiles path (`opts["network_profiles"]`), or the custom
+      # policy path (`opts["network_policy"]`). Accepts profile Symbol(s)/Array,
+      # a preset String/Symbol, a {NetworkPolicy}, or a plain Hash.
       def apply_network_opts(opts, network)
         norm = NetworkPolicy.coerce(network)
         return if norm.empty? # e.g. network: {} — leave the default policy in place
 
         if norm.keys == ["preset"]
           opts["network"] = norm["preset"]
+        elsif norm.keys == ["profiles"]
+          opts["network_profiles"] = norm["profiles"]
         else
           opts["network_policy"] = norm
         end

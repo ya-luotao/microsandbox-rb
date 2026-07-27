@@ -2,17 +2,23 @@
 
 module Microsandbox
   # Metadata for a snapshot artifact, returned by {Snapshot.create}/{Snapshot.open}/
-  # {Snapshot.get}/{Snapshot.list}/{Snapshot.list_dir}/{Snapshot.import}.
+  # {Snapshot.get}/{Snapshot.list}/{Snapshot.list_dir}/{Snapshot.load}.
   #
   # `digest` and `path` are always present. The artifact-opening paths
   # (`create`/`open`/`list_dir`, and {SandboxHandle#snapshot}) carry the full
-  # manifest — `size_bytes`, `image_ref`, `image_manifest_digest`, `format`,
+  # descriptor — `size_bytes`, `image_ref`, `image_manifest_digest`, `format`,
   # `fstype`, `parent_digest`, `created_at`, `source_sandbox`, and `labels`. The
-  # index paths (`get`/`list`/`import`) populate `name`, `parent_digest`,
-  # `image_ref`, `format`, `size_bytes`, and `created_at` (manifest-only fields
-  # such as `fstype`/`source_sandbox`/`labels` are nil/empty there).
+  # index paths (`get`/`list`/`load`) populate `name`, `parent_digest`,
+  # `image_ref`, `format`, `size_bytes`, `created_at`, and the index-only
+  # `locality`/`availability`/`migration_state` columns (descriptor-only fields
+  # such as `source_sandbox`/`labels` are nil/empty there).
+  #
+  # Snapshots come in two state families (see {#state_kind}): `"file"` — a
+  # concrete disk payload, where {#format}/{#fstype}/{#size_bytes} are set — and
+  # `"checkpoint"` — a manifest-backed state, where those are nil and the
+  # `checkpoint_*` fields are set instead.
   class SnapshotInfo
-    # @return [String] manifest digest ("sha256:…") — the canonical identity
+    # @return [String] descriptor digest ("sha256:…") — the canonical identity
     attr_reader :digest
     # @return [String] artifact directory path
     attr_reader :path
@@ -22,16 +28,30 @@ module Microsandbox
     attr_reader :parent_digest
     # @return [String, nil] source OCI image reference
     attr_reader :image_ref
-    # @return [String, nil] OCI manifest digest of the pinned image (manifest paths)
+    # @return [String, nil] OCI manifest digest of the pinned image (descriptor paths)
     attr_reader :image_manifest_digest
-    # @return [String, nil] upper-layer filesystem type, e.g. "ext4" (manifest paths)
+    # @return [String, nil] payload filesystem type, e.g. "ext4" (file state only)
     attr_reader :fstype
     # @return [String, nil] best-effort source-sandbox name, if recorded
     attr_reader :source_sandbox
     # @return [Hash{String=>String}] user labels ({} for index-only entries)
     attr_reader :labels
-    # @return [Integer, nil] artifact size in bytes
+    # @return [Integer, nil] payload size in bytes (nil for checkpoint state)
     attr_reader :size_bytes
+    # @return [String, nil] stable checkpoint id (checkpoint state only)
+    attr_reader :checkpoint_id
+    # @return [String, nil] checkpoint-manifest digest (checkpoint state only)
+    attr_reader :checkpoint_manifest_digest
+    # @return [String, nil] index locality: "embedded" or "linked" (index paths)
+    attr_reader :locality
+    # @return [String, nil] index availability, normally "ready" (index paths)
+    attr_reader :availability
+    # @return [String, nil] descriptor-migration state, normally "canonical"
+    #   ("reverse_complete" after downgrade tooling ran; index paths)
+    attr_reader :migration_state
+    # @return [String, nil] stable failure code when a v0.6.6→v0.6.7 descriptor
+    #   migration was blocked (index paths)
+    attr_reader :migration_error_code
 
     def initialize(data)
       @digest = data["digest"]
@@ -46,12 +66,29 @@ module Microsandbox
       @format = data["format"]
       @size_bytes = data["size_bytes"]
       @created_at_ms = data["created_at_ms"]
+      @scope = data["scope"]
+      @state_kind = data["state_kind"]
+      @checkpoint_id = data["checkpoint_id"]
+      @checkpoint_manifest_digest = data["checkpoint_manifest_digest"]
+      @locality = data["locality"]
+      @availability = data["availability"]
+      @migration_state = data["migration_state"]
+      @migration_error_code = data["migration_error_code"]
     end
 
-    # @return [Symbol, nil] disk format (:raw or :qcow2)
+    # @return [Symbol, nil] disk format (:raw or :qcow2; nil for checkpoint state)
     def format
       @format&.to_sym
     end
+
+    # @return [Symbol, nil] payload scope — :disk today, :resumable once VM
+    #   pause/resume lands upstream
+    def scope
+      @scope&.to_sym
+    end
+
+    # @return [String, nil] state family: "file" or "checkpoint"
+    attr_reader :state_kind
 
     # @return [Time, nil]
     def created_at
@@ -78,17 +115,19 @@ module Microsandbox
     end
   end
 
-  # The result of {Snapshot.verify}.
+  # The result of {Snapshot.verify}. Schema-1 descriptors always record
+  # integrity, so a returned report is always `:verified` — an integrity
+  # mismatch raises {SnapshotIntegrityError} instead of returning.
   class SnapshotVerifyReport
-    # @return [String] manifest digest
+    # @return [String] descriptor digest
     attr_reader :digest
     # @return [String] artifact directory path
     attr_reader :path
-    # @return [Symbol] :not_recorded or :verified
+    # @return [Symbol] :verified
     attr_reader :status
-    # @return [String, nil] digest algorithm (when :verified)
+    # @return [String] digest algorithm
     attr_reader :algorithm
-    # @return [String, nil] matched content digest (when :verified)
+    # @return [String] matched content digest
     attr_reader :content_digest
 
     def initialize(data)
@@ -101,38 +140,47 @@ module Microsandbox
 
     # @return [Boolean] whether content integrity was recorded and matched
     def verified? = @status == :verified
-    # @return [Boolean] whether no integrity descriptor was recorded
-    def not_recorded? = @status == :not_recorded
   end
 
   # Creation and management of sandbox snapshots. A snapshot captures a stopped
-  # sandbox's upper layer into a portable artifact; boot from it with
+  # sandbox's disk state into a portable artifact; boot from it with
   # `Sandbox.create(from_snapshot: "name-or-digest")`.
+  #
+  # v0.6.7 descriptor contract: artifacts are identified by their own name and
+  # live at `dest_dir/<name>`; the descriptor file is `snapshot.json`. Artifacts
+  # written by ≤0.10.x gems (`manifest.json`) are migrated automatically by the
+  # runtime on first use — after which older gem versions can no longer read
+  # them (downgrade requires the `msb self downgrade` tooling).
   class Snapshot
     class << self
-      # Create a snapshot of a stopped sandbox.
+      # Create a snapshot named `name` from a stopped sandbox.
       #
-      # @param source_sandbox [String] name of the (stopped) source sandbox
-      # @param name [String, nil] destination name under the snapshots dir
-      # @param path [String, nil] explicit destination directory (alternative to name)
+      # @param name [String] the snapshot's own name (its identity)
+      # @param from_sandbox [String] name of the (stopped) source sandbox
+      # @param dest_dir [String, nil] parent directory override — the artifact
+      #   is written at `dest_dir/<name>` (default: the snapshots dir)
       # @param labels [Hash, nil] user labels
       # @param force [Boolean] overwrite an existing artifact at the destination
-      # @param record_integrity [Boolean] compute + record upper-layer integrity
+      # @param record_integrity [Boolean] accepted for compatibility; schema-1
+      #   descriptors always record integrity, so this is a no-op
+      # @param resumable [Boolean] request a resumable (memory+device) snapshot;
+      #   raises {UnsupportedError} until VM pause/resume lands upstream
       # @return [SnapshotInfo]
-      def create(source_sandbox, name: nil, path: nil, labels: nil, force: false, record_integrity: false)
-        opts = {}
-        opts["name"] = name.to_s if name
-        opts["path"] = path.to_s if path
+      def create(name, from_sandbox:, dest_dir: nil, labels: nil, force: false,
+        record_integrity: false, resumable: false)
+        opts = {"from_sandbox" => from_sandbox.to_s}
+        opts["dest_dir"] = dest_dir.to_s if dest_dir
         opts["labels"] = stringify(labels) if labels
         opts["force"] = true if force
         opts["record_integrity"] = true if record_integrity
-        SnapshotInfo.new(Native::Snapshot.create(source_sandbox.to_s, opts))
+        opts["resumable"] = true if resumable
+        SnapshotInfo.new(Native::Snapshot.create(name.to_s, opts))
       end
 
       # Open a snapshot artifact by bare name or path (cheap metadata
-      # validation; does not read the upper layer). Unlike {get}, this also
+      # validation; does not read the payload). Unlike {get}, this also
       # works for artifacts addressed by path that were never indexed, and it
-      # returns the full manifest.
+      # returns the full descriptor.
       # @return [SnapshotInfo]
       def open(name_or_path)
         SnapshotInfo.new(Native::Snapshot.open(name_or_path.to_s))
@@ -151,7 +199,7 @@ module Microsandbox
       end
 
       # Enumerate snapshot artifacts under a directory by parsing each
-      # subdirectory's `manifest.json`, without touching the local index — for
+      # subdirectory's `snapshot.json`, without touching the local index — for
       # inspecting external/un-imported collections (e.g. a mounted volume).
       # @return [Array<SnapshotInfo>]
       def list_dir(dir)
@@ -175,31 +223,33 @@ module Microsandbox
         nil
       end
 
-      # Verify a snapshot's recorded upper-layer integrity.
+      # Verify a snapshot's recorded payload integrity.
       # @return [SnapshotVerifyReport]
       def verify(name_or_path)
         SnapshotVerifyReport.new(Native::Snapshot.verify(name_or_path.to_s))
       end
 
       # Bundle a snapshot into a `.tar.zst` (or plain `.tar`) archive.
+      # Renamed from `export` in 0.11.0, mirroring the v0.6.7 SDKs.
       # @param with_parents [Boolean] include ancestor snapshots
       # @param with_image [Boolean] include OCI image artifacts (boots offline)
       # @param plain_tar [Boolean] write an uncompressed `.tar`
       # @return [nil]
-      def export(name_or_path, out_path, with_parents: false, with_image: false, plain_tar: false)
+      def save(name_or_path, out_path, with_parents: false, with_image: false, plain_tar: false)
         opts = {}
         opts["with_parents"] = true if with_parents
         opts["with_image"] = true if with_image
         opts["plain_tar"] = true if plain_tar
-        Native::Snapshot.export(name_or_path.to_s, out_path.to_s, opts)
+        Native::Snapshot.save(name_or_path.to_s, out_path.to_s, opts)
         nil
       end
 
-      # Unpack a snapshot archive into the snapshots dir.
+      # Unpack a snapshot archive into the snapshots dir. Renamed from
+      # `import` in 0.11.0, mirroring the v0.6.7 SDKs.
       # @param dest [String, nil] explicit destination directory
       # @return [SnapshotInfo]
-      def import(archive_path, dest: nil)
-        SnapshotInfo.new(Native::Snapshot.import(archive_path.to_s, dest&.to_s))
+      def load(archive_path, dest: nil)
+        SnapshotInfo.new(Native::Snapshot.load(archive_path.to_s, dest&.to_s))
       end
 
       private

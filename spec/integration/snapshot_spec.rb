@@ -14,20 +14,48 @@ RSpec.describe "snapshots + pull policy", :integration do
       sb.fs.write("/root/marker.txt", marker)
       sb.stop
 
-      info = Microsandbox::Snapshot.create(src, name: snap)
+      info = Microsandbox::Snapshot.create(snap, from_sandbox: src)
       expect(info).to be_a(Microsandbox::SnapshotInfo)
       expect(info.digest).to start_with("sha256:")
+      expect(info.scope).to eq(:disk)
+      expect(info.state_kind).to eq("file")
       expect(Microsandbox::Snapshot.list.map(&:name)).to include(snap)
 
       report = Microsandbox::Snapshot.verify(snap)
       expect(report).to be_a(Microsandbox::SnapshotVerifyReport)
+      expect(report).to be_verified
 
       Microsandbox::Sandbox.create(unique_sandbox_name("rb-snapboot"), from_snapshot: snap) do |sb2|
         expect(sb2.fs.read_text("/root/marker.txt")).to eq(marker)
       end
+
+      # Archive round-trip via the renamed save/load: save the artifact,
+      # remove the original, load it back, and confirm the same identity.
+      require "tmpdir"
+      Dir.mktmpdir do |dir|
+        archive = File.join(dir, "snap.tar.zst")
+        Microsandbox::Snapshot.save(snap, archive)
+        expect(File.size(archive)).to be > 0
+
+        Microsandbox::Snapshot.remove(snap, force: true)
+        loaded = Microsandbox::Snapshot.load(archive)
+        # Digest identity is what load guarantees (mirrors upstream's own
+        # round-trip tests): the name alias is an index-level property that
+        # `remove` already dropped, so the loaded artifact re-registers by
+        # digest only.
+        expect(loaded.digest).to eq(info.digest)
+        expect(Microsandbox::Snapshot.list.map(&:digest)).to include(info.digest)
+      end
     ensure
       begin
         Microsandbox::Snapshot.remove(snap, force: true)
+      rescue
+        Microsandbox::Error
+      end
+      # The loaded copy is indexed by digest (its name alias is gone) — remove
+      # it by digest so a run doesn't leak the re-imported artifact.
+      begin
+        Microsandbox::Snapshot.remove(info.digest, force: true) if info
       rescue
         Microsandbox::Error
       end

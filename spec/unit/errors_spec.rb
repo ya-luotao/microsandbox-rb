@@ -28,6 +28,7 @@ RSpec.describe "Microsandbox error hierarchy" do
     "SnapshotSandboxRunningError" => "snapshot-sandbox-running",
     "SnapshotImageMissingError" => "snapshot-image-missing",
     "SnapshotIntegrityError" => "snapshot-integrity",
+    "SnapshotMigrationError" => "snapshot-migration",
     "NetworkPolicyError" => "network-policy-error",
     "SecretViolationError" => "secret-violation",
     "TlsError" => "tls-error",

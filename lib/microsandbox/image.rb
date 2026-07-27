@@ -107,6 +107,44 @@ module Microsandbox
       def prune
         ImagePruneReport.new(Native::Image.prune)
       end
+
+      # Load images into the cache from a local `docker save` tarball or an
+      # OCI Image Layout archive. Pass `"-"` to read the archive from `$stdin`
+      # (spooled to a temp file first, like the Python SDK — the core reads
+      # seekable files only). Mirrors the Python `Image.load` / Node
+      # `imageLoad` (runtime v0.6.7).
+      # @param input_path [String] archive path (or "-")
+      # @param tag [String, Array<String>, nil] retag the loaded image(s)
+      # @return [Array<ImageInfo>] one entry per loaded image
+      def load(input_path, tag: nil)
+        tags = Array(tag).map(&:to_s)
+        path = input_path.to_s
+        if path == "-"
+          require "tempfile"
+          Tempfile.create(["msb-image-load", ".tar"]) do |tmp|
+            tmp.binmode
+            IO.copy_stream($stdin, tmp)
+            tmp.flush
+            return Native::Image.load(tmp.path, tags).map { |info| ImageInfo.new(info) }
+          end
+        end
+        Native::Image.load(path, tags).map { |info| ImageInfo.new(info) }
+      end
+
+      # Save cached image(s) into a local archive.
+      # Mirrors the Python `Image.save` / Node `imageSave` (runtime v0.6.7).
+      # @param reference [String, Array<String>] image reference(s) to save
+      # @param output_path [String] destination archive path
+      # @param format [:docker, :oci] archive layout (default :docker, the
+      #   shape `docker load` expects)
+      # @return [nil]
+      def save(reference, output_path:, format: :docker)
+        refs = Array(reference).map(&:to_s)
+        raise ArgumentError, "at least one image reference is required" if refs.empty?
+
+        Native::Image.save(refs, output_path.to_s, format.to_s)
+        nil
+      end
     end
   end
 end

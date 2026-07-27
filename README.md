@@ -39,7 +39,7 @@ them. Our deepest thanks to the maintainers and community. 🙏
 - **Guest filesystem access** — read, write, list, copy, stat files inside a running sandbox
 - **Metrics & logs** — CPU, memory, disk and network I/O; captured stdout/stderr/system logs
 - **Rootfs patches** — inject files, dirs, and symlinks into the image before boot (`Microsandbox::Patch`)
-- **Fine-grained networking** — policy presets *and* custom CIDR/domain/group allow-deny rules (`Microsandbox::NetworkPolicy`)
+- **Fine-grained networking** — composable profiles (`:public`/`:private`/`:host`) *and* custom CIDR/domain/group allow-deny rules (`Microsandbox::NetworkPolicy`)
 - **SSH & SFTP** — native in-process SSH client/server and file transfer (`Sandbox#ssh`)
 - **Raw agent client** — byte-level access to the guest `agentd` protocol (`Microsandbox::AgentClient`)
 - **Idiomatic Ruby** — keyword arguments, block-scoped lifecycle, a typed error hierarchy
@@ -160,7 +160,7 @@ Microsandbox::Sandbox.create(
   workdir:  "/app",
   labels:   { "team" => "research" },
   ports:    { 8080 => 80 },            # host => guest (TCP)
-  network:  "public_only",             # or "none" for airgapped
+  network:  [:public],                 # composable profiles; :none for airgapped
   replace:  true                       # replace an existing sandbox of the same name
 ) do |sb|
   # ...
@@ -442,8 +442,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.10.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.6"  (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.11.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.6.7"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
@@ -464,6 +464,7 @@ Microsandbox.runtime_version   # => "v0.6.6"  (the embedded upstream runtime tag
 | `0.9.2`  | `v0.6.3` | adopts upstream `v0.6.3` (v4-only sandboxes stop advertising AAAA DNS answers — fixes guest gRPC/c-ares preferring unreachable IPv6; scoped upstream TLS verification); glue moves to `*_local` SDK variants — no Ruby surface change |
 | `0.9.3`  | `v0.6.6` | adopts upstream `v0.6.4`+`v0.6.6` (`v0.6.5` was yanked upstream): snapshot restore by pinned digest — fixes fatal restore-after-tag-republish bug, fragmented-UDP/PMTU relay fixes, exec kills the whole process group, ephemeral stop-wait tolerance, readdir RSS-leak fix; upstream API growth is additive-only — no Ruby surface change |
 | `0.10.0` | `v0.6.6` | `v0.6.6` API parity: live `modify`/resize, `ping`/`touch`, create `max_cpus`/`max_memory` |
+| `0.11.0` | `v0.6.7` | adopts upstream `v0.6.7` (**breaking**): network profiles replace `public_only`/`non_local`, structured `root_disk:` replaces `oci_upper_size:` (deprecated alias kept), snapshot descriptor contract (`create` re-keyed by name, `save`/`load` rename, `snapshot_to` removed, on-disk auto-migration), `Image.load`/`Image.save`, `follow_root_symlinks:`; runtime carries the GHSA-4vq3-cjpp-v7fg `msb copy` fix |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:
@@ -542,7 +543,7 @@ section. The binding covers the official-SDK surface: sandbox
 lifecycle (the live `Sandbox` `stop`/`stop_and_wait`/`kill`/`drain`/`wait`/
 `status`/`detach`/`owns_lifecycle?`, plus the `SandboxHandle` controls
 `stop_with_timeout`/`request_stop`/`request_kill`/`request_drain`/
-`wait_until_stopped`/`config`/`config_json`/`snapshot`/`snapshot_to` from
+`wait_until_stopped`/`config`/`config_json`/`snapshot` from
 `Sandbox.get`, and label-filtered `list_with`),
 backend routing (`set_default_backend`/`with_backend`/`default_backend_kind`),
 `exec`/`shell` (collected and streaming), interactive `attach`/
@@ -550,10 +551,12 @@ backend routing (`set_default_backend`/`with_backend`/`default_backend_kind`),
 `write_stream`), metrics (per-sandbox, `Microsandbox.all_sandbox_metrics`, and
 streaming `metrics_stream`/`log_stream`), logs, OCI image-cache management,
 named volumes (incl. host-side `Volume.fs`/`VolumeInfo#fs` read/write),
-snapshots (create/open/list/list_dir/reindex/verify/export/import +
-boot-from-snapshot), streaming image-pull progress
-(`Sandbox.create_with_progress` → `PullSession`), **rootfs patches**
-(`Microsandbox::Patch`), **network configuration** (presets, custom per-rule
+snapshots (create/open/list/list_dir/reindex/verify/save/load +
+boot-from-snapshot), image archives (`Image.load`/`Image.save`), streaming
+image-pull progress (`Sandbox.create_with_progress` → `PullSession`),
+**rootfs patches** (`Microsandbox::Patch`), the structured **root disk**
+(`root_disk:` managed/tmpfs/disk via `Microsandbox::RootDisk`), **network
+configuration** (composable profiles, custom per-rule
 `Microsandbox::NetworkPolicy`/`Rule`/`Destination`, plus DNS, TLS interception,
 IPv4/IPv6 pools, `max_connections`, `trust_host_cas`), **secrets** (multi-host /
 wildcard allow-lists, injection toggles, per-secret + sandbox-level violation

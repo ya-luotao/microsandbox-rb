@@ -89,13 +89,41 @@ RSpec.describe "patches and network", :integration do
       end
     end
 
-    it "accepts a preset base plus a bulk domain denial" do
+    it "accepts a profiles base plus a bulk domain denial" do
       Microsandbox::Sandbox.create(
         unique_sandbox_name, image: image,
-        network: {preset: :public_only, deny_domains: ["example.com"]}
+        network: {profiles: [:public], deny_domains: ["example.com"]}
       ) do |sb|
         # The sandbox still boots and runs; the deny rule is enforced by the proxy.
         expect(sb.shell("echo ok").stdout).to include("ok")
+      end
+    end
+
+    it "boots with composed profiles (public+private) and reaches the public internet" do
+      Microsandbox::Sandbox.create(
+        unique_sandbox_name, image: image, network: [:public, :private]
+      ) do |sb|
+        probe = sb.shell(
+          "nc -z -w 5 1.1.1.1 443 >/dev/null 2>&1 && echo public-OK || echo public-FAIL",
+          timeout: 20
+        )
+        expect(probe.stdout).to include("public-OK")
+      end
+    end
+
+    it "lets an explicit rule override the profile base (deny_dns beats public's allow)" do
+      # Ordering regression guard: caller rules must be evaluated before the
+      # profile expansion, or this deny would be dead behind the profile's
+      # allow_dns under first-match-wins.
+      Microsandbox::Sandbox.create(
+        unique_sandbox_name, image: image,
+        network: {profiles: [:public], rules: [Microsandbox::Rule.deny_dns]}
+      ) do |sb|
+        probe = sb.shell(
+          "nslookup example.com >/dev/null 2>&1 && echo dns-OK || echo dns-FAIL",
+          timeout: 20
+        )
+        expect(probe.stdout).to include("dns-FAIL")
       end
     end
   end
