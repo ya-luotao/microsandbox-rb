@@ -6,6 +6,99 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.11.0] - 2026-07-27
+
+Adopts upstream runtime **`v0.6.6` → `v0.6.7`** and mirrors its breaking SDK
+surface, keeping parity with the Python/Node SDKs (which ship the same renames
+without compatibility aliases). The bundled runtime also carries the fix for
+**GHSA-4vq3-cjpp-v7fg** (`msb copy` symlink traversal: a sandboxed workload
+could make a later CLI copy-out overwrite an arbitrary host file — the SDK
+`fs`/`copy_to_host` paths were not affected).
+
+### Breaking
+
+- **Network presets `public_only`/`non_local` are removed** (upstream #1198),
+  replaced by composable **profiles** `:public` / `:private` / `:host`:
+  `network: [:public, :private]`, single-profile sugar `network: :public`, or
+  `NetworkPolicy.from_profiles(:public, :host)`. Any non-empty profile set
+  automatically allows gateway DNS. The replacements are rule-for-rule
+  equivalent (`public_only` ≡ `[:public]`, which is still the default policy;
+  `non_local` ≡ `[:public, :private]`); the removed spellings (and
+  `NetworkPolicy.public_only`/`.non_local`) now raise an `ArgumentError` with
+  that migration guidance. `network: :none`/`:allow_all` (and their aliases)
+  and `network: :default` keep working unchanged. In the Hash form,
+  `profiles:` composes with `rules:`/`default_egress:`/`default_ingress:`/deny
+  lists (the profile rules form the base; explicit rules append after).
+- **`Snapshot.create` is re-keyed by the snapshot's own name** (upstream
+  #1118): `Snapshot.create(name, from_sandbox:, dest_dir:, labels:, force:,
+  record_integrity:, resumable:)` — the positional argument is now the
+  snapshot name (was: the source sandbox), `from_sandbox:` is required, and
+  `path:` is replaced by `dest_dir:`, a **parent directory** (the artifact
+  always lands at `dest_dir/<name>`). `record_integrity:` is now a no-op
+  (schema-1 descriptors always record integrity); `resumable:` is accepted and
+  raises `UnsupportedError` until VM pause/resume lands upstream.
+- **`Snapshot.export`/`Snapshot.import` are renamed `Snapshot.save`/
+  `Snapshot.load`** (same parameters), matching the Python/Node rename.
+- **`SandboxHandle#snapshot_to` is removed** (deleted upstream). Use
+  `Snapshot.create(name, from_sandbox: handle_name, dest_dir: dir)` for
+  explicit placement.
+- **`SnapshotVerifyReport#not_recorded?` is removed** and `#status` is always
+  `:verified`: integrity is now mandatory at snapshot-create time, so the
+  "not recorded" outcome no longer exists (a mismatch raises
+  `SnapshotIntegrityError` as before).
+- **`SnapshotInfo#size_bytes`/`#format`/`#fstype` are now nilable** — nil for
+  the new checkpoint-state snapshots (file-state snapshots, the only kind
+  producible today, still populate all three).
+
+### Added
+
+- **Structured root disk** (upstream #1165) — `Sandbox.create(root_disk:)`
+  configures the OCI sandbox's writable layer: an Integer (managed ext4 upper
+  size cap in MiB, the old `oci_upper_size:` meaning), or a `RootDisk` factory
+  Hash: `RootDisk.managed(8192)`, `RootDisk.tmpfs(2048)` (RAM-backed, pristine
+  rootfs on every boot; size ≤ sandbox memory; not snapshot/patchable), or
+  `RootDisk.disk("./scratch.img", format:, fstype:)` (user-supplied image
+  attached writable; never created/resized/deleted by the runtime).
+  `oci_upper_size:` remains as a deprecated alias (warns; conflicts with
+  `root_disk:`).
+- **`Image.load` / `Image.save`** (upstream #1151/#1174) — move OCI images in
+  and out of the local cache as `docker save`-style or OCI Image Layout
+  archives: `Image.load("./app.tar", tag: "app:dev")` (pass `"-"` to read
+  stdin; returns the loaded `ImageInfo`s) and
+  `Image.save("alpine:latest", output_path: "./alpine.tar", format: :docker)`.
+- **`Rule.allow_dns` / `Rule.deny_dns`** — the gateway-DNS rule pair the
+  profiles expand to (egress → group `:host`, udp+tcp, port 53), for use in
+  custom policies (`deny_dns` upstream #1198).
+- **Snapshot descriptor metadata** on `SnapshotInfo`: `#scope` (`:disk` /
+  `:resumable`), `#state_kind` (`"file"`/`"checkpoint"`), `#checkpoint_id`,
+  `#checkpoint_manifest_digest`, and the index columns `#locality`,
+  `#availability`, `#migration_state`, `#migration_error_code`.
+- **`SnapshotMigrationError`** — raised when the automatic v0.6.6→v0.6.7
+  snapshot-descriptor migration is blocked and needs repair (new core
+  `SnapshotMigration` variant, upstream #1200).
+- **`follow_root_symlinks:` volume flag** — per-mount opt-out of the runtime's
+  new default-on mount-root symlink protection (upstream #1149; bind/named
+  mounts only). The Rust SDK exposes the same switch; Python/Node defer it.
+
+### Changed
+
+- **Snapshot artifacts migrate on first use** (upstream #1200): the runtime
+  rewrites each v0.6.6 `manifest.json` descriptor to the v0.6.7
+  `snapshot.json` (keeping the old file as `.manifest.json.legacy`) at backend
+  connect, after which gems ≤ 0.10.x can no longer read those artifacts —
+  rolling back requires the upstream `msb self downgrade` tooling.
+- **Bind/named mount roots refuse symlinked roots by default** (upstream
+  #1149) — opt out per mount with `follow_root_symlinks: true`.
+- **DNS rebind protection is fail-closed for unspecified addresses** (upstream
+  #1198): `0.0.0.0`/`::` no longer classify as `public`, so a `public`-profile
+  sandbox can't be steered to them via DNS answers.
+- `ModificationPlan` change/conflict entries for the managed upper now report
+  `field: "root_disk_size"` (was `"oci_upper_size"`) — the runtime's canonical
+  field name, passed through verbatim as always.
+- Duplicate secret placeholders across secret entries are now allowed
+  (upstream #1178); snapshotting a tmpfs or disk-image root disk fails with a
+  purposeful `InvalidConfigError` (upstream #1169).
+
 ## [0.10.0] - 2026-07-09
 
 Ruby bindings for the additive `v0.6.6` SDK surface (upstream #1099 / #1128),

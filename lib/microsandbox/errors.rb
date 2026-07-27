@@ -62,6 +62,10 @@ module Microsandbox
   define_error(:SnapshotSandboxRunningError, "snapshot-sandbox-running")
   define_error(:SnapshotImageMissingError, "snapshot-image-missing")
   define_error(:SnapshotIntegrityError, "snapshot-integrity")
+  # v0.6.7: the automatic v0.6.6→v0.6.7 snapshot-descriptor migration (run at
+  # backend connect / artifact open) was blocked and needs repair. Mirrors the
+  # Python SDK's SnapshotMigrationError (code "snapshot-migration").
+  define_error(:SnapshotMigrationError, "snapshot-migration")
 
   # Networking / secrets errors ---------------------------------------------
   # NetworkPolicyError now also carries the core's `NetworkBuilder` build/parse
