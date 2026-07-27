@@ -112,9 +112,10 @@ fn prune() -> Result<RHash, Error> {
 }
 
 /// Load images into the cache from a local `docker save` tarball or an OCI
-/// Image Layout archive; `"-"` reads the archive from stdin. `tags` optionally
-/// retags what was loaded. Returns an Array of image-handle Hashes. Mirrors
-/// the Python `Image.load` / Node `imageLoad` added in v0.6.7.
+/// Image Layout archive. `tags` optionally retags what was loaded. Returns an
+/// Array of image-handle Hashes. Mirrors the Python `Image.load` / Node
+/// `imageLoad` added in v0.6.7. (The `"-"` stdin form is spooled to a temp
+/// file by the Ruby layer — the core reads seekable files only.)
 fn load(input_path: String, tags: Vec<String>) -> Result<RArray, Error> {
     let handles = with_local_backend(async |local| {
         Image::load_local(local, std::path::Path::new(&input_path), tags).await

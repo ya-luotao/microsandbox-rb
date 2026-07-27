@@ -109,14 +109,26 @@ module Microsandbox
       end
 
       # Load images into the cache from a local `docker save` tarball or an
-      # OCI Image Layout archive. Pass `"-"` to read the archive from stdin.
-      # Mirrors the Python `Image.load` / Node `imageLoad` (runtime v0.6.7).
+      # OCI Image Layout archive. Pass `"-"` to read the archive from `$stdin`
+      # (spooled to a temp file first, like the Python SDK — the core reads
+      # seekable files only). Mirrors the Python `Image.load` / Node
+      # `imageLoad` (runtime v0.6.7).
       # @param input_path [String] archive path (or "-")
       # @param tag [String, Array<String>, nil] retag the loaded image(s)
       # @return [Array<ImageInfo>] one entry per loaded image
       def load(input_path, tag: nil)
         tags = Array(tag).map(&:to_s)
-        Native::Image.load(input_path.to_s, tags).map { |info| ImageInfo.new(info) }
+        path = input_path.to_s
+        if path == "-"
+          require "tempfile"
+          Tempfile.create(["msb-image-load", ".tar"]) do |tmp|
+            tmp.binmode
+            IO.copy_stream($stdin, tmp)
+            tmp.flush
+            return Native::Image.load(tmp.path, tags).map { |info| ImageInfo.new(info) }
+          end
+        end
+        Native::Image.load(path, tags).map { |info| ImageInfo.new(info) }
       end
 
       # Save cached image(s) into a local archive.

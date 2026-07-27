@@ -50,14 +50,49 @@ RSpec.describe "network policy" do
       r = described_class.deny
       expect(r).to eq("action" => "deny", "direction" => "egress")
     end
+
+    it "builds the gateway-DNS rule pair (mirrors the core Rule::allow_dns/deny_dns)" do
+      expect(described_class.allow_dns).to eq(
+        "action" => "allow", "direction" => "egress",
+        "destination_kind" => "group", "destination" => "host",
+        "protocols" => %w[udp tcp], "ports" => ["53"]
+      )
+      expect(described_class.deny_dns).to eq(described_class.allow_dns.merge("action" => "deny"))
+    end
   end
 
   describe Microsandbox::NetworkPolicy do
-    it "produces bare-preset wire hashes" do
-      expect(described_class.public_only.to_h).to eq("preset" => "public_only")
+    it "produces bare-preset wire hashes for the surviving terminal presets" do
       expect(described_class.none.to_h).to eq("preset" => "none")
       expect(described_class.allow_all.to_h).to eq("preset" => "allow_all")
-      expect(described_class.non_local.to_h).to eq("preset" => "non_local")
+    end
+
+    it "composes profiles into a profiles wire hash" do
+      expect(described_class.from_profiles(:public).to_h).to eq("profiles" => ["public"])
+      expect(described_class.from_profiles(:host, "private").to_h)
+        .to eq("profiles" => %w[host private])
+    end
+
+    it "expresses an empty profile set as the explicit empty custom policy" do
+      # from_profiles([]) upstream = deny-egress/allow-ingress with zero rules
+      # (and no DNS); the wire carries that literally instead of an empty array.
+      expect(described_class.from_profiles.to_h).to eq(
+        "default_egress" => "deny", "default_ingress" => "allow", "rules" => []
+      )
+    end
+
+    it "no longer defines the removed preset factories" do
+      expect(described_class).not_to respond_to(:public_only)
+      expect(described_class).not_to respond_to(:non_local)
+    end
+
+    it "rejects removed v0.6.6 preset names with migration guidance" do
+      expect { described_class.preset(:public_only) }
+        .to raise_error(ArgumentError, /removed in runtime v0\.6\.7.*\[:public\]/m)
+      expect { described_class.preset("non_local") }
+        .to raise_error(ArgumentError, /\[:public, :private\]/)
+      expect { described_class.from_profiles(:non_local) }
+        .to raise_error(ArgumentError, /removed v0\.6\.6 network preset.*\[:public, :private\]/m)
     end
 
     it "builds a custom policy with defaults, rules, and bulk denials" do
@@ -78,8 +113,9 @@ RSpec.describe "network policy" do
     end
 
     it "rejects an unknown preset alias" do
-      expect { described_class.public_only }.not_to raise_error
       expect { described_class.preset("bogus") }.to raise_error(ArgumentError, /unknown network preset/)
+      expect { described_class.from_profiles(:bogus) }
+        .to raise_error(ArgumentError, /unknown network profile/)
     end
 
     it "rejects an invalid action" do
@@ -123,6 +159,51 @@ RSpec.describe "network policy" do
       )
     end
 
+    it "routes a profile Array to network_profiles" do
+      Microsandbox::Sandbox.create("box", image: "x", network: [:public, :private])
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("network_profiles" => %w[public private])
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_excluding("network", "network_policy")
+      )
+    end
+
+    it "routes a single profile Symbol (and :default) to network_profiles" do
+      Microsandbox::Sandbox.create("box", image: "x", network: :host)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("network_profiles" => ["host"])
+      )
+      # :default is still accepted and is exactly the :public profile.
+      Microsandbox::Sandbox.create("box2", image: "x", network: :default)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box2", hash_including("network_profiles" => ["public"])
+      )
+    end
+
+    it "routes a profiles-plus-extras Hash to network_policy with a profiles base" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        network: {profiles: [:public], deny_domains: ["evil.com"]}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("network_policy" => {"profiles" => ["public"], "deny_domains" => ["evil.com"]})
+      )
+    end
+
+    it "rejects combining profiles: with preset: and removed presets everywhere" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", network: {profiles: [:public], preset: :none})
+      end.to raise_error(ArgumentError, /mutually exclusive/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", network: :public_only)
+      end.to raise_error(ArgumentError, /removed in runtime v0\.6\.7/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", network: [:non_local])
+      end.to raise_error(ArgumentError, /removed v0\.6\.6 network preset/)
+    end
+
     it "routes a NetworkPolicy object to network_policy" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
@@ -160,14 +241,14 @@ RSpec.describe "network policy" do
     it "routes a preset-plus-deny-domains hash to network_policy without injecting defaults" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
-        network: {preset: :public_only, deny_domains: ["evil.com"]}
+        network: {preset: :allow_all, deny_domains: ["evil.com"]}
       )
       # Crucially: no default_egress/default_ingress is injected, so the native
       # layer applies the preset's own defaults (regression: injected defaults
       # used to clobber the preset, turning allow_all into deny-all egress).
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
-        hash_including("network_policy" => {"preset" => "public_only", "deny_domains" => ["evil.com"]})
+        hash_including("network_policy" => {"preset" => "allow_all", "deny_domains" => ["evil.com"]})
       )
     end
 
@@ -183,7 +264,7 @@ RSpec.describe "network policy" do
 
     it "rejects combining a preset with custom rules or defaults" do
       expect do
-        Microsandbox::Sandbox.create("box", image: "x", network: {preset: :public_only, rules: []})
+        Microsandbox::Sandbox.create("box", image: "x", network: {preset: :allow_all, rules: []})
       end.to raise_error(ArgumentError, /preset:.*cannot be combined/)
       expect do
         Microsandbox::Sandbox.create("box", image: "x", network: {preset: :none, default_ingress: :deny})

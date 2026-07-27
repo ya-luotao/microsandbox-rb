@@ -20,7 +20,7 @@ RSpec.describe Microsandbox::Sandbox do
         image: "python", cpus: 2, memory: 1024,
         env: {:FOO => 1, "BAR" => :baz}, workdir: "/app",
         labels: {team: "core"}, ports: {"8080" => 80},
-        network: :public_only, entrypoint: %w[/bin/sh -c]
+        network: :public, entrypoint: %w[/bin/sh -c]
       )
 
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
@@ -33,7 +33,7 @@ RSpec.describe Microsandbox::Sandbox do
           "env" => {"FOO" => "1", "BAR" => "baz"},
           "labels" => {"team" => "core"},
           "ports" => {8080 => 80},
-          "network" => "public_only",
+          "network_profiles" => ["public"],
           "entrypoint" => ["/bin/sh", "-c"]
         )
       )
@@ -346,18 +346,65 @@ RSpec.describe Microsandbox::Sandbox do
     it "normalizes the resource/limit scalar options" do
       Microsandbox::Sandbox.create(
         "box", image: "x", log_level: :debug, quiet_logs: true, security: "restricted",
-        oci_upper_size: 2048, max_duration: 600, idle_timeout: 120,
+        root_disk: 2048, max_duration: 600, idle_timeout: 120,
         ports_udp: {"53" => 53}, rlimits: {nofile: 1024, cpu: [10, 20]}
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "log_level" => "debug", "quiet_logs" => true, "security" => "restricted",
-          "oci_upper_size" => 2048, "max_duration" => 600, "idle_timeout" => 120,
+          "root_disk" => 2048, "max_duration" => 600, "idle_timeout" => 120,
           "ports_udp" => {53 => 53},
           "rlimits" => [["nofile", 1024, 1024], ["cpu", 10, 20]]
         )
       )
+    end
+
+    it "maps the deprecated oci_upper_size: alias to a managed root_disk (with a warning)" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", oci_upper_size: 4096)
+      end.to output(/oci_upper_size: is deprecated/).to_stderr
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("root_disk" => 4096)
+      )
+    end
+
+    it "rejects passing both root_disk: and oci_upper_size:" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", root_disk: 1024, oci_upper_size: 2048)
+      end.to raise_error(ArgumentError, /either root_disk: or oci_upper_size:/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "normalizes RootDisk factory hashes and validates kind/field combinations" do
+      Microsandbox::Sandbox.create("box", image: "x", root_disk: Microsandbox::RootDisk.tmpfs(512))
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("root_disk" => {"kind" => "tmpfs", "size_mib" => 512})
+      )
+
+      Microsandbox::Sandbox.create(
+        "box2", image: "x",
+        root_disk: Microsandbox::RootDisk.disk("./scratch.img", format: :raw, fstype: "ext4")
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box2",
+        hash_including("root_disk" => {
+          "kind" => "disk", "path" => "./scratch.img", "format" => "raw", "fstype" => "ext4"
+        })
+      )
+
+      expect do
+        Microsandbox::Sandbox.create("box3", image: "x", root_disk: {kind: :tmpfs, path: "/x"})
+      end.to raise_error(ArgumentError, /only valid for the disk kind/)
+      expect do
+        Microsandbox::Sandbox.create("box4", image: "x", root_disk: {kind: :disk})
+      end.to raise_error(ArgumentError, /requires path:/)
+      expect do
+        Microsandbox::Sandbox.create("box5", image: "x", root_disk: {kind: :disk, path: "/i.img", size_mib: 8})
+      end.to raise_error(ArgumentError, /image file determines the size/)
+      expect do
+        Microsandbox::Sandbox.create("box6", image: "x", root_disk: {kind: :floppy})
+      end.to raise_error(ArgumentError, /unknown root_disk kind/)
     end
 
     it "raises when both image: and from_snapshot: are given" do
