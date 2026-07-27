@@ -7,9 +7,11 @@
 
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::image::{Image, ImageDetail, ImageHandle, ImagePruneReport};
+use microsandbox::ImageArchiveFormat;
 
 use crate::backend::with_local_backend;
 use crate::conv;
+use crate::error;
 use crate::runtime::ruby;
 
 fn handle_to_hash(h: &ImageHandle) -> RHash {
@@ -109,6 +111,39 @@ fn prune() -> Result<RHash, Error> {
     Ok(report_to_hash(report))
 }
 
+/// Load images into the cache from a local `docker save` tarball or an OCI
+/// Image Layout archive; `"-"` reads the archive from stdin. `tags` optionally
+/// retags what was loaded. Returns an Array of image-handle Hashes. Mirrors
+/// the Python `Image.load` / Node `imageLoad` added in v0.6.7.
+fn load(input_path: String, tags: Vec<String>) -> Result<RArray, Error> {
+    let handles = with_local_backend(async |local| {
+        Image::load_local(local, std::path::Path::new(&input_path), tags).await
+    })?;
+    let arr = ruby().ary_new();
+    for h in handles.iter() {
+        arr.push(handle_to_hash(h))?;
+    }
+    Ok(arr)
+}
+
+/// Save cached image(s) into a local archive. `format` is "docker" (default
+/// shape callers expect from `docker load`) or "oci" (OCI Image Layout).
+/// Mirrors the Python `Image.save` / Node `imageSave` added in v0.6.7.
+fn save(references: Vec<String>, output_path: String, format: String) -> Result<(), Error> {
+    let fmt = match format.as_str() {
+        "docker" => ImageArchiveFormat::Docker,
+        "oci" => ImageArchiveFormat::Oci,
+        other => {
+            return Err(error::base_error(format!(
+                "invalid archive format {other:?}: expected \"docker\" or \"oci\""
+            )))
+        }
+    };
+    with_local_backend(async |local| {
+        Image::save_local(local, &references, std::path::Path::new(&output_path), fmt).await
+    })
+}
+
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let class = native.define_class("Image", ruby.class_object())?;
     class.define_singleton_method("get", function!(get, 1))?;
@@ -116,5 +151,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_singleton_method("inspect", function!(inspect, 1))?;
     class.define_singleton_method("remove", function!(remove, 2))?;
     class.define_singleton_method("prune", function!(prune, 0))?;
+    class.define_singleton_method("load", function!(load, 2))?;
+    class.define_singleton_method("save", function!(save, 3))?;
     Ok(())
 }

@@ -20,9 +20,9 @@ use microsandbox::logs::{
 use microsandbox::sandbox::{
     AttachOptionsBuilder, DiskImageFormat, EnvVar, FsEntry, FsEntryKind, FsMetadata,
     HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle, RlimitResource,
-    SandboxBuilder, SandboxFilter, SandboxHandle, SandboxMetrics, SandboxModificationBuilder,
-    SandboxModificationPatch, SandboxStatus, SandboxStopResult, SecretBuilder,
-    SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
+    RootDiskBuilder, SandboxBuilder, SandboxFilter, SandboxHandle, SandboxMetrics,
+    SandboxModificationBuilder, SandboxModificationPatch, SandboxStatus, SandboxStopResult,
+    SecretBuilder, SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
 };
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
@@ -30,7 +30,8 @@ use microsandbox::RegistryAuth;
 use microsandbox_network::builder::ViolationActionBuilder;
 use microsandbox_network::dns::Nameserver;
 use microsandbox_network::policy::{
-    Action, Destination, DestinationGroup, Direction, NetworkPolicy, PortRange, Protocol, Rule,
+    Action, Destination, DestinationGroup, Direction, NetworkPolicy, NetworkProfile, PortRange,
+    Protocol, Rule,
 };
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -166,6 +167,10 @@ impl Sandbox {
             let host_perms = conv::opt_string(m, "host_permissions")?
                 .map(|s| host_permissions_from_str(&s))
                 .transpose()?;
+            // v0.6.7: mount-root symlink protection is on by default; this is
+            // the per-mount opt-out. Valid for bind/named-directory mounts —
+            // the core rejects it elsewhere at build().
+            let follow_root_symlinks = conv::opt::<bool>(m, "follow_root_symlinks")?;
             // bind/named/disk require a source; tmpfs must not have one.
             match kind.as_str() {
                 "bind" | "named" | "disk" if source.is_some() => {}
@@ -218,6 +223,9 @@ impl Sandbox {
                 if let Some(hp) = host_perms {
                     mb = mb.host_permissions(hp);
                 }
+                if let Some(follow) = follow_root_symlinks {
+                    mb = mb.follow_root_symlinks(follow);
+                }
                 mb
             });
         }
@@ -230,17 +238,28 @@ impl Sandbox {
         if let Some(net) = conv::opt_string(opts, "network")? {
             match net.as_str() {
                 "none" | "disabled" | "disable" | "airgapped" => b = b.disable_network(),
-                // Default policy is public-only, so no builder call is needed.
-                "public" | "public_only" | "default" => {}
                 "all" | "allow_all" => b = b.network(|n| n.policy(NetworkPolicy::allow_all())),
-                "non_local" | "nonlocal" => b = b.network(|n| n.policy(NetworkPolicy::non_local())),
                 other => {
                     return Err(error::base_error(format!(
-                        "unknown network mode {other:?} (expected one of \
-                         public_only/none/allow_all/non_local)"
+                        "unknown network mode {other:?} (expected none/allow_all; compose \
+                         public/private/host access via network profiles)"
                     )))
                 }
             }
+        }
+        // Composable network profiles (v0.6.7): expanded to the canonical rule
+        // set plus a gateway-DNS allow by the core's
+        // `NetworkPolicy::from_profiles`. The Ruby layer routes
+        // `network: [:public, :host]` (and single-profile sugar) here. An empty
+        // profile set never reaches this key — the Ruby layer sends it as an
+        // explicit empty custom policy, which has identical semantics.
+        let profile_names = conv::opt_string_vec(opts, "network_profiles")?;
+        if !profile_names.is_empty() {
+            let profiles = profile_names
+                .iter()
+                .map(|s| network_profile_from_str(s))
+                .collect::<Result<Vec<_>, Error>>()?;
+            b = b.network(move |n| n.policy(NetworkPolicy::from_profiles(profiles)));
         }
         // Custom network policy: an ordered allow/deny rule list with per-direction
         // defaults and bulk domain denials. The Ruby layer routes bare presets to
@@ -261,8 +280,14 @@ impl Sandbox {
         if let Some(policy) = conv::opt_string(opts, "pull_policy")? {
             b = b.pull_policy(pull_policy_from_str(&policy)?);
         }
-        if let Some(mib) = conv::opt_u32(opts, "oci_upper_size")? {
-            b = b.oci_upper_size(mib);
+        // Writable root-disk spec for OCI sandboxes (v0.6.7): Integer = managed
+        // ext4 upper size in MiB (the pre-0.6.7 `oci_upper_size` meaning), Hash =
+        // {kind: managed|tmpfs|disk, size_mib, path, format, fstype}. The Ruby
+        // layer maps the deprecated `oci_upper_size:` kwarg to the managed kind
+        // before it reaches the wire.
+        if let Some(v) = conv::opt::<Value>(opts, "root_disk")? {
+            let spec = parse_root_disk(v)?;
+            b = b.root_disk_with(move |d| spec.apply(d));
         }
         // Registry connection settings, for private / non-default registries:
         // Basic auth (username + password/token), plain-HTTP `insecure`, and
@@ -1284,10 +1309,26 @@ fn parse_network_policy(opts: RHash) -> Result<Option<NetworkPolicy>, Error> {
         rules.push(Rule::deny_egress(Destination::DomainSuffix(suffix)));
     }
 
-    // Optional preset base (its rules and defaults seed the policy).
-    let (preset_egress, preset_ingress) = match conv::opt_string(np, "preset")? {
-        Some(p) => {
-            let mut base = network_preset(&p)?;
+    // Optional base — composable profiles (v0.6.7) or a terminal preset,
+    // mutually exclusive. Its rules and defaults seed the policy.
+    let profile_names = conv::opt_string_vec(np, "profiles")?;
+    let preset = conv::opt_string(np, "preset")?;
+    if !profile_names.is_empty() && preset.is_some() {
+        return Err(error::base_error(
+            "network profiles: and preset: are mutually exclusive",
+        ));
+    }
+    let base = if profile_names.is_empty() {
+        preset.map(|p| network_preset(&p)).transpose()?
+    } else {
+        let profiles = profile_names
+            .iter()
+            .map(|s| network_profile_from_str(s))
+            .collect::<Result<Vec<_>, Error>>()?;
+        Some(NetworkPolicy::from_profiles(profiles))
+    };
+    let (preset_egress, preset_ingress) = match base {
+        Some(mut base) => {
             rules.append(&mut base.rules);
             (Some(base.default_egress), Some(base.default_ingress))
         }
@@ -1318,15 +1359,102 @@ fn parse_network_policy(opts: RHash) -> Result<Option<NetworkPolicy>, Error> {
 fn network_preset(p: &str) -> Result<NetworkPolicy, Error> {
     Ok(match p {
         "none" | "disabled" | "disable" | "airgapped" => NetworkPolicy::none(),
-        "public" | "public_only" | "public-only" | "default" => NetworkPolicy::public_only(),
         "all" | "allow_all" | "allow-all" => NetworkPolicy::allow_all(),
-        "non_local" | "non-local" | "nonlocal" => NetworkPolicy::non_local(),
         other => {
             return Err(error::base_error(format!(
-                "unknown network preset {other:?} (expected one of \
-                 public_only/none/allow_all/non_local)"
+                "unknown network preset {other:?} (expected none/allow_all; the removed \
+                 public_only/non_local presets are replaced by composable profiles)"
             )))
         }
+    })
+}
+
+fn network_profile_from_str(s: &str) -> Result<NetworkProfile, Error> {
+    match s {
+        "public" => Ok(NetworkProfile::Public),
+        "private" => Ok(NetworkProfile::Private),
+        "host" => Ok(NetworkProfile::Host),
+        other => Err(error::base_error(format!(
+            "unknown network profile {other:?} (expected public/private/host)"
+        ))),
+    }
+}
+
+/// Parsed `root_disk` create option. Integer shorthand = managed upper of N
+/// MiB (mirrors Python's `root_disk=8192` and the CLI bare-size form); Hash =
+/// explicit kind. Kind/field cross-validation (size on a disk image, etc.)
+/// lives in the Ruby layer and the core builder — this stays a dumb carrier.
+struct RootDiskSpec {
+    kind: RootDiskKindSpec,
+    size_mib: Option<u32>,
+    format: Option<DiskImageFormat>,
+    fstype: Option<String>,
+}
+
+enum RootDiskKindSpec {
+    Managed,
+    Tmpfs,
+    Disk(String),
+}
+
+impl RootDiskSpec {
+    fn apply(self, mut d: RootDiskBuilder) -> RootDiskBuilder {
+        match self.kind {
+            RootDiskKindSpec::Managed => {}
+            RootDiskKindSpec::Tmpfs => d = d.tmpfs(),
+            RootDiskKindSpec::Disk(path) => d = d.disk_image(path),
+        }
+        if let Some(mib) = self.size_mib {
+            d = d.size(mib);
+        }
+        if let Some(f) = self.format {
+            d = d.format(f);
+        }
+        if let Some(ft) = self.fstype {
+            d = d.fstype(ft);
+        }
+        d
+    }
+}
+
+fn parse_root_disk(v: Value) -> Result<RootDiskSpec, Error> {
+    if let Ok(mib) = u32::try_convert(v) {
+        return Ok(RootDiskSpec {
+            kind: RootDiskKindSpec::Managed,
+            size_mib: Some(mib),
+            format: None,
+            fstype: None,
+        });
+    }
+    let Ok(h) = RHash::try_convert(v) else {
+        return Err(error::base_error(
+            "root_disk: expects an Integer (managed size in MiB) or a Hash \
+             (use Microsandbox::RootDisk.managed/tmpfs/disk)",
+        ));
+    };
+    let kind = match conv::opt_string(h, "kind")?.as_deref() {
+        None | Some("managed") => RootDiskKindSpec::Managed,
+        Some("tmpfs") => RootDiskKindSpec::Tmpfs,
+        Some("disk" | "disk-image" | "disk_image") => {
+            let Some(path) = conv::opt_string(h, "path")? else {
+                return Err(error::base_error("root_disk disk kind requires path:"));
+            };
+            RootDiskKindSpec::Disk(path)
+        }
+        Some(other) => {
+            return Err(error::base_error(format!(
+                "unknown root_disk kind {other:?} (expected managed/tmpfs/disk)"
+            )))
+        }
+    };
+    let format = conv::opt_string(h, "format")?
+        .map(|f| disk_format_from_str(&f))
+        .transpose()?;
+    Ok(RootDiskSpec {
+        kind,
+        size_mib: conv::opt_u32(h, "size_mib")?,
+        format,
+        fstype: conv::opt_string(h, "fstype")?,
     })
 }
 
@@ -2143,14 +2271,10 @@ impl SbHandle {
     /// Snapshot this (stopped) sandbox under a bare name (resolved under the
     /// snapshots directory). Returns the same SnapshotInfo Hash as
     /// `Snapshot.create`. Mirrors the Python/Node `handle.snapshot(name)`.
+    /// (`snapshot_to` was removed upstream in v0.6.7 — use `Snapshot.create`
+    /// with `dest_dir:` for explicit placement.)
     fn snapshot(&self, name: String) -> Result<RHash, Error> {
         let snap = block_on(self.inner.snapshot(&name)).map_err(error::to_ruby)?;
-        Ok(crate::snapshot::snapshot_to_hash(&snap))
-    }
-
-    /// Snapshot this (stopped) sandbox to an explicit filesystem path.
-    fn snapshot_to(&self, path: String) -> Result<RHash, Error> {
-        let snap = block_on(self.inner.snapshot_to(path)).map_err(error::to_ruby)?;
         Ok(crate::snapshot::snapshot_to_hash(&snap))
     }
 
@@ -2337,7 +2461,6 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     )?;
     handle.define_method("config_json", method!(SbHandle::config_json, 0))?;
     handle.define_method("snapshot", method!(SbHandle::snapshot, 1))?;
-    handle.define_method("snapshot_to", method!(SbHandle::snapshot_to, 1))?;
     handle.define_method("ping", method!(SbHandle::ping, 0))?;
     handle.define_method("touch", method!(SbHandle::touch, 0))?;
     handle.define_method("modify", method!(SbHandle::modify, 1))?;

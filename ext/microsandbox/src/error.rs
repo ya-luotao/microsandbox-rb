@@ -51,6 +51,10 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         SnapshotSandboxRunning(_) => "SnapshotSandboxRunningError",
         SnapshotImageMissing(_) => "SnapshotImageMissingError",
         SnapshotIntegrity(_) => "SnapshotIntegrityError",
+        // v0.6.7 (#1200): the automatic v0.6.6→v0.6.7 snapshot-descriptor
+        // migration (run at backend connect / artifact open) failed and needs
+        // repair. Mirrors the Python `SnapshotMigrationError`.
+        SnapshotMigration { .. } => "SnapshotMigrationError",
         // Give the already-defined-but-orphaned `NetworkPolicyError` a mapping:
         // a builder parse/validation error from `network(|n| ...)`. The gem
         // unconditionally enables the core's `net` feature (default-features),
