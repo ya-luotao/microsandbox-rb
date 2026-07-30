@@ -87,35 +87,49 @@ pub fn to_ruby(err: MicrosandboxError) -> Error {
     // `Sandbox::kill`) plus structured `operation` / `hint` attributes on the
     // exception instance, mirroring the Python SDK's enrichment (v0.6.8).
     if let MicrosandboxError::Unsupported { op, reason } = &err {
-        let operation = ruby_api_name(*op);
-        let hint = ruby_hint(reason);
-        let message = format!("{operation} is not supported by this backend: {hint}");
-        let Some(class) = exception_class(&ruby, "UnsupportedError") else {
-            return Error::new(ruby.exception_runtime_error(), message);
-        };
-        return match class
-            .as_value()
-            .funcall::<_, _, magnus::Exception>("new", (message.as_str(),))
-        {
-            Ok(exc) => {
-                // Best-effort extras; the message already carries both.
-                let _ = exc.funcall::<_, _, magnus::Value>(
-                    "instance_variable_set",
-                    ("@operation", operation.as_str()),
-                );
-                let _ = exc.funcall::<_, _, magnus::Value>(
-                    "instance_variable_set",
-                    ("@hint", hint.as_str()),
-                );
-                exc.into()
-            }
-            Err(_) => Error::new(class, message),
-        };
+        return unsupported_error(&ruby, &ruby_api_name(*op), &ruby_hint(reason));
     }
 
     match exception_class(&ruby, class_name(&err)) {
         Some(class) => Error::new(class, message),
         None => Error::new(ruby.exception_runtime_error(), message),
+    }
+}
+
+/// `UnsupportedError` for shim-only entry points that require the local
+/// backend but have no SDK [`Operation`] (Ruby-only diagnostic hooks such as
+/// `Microsandbox.runtime_path`). `name` is the Ruby-facing API name. Mirrors
+/// the Python SDK's name-based `local_only` helper.
+#[allow(deprecated)]
+pub fn local_only(name: &str) -> Error {
+    match Ruby::get() {
+        Ok(ruby) => unsupported_error(&ruby, name, "use a local backend"),
+        Err(_) => Error::new(
+            magnus::exception::runtime_error(),
+            format!("{name} is not supported by this backend: use a local backend"),
+        ),
+    }
+}
+
+/// Build a `Microsandbox::UnsupportedError` carrying the rendered message and
+/// the structured `@operation` / `@hint` attributes.
+fn unsupported_error(ruby: &Ruby, operation: &str, hint: &str) -> Error {
+    let message = format!("{operation} is not supported by this backend: {hint}");
+    let Some(class) = exception_class(ruby, "UnsupportedError") else {
+        return Error::new(ruby.exception_runtime_error(), message);
+    };
+    match class
+        .as_value()
+        .funcall::<_, _, magnus::Exception>("new", (message.as_str(),))
+    {
+        Ok(exc) => {
+            // Best-effort extras; the message already carries both.
+            let _ = exc
+                .funcall::<_, _, magnus::Value>("instance_variable_set", ("@operation", operation));
+            let _ = exc.funcall::<_, _, magnus::Value>("instance_variable_set", ("@hint", hint));
+            exc.into()
+        }
+        Err(_) => Error::new(class, message),
     }
 }
 

@@ -108,11 +108,11 @@ fn set_runtime_libkrunfw_path(path: String) {
 /// backend's config.
 fn resolved_msb_path() -> Result<String, Error> {
     let backend = microsandbox::default_backend();
-    let local = backend.as_local().ok_or_else(|| {
-        error::to_ruby(microsandbox::MicrosandboxError::local_only(
-            microsandbox::Operation::Config,
-        ))
-    })?;
+    // Shim-only entry point with no SDK `Operation` — report the Ruby-facing
+    // name (`Microsandbox.runtime_path`), like Python's name-based local_only.
+    let local = backend
+        .as_local()
+        .ok_or_else(|| error::local_only("runtime_path"))?;
     let path = local.config().resolve_msb_path().map_err(error::to_ruby)?;
     Ok(path.to_string_lossy().into_owned())
 }

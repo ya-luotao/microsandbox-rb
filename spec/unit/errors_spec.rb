@@ -106,6 +106,17 @@ RSpec.describe "Microsandbox error hierarchy" do
     end
   end
 
+  it "names shim-only entry points in UnsupportedError (runtime_path)" do
+    Microsandbox.with_backend(:cloud, url: "https://cloud.invalid", api_key: "test-key") do
+      expect { Microsandbox.runtime_path }
+        .to raise_error(Microsandbox::UnsupportedError) { |e|
+          expect(e.message).to eq("runtime_path is not supported by this backend: use a local backend")
+          expect(e.operation).to eq("runtime_path")
+          expect(e.hint).to eq("use a local backend")
+        }
+    end
+  end
+
   it "defaults UnsupportedError operation/hint to nil when constructed directly" do
     err = Microsandbox::UnsupportedError.new("boom")
     expect(err.operation).to be_nil

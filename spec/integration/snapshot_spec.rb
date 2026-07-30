@@ -68,7 +68,11 @@ RSpec.describe "snapshots + pull policy", :integration do
   end
 
   it "boots with pull_policy: never from the local cache" do
-    # The image is already cached by earlier specs; never must not hit a registry.
+    # Warm the cache first: with randomized ordering this example can run before
+    # any other spec has pulled the image, and `never` must not hit a registry.
+    unless Microsandbox::Image.list.map(&:reference).include?(image)
+      Microsandbox::Sandbox.create(unique_sandbox_name, image: image) { |sb| sb.exec("true") }
+    end
     Microsandbox::Sandbox.create(unique_sandbox_name, image: image, pull_policy: "never") do |sb|
       expect(sb.exec("true")).to be_success
     end
