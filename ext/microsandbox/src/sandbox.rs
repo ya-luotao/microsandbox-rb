@@ -20,9 +20,9 @@ use microsandbox::logs::{
 use microsandbox::sandbox::{
     AttachOptionsBuilder, DiskImageFormat, EnvVar, FsEntry, FsEntryKind, FsMetadata,
     HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle, RlimitResource,
-    RootDiskBuilder, SandboxBuilder, SandboxFilter, SandboxHandle, SandboxMetrics,
-    SandboxModificationBuilder, SandboxModificationPatch, SandboxStatus, SandboxStopResult,
-    SecretBuilder, SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
+    RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics, SandboxModificationBuilder,
+    SandboxModificationPatch, SandboxStatus, SandboxStopResult, SecretBuilder,
+    SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
 };
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
@@ -477,29 +477,44 @@ impl Sandbox {
         Ok(SbHandle::from_inner(handle))
     }
 
-    /// All sandboxes as controllable handles.
-    fn list() -> Result<RArray, Error> {
-        let handles = block_on(microsandbox::Sandbox::list()).map_err(error::to_ruby)?;
+    /// Convert one `SandboxPage` into a `{ "sandboxes" => [SbHandle], "next_cursor" => String|nil }`
+    /// Ruby Hash (v0.6.8 paginated listing contract).
+    fn page_to_hash(page: microsandbox::sandbox::SandboxPage) -> Result<RHash, Error> {
         let arr = ruby().ary_new();
-        for h in handles {
+        for h in page.sandboxes {
             arr.push(SbHandle::from_inner(h))?;
         }
-        Ok(arr)
+        let hash = ruby().hash_new();
+        hash.aset("sandboxes", arr)?;
+        hash.aset("next_cursor", page.next_cursor)?;
+        Ok(hash)
     }
 
-    /// Sandboxes filtered by required `key=value` labels (AND-matched), as
-    /// controllable handles. `opts` carries a string→string `labels` map.
-    fn list_with(opts: RHash) -> Result<RArray, Error> {
-        let mut filter = SandboxFilter::new();
-        for (k, v) in conv::opt_string_map(opts, "labels")? {
-            filter = filter.label(k, v);
-        }
-        let handles = block_on(microsandbox::Sandbox::list_with(filter)).map_err(error::to_ruby)?;
-        let arr = ruby().ary_new();
-        for h in handles {
-            arr.push(SbHandle::from_inner(h))?;
-        }
-        Ok(arr)
+    /// First page of sandboxes (default page size), as a page Hash of
+    /// controllable handles.
+    fn list() -> Result<RHash, Error> {
+        let page = block_on(microsandbox::Sandbox::list()).map_err(error::to_ruby)?;
+        Self::page_to_hash(page)
+    }
+
+    /// One configured page of sandboxes as a page Hash. `opts` carries an
+    /// optional string→string `labels` map (AND-matched), an optional `limit`
+    /// (1..=100) and an optional opaque `cursor` from a previous page.
+    fn list_with(opts: RHash) -> Result<RHash, Error> {
+        let labels = conv::opt_string_map(opts, "labels")?;
+        let limit = conv::opt_u32(opts, "limit")?;
+        let cursor = conv::opt_string(opts, "cursor")?;
+        let page = block_on(microsandbox::Sandbox::list_with(move |mut b| {
+            if let Some(limit) = limit {
+                b = b.limit(limit);
+            }
+            if let Some(cursor) = cursor {
+                b = b.cursor(cursor);
+            }
+            b.labels(labels)
+        }))
+        .map_err(error::to_ruby)?;
+        Self::page_to_hash(page)
     }
 
     /// Remove a (stopped) sandbox by name.

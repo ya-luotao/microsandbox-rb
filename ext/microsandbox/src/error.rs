@@ -6,7 +6,7 @@
 //! is always the core error's `to_string()`.
 
 use magnus::{value::ReprValue, Error, ExceptionClass, Module, RClass, RModule, Ruby};
-use microsandbox::{AgentClientError, MicrosandboxError};
+use microsandbox::{AgentClientError, MicrosandboxError, Operation, UnsupportedReason};
 
 /// The Ruby class (relative to the `Microsandbox` module) for a core error.
 /// `"Error"` is the base class; anything else is a named subclass.
@@ -83,10 +83,94 @@ pub fn to_ruby(err: MicrosandboxError) -> Error {
         Err(_) => return Error::new(magnus::exception::runtime_error(), message),
     };
 
+    // `Unsupported` gets a Ruby-idiom message (`sandbox.kill` instead of
+    // `Sandbox::kill`) plus structured `operation` / `hint` attributes on the
+    // exception instance, mirroring the Python SDK's enrichment (v0.6.8).
+    if let MicrosandboxError::Unsupported { op, reason } = &err {
+        return unsupported_error(&ruby, &ruby_api_name(*op), &ruby_hint(reason));
+    }
+
     match exception_class(&ruby, class_name(&err)) {
         Some(class) => Error::new(class, message),
         None => Error::new(ruby.exception_runtime_error(), message),
     }
+}
+
+/// `UnsupportedError` for shim-only entry points that require the local
+/// backend but have no SDK [`Operation`] (Ruby-only diagnostic hooks such as
+/// `Microsandbox.runtime_path`). `name` is the Ruby-facing API name. Mirrors
+/// the Python SDK's name-based `local_only` helper.
+#[allow(deprecated)]
+pub fn local_only(name: &str) -> Error {
+    match Ruby::get() {
+        Ok(ruby) => unsupported_error(&ruby, name, "use a local backend"),
+        Err(_) => Error::new(
+            magnus::exception::runtime_error(),
+            format!("{name} is not supported by this backend: use a local backend"),
+        ),
+    }
+}
+
+/// Build a `Microsandbox::UnsupportedError` carrying the rendered message and
+/// the structured `@operation` / `@hint` attributes.
+fn unsupported_error(ruby: &Ruby, operation: &str, hint: &str) -> Error {
+    let message = format!("{operation} is not supported by this backend: {hint}");
+    let Some(class) = exception_class(ruby, "UnsupportedError") else {
+        return Error::new(ruby.exception_runtime_error(), message);
+    };
+    match class
+        .as_value()
+        .funcall::<_, _, magnus::Exception>("new", (message.as_str(),))
+    {
+        Ok(exc) => {
+            // Best-effort extras; the message already carries both.
+            let _ = exc
+                .funcall::<_, _, magnus::Value>("instance_variable_set", ("@operation", operation));
+            let _ = exc.funcall::<_, _, magnus::Value>("instance_variable_set", ("@hint", hint));
+            exc.into()
+        }
+        Err(_) => Error::new(class, message),
+    }
+}
+
+/// Render an [`Operation`] as the Ruby API it corresponds to: `Sandbox::kill`
+/// becomes `sandbox.kill` and `SandboxFsOps::stat_handle` becomes
+/// `sandbox_fs_ops.stat_handle`; a parenthetical keeps its Ruby keyword shape
+/// (`log_stream(follow=false)` becomes `log_stream(follow: false)`). Plain
+/// phrases without a `Type::method` shape (`config`, `snapshot operations`)
+/// pass through as-is. Mirrors the Python SDK's `py_api_name`.
+fn ruby_api_name(op: Operation) -> String {
+    let path = op.api_path();
+    let Some((ty, method)) = path.split_once("::") else {
+        return path.to_string();
+    };
+    format!("{}.{}", camel_to_snake(ty), method.replace('=', ": "))
+}
+
+/// Render an [`UnsupportedReason`] with `use instead` targets pointing at the
+/// Ruby API name rather than the Rust path.
+fn ruby_hint(reason: &UnsupportedReason) -> String {
+    match reason {
+        UnsupportedReason::UseInstead(op) => format!("use {}", ruby_api_name(*op)),
+        other => other.hint(),
+    }
+}
+
+/// Lower a `CamelCase` type name to `snake_case` (`SandboxFsOps` becomes
+/// `sandbox_fs_ops`).
+fn camel_to_snake(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, ch) in name.char_indices() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// A plain `Microsandbox::Error` (base) with a custom message — used for

@@ -202,6 +202,48 @@ module Microsandbox
     end
   end
 
+  # One page of sandbox handles, returned by {Sandbox.list} and
+  # {Sandbox.list_with} — sandbox listing is cursor-paginated as of runtime
+  # v0.6.8. Enumerable over its {SandboxHandle}s; fetch the following page by
+  # passing {#next_cursor} to {Sandbox.list_with}.
+  #
+  # @example Walk every page
+  #   page = Microsandbox::Sandbox.list
+  #   loop do
+  #     page.each { |h| puts h.name }
+  #     break if page.last_page?
+  #     page = Microsandbox::Sandbox.list_with(cursor: page.next_cursor)
+  #   end
+  class SandboxPage
+    include Enumerable
+
+    # @return [Array<SandboxHandle>] the sandboxes in this page
+    attr_reader :sandboxes
+    # @return [String, nil] opaque cursor for the next page; nil on the final page
+    attr_reader :next_cursor
+
+    # @api private — construct via {Sandbox.list}/{Sandbox.list_with}.
+    def initialize(sandboxes, next_cursor)
+      @sandboxes = sandboxes
+      @next_cursor = next_cursor
+    end
+
+    def each(&) = @sandboxes.each(&)
+
+    # @return [Integer]
+    def size = @sandboxes.size
+    alias_method :length, :size
+
+    def empty? = @sandboxes.empty?
+
+    # Whether this is the final page (no cursor to continue from).
+    def last_page? = @next_cursor.nil?
+
+    def inspect
+      "#<Microsandbox::SandboxPage size=#{size} next_cursor=#{@next_cursor.inspect}>"
+    end
+  end
+
   # A running sandbox (microVM) — the primary entry point of the SDK.
   #
   # @example Block form (auto-stops on exit)
@@ -478,18 +520,25 @@ module Microsandbox
         SandboxHandle.new(Native::Sandbox.get(name.to_s))
       end
 
-      # List all sandboxes as controllable handles.
-      # @return [Array<SandboxHandle>]
+      # List the first page of sandboxes (default page size 20) as controllable
+      # handles. Cursor-paginated as of runtime v0.6.8 — follow
+      # {SandboxPage#next_cursor} via {.list_with} for subsequent pages.
+      # @return [SandboxPage]
       def list
-        Native::Sandbox.list.map { |h| SandboxHandle.new(h) }
+        build_page(Native::Sandbox.list)
       end
 
-      # List sandboxes carrying all of the given labels (AND-matched).
-      # @param labels [Hash] required key => value labels
-      # @return [Array<SandboxHandle>]
-      def list_with(labels: {})
+      # List one configured page of sandboxes.
+      # @param labels [Hash] required key => value labels (AND-matched)
+      # @param limit [Integer, nil] page size, 1..100 (upstream default 20)
+      # @param cursor [String, nil] opaque cursor from a previous page's
+      #   {SandboxPage#next_cursor}
+      # @return [SandboxPage]
+      def list_with(labels: {}, limit: nil, cursor: nil)
         opts = {"labels" => stringify(labels)}
-        Native::Sandbox.list_with(opts).map { |h| SandboxHandle.new(h) }
+        opts["limit"] = Integer(limit) if limit
+        opts["cursor"] = cursor.to_s if cursor
+        build_page(Native::Sandbox.list_with(opts))
       end
 
       # Remove a (stopped) sandbox by name.
@@ -516,6 +565,15 @@ module Microsandbox
 
       def stringify(hash)
         hash.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v.to_s }
+      end
+
+      # Wrap a native page Hash ({"sandboxes" => [...], "next_cursor" => ...})
+      # into a {SandboxPage} of {SandboxHandle}s.
+      def build_page(data)
+        SandboxPage.new(
+          data["sandboxes"].map { |h| SandboxHandle.new(h) },
+          data["next_cursor"]
+        )
       end
 
       def intify_ports(ports)

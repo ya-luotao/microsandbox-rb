@@ -7,7 +7,7 @@
 
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::image::{Image, ImageDetail, ImageHandle, ImagePruneReport};
-use microsandbox::ImageArchiveFormat;
+use microsandbox::{ImageArchiveFormat, Operation};
 
 use crate::backend::with_local_backend;
 use crate::conv;
@@ -84,12 +84,16 @@ fn report_to_hash(report: ImagePruneReport) -> RHash {
 }
 
 fn get(reference: String) -> Result<RHash, Error> {
-    let handle = with_local_backend(async |local| Image::get_local(local, &reference).await)?;
+    let handle = with_local_backend(Operation::ImageGet, async |local| {
+        Image::get_local(local, &reference).await
+    })?;
     Ok(handle_to_hash(&handle))
 }
 
 fn list() -> Result<RArray, Error> {
-    let handles = with_local_backend(async |local| Image::list_local(local).await)?;
+    let handles = with_local_backend(Operation::ImageList, async |local| {
+        Image::list_local(local).await
+    })?;
     let arr = ruby().ary_new();
     for h in handles.iter() {
         arr.push(handle_to_hash(h))?;
@@ -98,16 +102,22 @@ fn list() -> Result<RArray, Error> {
 }
 
 fn inspect(reference: String) -> Result<RHash, Error> {
-    let detail = with_local_backend(async |local| Image::inspect_local(local, &reference).await)?;
+    let detail = with_local_backend(Operation::ImageInspect, async |local| {
+        Image::inspect_local(local, &reference).await
+    })?;
     Ok(detail_to_hash(detail))
 }
 
 fn remove(reference: String, force: bool) -> Result<(), Error> {
-    with_local_backend(async |local| Image::remove_local(local, &reference, force).await)
+    with_local_backend(Operation::ImageRemove, async |local| {
+        Image::remove_local(local, &reference, force).await
+    })
 }
 
 fn prune() -> Result<RHash, Error> {
-    let report = with_local_backend(async |local| Image::prune_local(local).await)?;
+    let report = with_local_backend(Operation::ImagePrune, async |local| {
+        Image::prune_local(local).await
+    })?;
     Ok(report_to_hash(report))
 }
 
@@ -117,7 +127,7 @@ fn prune() -> Result<RHash, Error> {
 /// `imageLoad` added in v0.6.7. (The `"-"` stdin form is spooled to a temp
 /// file by the Ruby layer — the core reads seekable files only.)
 fn load(input_path: String, tags: Vec<String>) -> Result<RArray, Error> {
-    let handles = with_local_backend(async |local| {
+    let handles = with_local_backend(Operation::ImageLoad, async |local| {
         Image::load_local(local, std::path::Path::new(&input_path), tags).await
     })?;
     let arr = ruby().ary_new();
@@ -140,7 +150,7 @@ fn save(references: Vec<String>, output_path: String, format: String) -> Result<
             )))
         }
     };
-    with_local_backend(async |local| {
+    with_local_backend(Operation::ImageSave, async |local| {
         Image::save_local(local, &references, std::path::Path::new(&output_path), fmt).await
     })
 }

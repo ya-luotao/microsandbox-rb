@@ -74,13 +74,32 @@ RSpec.describe "Sandbox lifecycle", :integration do
     name = unique_sandbox_name
     sb = Microsandbox::Sandbox.create(name, image: image)
     begin
-      names = Microsandbox::Sandbox.list.map(&:name)
-      expect(names).to include(name)
+      page = Microsandbox::Sandbox.list
+      expect(page).to be_a(Microsandbox::SandboxPage)
+      expect(page.map(&:name)).to include(name)
     ensure
       sb.stop
     end
     Microsandbox::Sandbox.remove(name)
     expect(Microsandbox::Sandbox.list.map(&:name)).not_to include(name)
+  end
+
+  it "paginates the sandbox listing with limit and cursor (runtime v0.6.8)" do
+    name = unique_sandbox_name
+    sb = Microsandbox::Sandbox.create(name, image: image)
+    begin
+      page = Microsandbox::Sandbox.list_with(limit: 1)
+      expect(page.size).to be <= 1
+      # Walk the cursor chain; the created sandbox must appear on some page.
+      names = page.map(&:name)
+      until page.last_page?
+        page = Microsandbox::Sandbox.list_with(limit: 1, cursor: page.next_cursor)
+        names.concat(page.map(&:name))
+      end
+      expect(names).to include(name)
+    ensure
+      sb.stop
+    end
   end
 
   it "raises a typed error for an invalid image reference" do

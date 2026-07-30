@@ -753,18 +753,58 @@ RSpec.describe Microsandbox::Sandbox do
     end
   end
 
-  describe ".list_with" do
-    it "normalizes label filters into a string-keyed labels hash" do
-      native_handle = instance_double(
-        Microsandbox::Native::SandboxHandle, name: "box", status: "running"
+  describe ".list / .list_with (paginated as of runtime v0.6.8)" do
+    let(:native_handle) do
+      instance_double(Microsandbox::Native::SandboxHandle, name: "box", status: "running")
+    end
+    let(:native_page) { {"sandboxes" => [native_handle], "next_cursor" => "tok"} }
+
+    it "wraps the native page hash in an Enumerable SandboxPage" do
+      allow(Microsandbox::Native::Sandbox).to receive(:list).and_return(native_page)
+      page = Microsandbox::Sandbox.list
+      expect(page).to be_a(Microsandbox::SandboxPage)
+      expect(page.size).to eq(1)
+      expect(page).not_to be_empty
+      expect(page).not_to be_last_page
+      expect(page.next_cursor).to eq("tok")
+      expect(page.map(&:name)).to eq(["box"])
+      expect(page.first).to be_a(Microsandbox::SandboxHandle)
+    end
+
+    it "reports the final page via last_page? when next_cursor is nil" do
+      allow(Microsandbox::Native::Sandbox).to receive(:list).and_return(
+        "sandboxes" => [], "next_cursor" => nil
       )
-      allow(Microsandbox::Native::Sandbox).to receive(:list_with).and_return([native_handle])
-      handles = Microsandbox::Sandbox.list_with(labels: {team: :core})
+      page = Microsandbox::Sandbox.list
+      expect(page).to be_empty
+      expect(page).to be_last_page
+      expect(page.next_cursor).to be_nil
+    end
+
+    it "normalizes label filters into a string-keyed labels hash" do
+      allow(Microsandbox::Native::Sandbox).to receive(:list_with).and_return(native_page)
+      page = Microsandbox::Sandbox.list_with(labels: {team: :core})
       expect(Microsandbox::Native::Sandbox).to have_received(:list_with).with(
         "labels" => {"team" => "core"}
       )
-      expect(handles.first).to be_a(Microsandbox::SandboxHandle)
-      expect(handles.first.name).to eq("box")
+      expect(page.first).to be_a(Microsandbox::SandboxHandle)
+      expect(page.first.name).to eq("box")
+    end
+
+    it "forwards limit and cursor, coercing types" do
+      allow(Microsandbox::Native::Sandbox).to receive(:list_with).and_return(native_page)
+      Microsandbox::Sandbox.list_with(limit: "50", cursor: :tok)
+      expect(Microsandbox::Native::Sandbox).to have_received(:list_with).with(
+        "labels" => {}, "limit" => 50, "cursor" => "tok"
+      )
+    end
+
+    it "omits limit and cursor when not given" do
+      allow(Microsandbox::Native::Sandbox).to receive(:list_with).and_return(native_page)
+      Microsandbox::Sandbox.list_with(labels: {a: 1})
+      expect(Microsandbox::Native::Sandbox).to have_received(:list_with).with(
+        "labels" => {"a" => "1"}
+      )
     end
   end
 end

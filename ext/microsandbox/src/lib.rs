@@ -33,9 +33,10 @@ fn version() -> String {
 /// Ruby Hash. Mirrors the official `all_sandbox_metrics` / `allSandboxMetrics`
 /// helpers (Python/Node/Go).
 fn all_sandbox_metrics() -> Result<RHash, Error> {
-    let map = backend::with_local_backend(async |local| {
-        microsandbox::sandbox::all_sandbox_metrics_local(local).await
-    })?;
+    let map =
+        backend::with_local_backend(microsandbox::Operation::AllSandboxMetrics, async |local| {
+            microsandbox::sandbox::all_sandbox_metrics_local(local).await
+        })?;
     let hash = runtime::ruby().hash_new();
     for (name, metrics) in &map {
         hash.aset(name.as_str(), sandbox::metrics_to_hash(metrics))?;
@@ -107,12 +108,11 @@ fn set_runtime_libkrunfw_path(path: String) {
 /// backend's config.
 fn resolved_msb_path() -> Result<String, Error> {
     let backend = microsandbox::default_backend();
-    let local = backend.as_local().ok_or_else(|| {
-        error::to_ruby(microsandbox::MicrosandboxError::Unsupported {
-            feature: "resolved_msb_path requires a local backend".into(),
-            available_when: "with the local backend".into(),
-        })
-    })?;
+    // Shim-only entry point with no SDK `Operation` — report the Ruby-facing
+    // name (`Microsandbox.runtime_path`), like Python's name-based local_only.
+    let local = backend
+        .as_local()
+        .ok_or_else(|| error::local_only("runtime_path"))?;
     let path = local.config().resolve_msb_path().map_err(error::to_ruby)?;
     Ok(path.to_string_lossy().into_owned())
 }

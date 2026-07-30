@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use magnus::{function, prelude::*, Error, RModule, Ruby};
-use microsandbox::{Backend, MicrosandboxError};
+use microsandbox::{Backend, MicrosandboxError, Operation};
 
 use crate::error;
 use crate::runtime::block_on;
@@ -31,17 +31,14 @@ use crate::runtime::block_on;
 /// borrowing `&LocalBackend` from it (`as_local()` borrows the `Arc`). Pure
 /// Rust — safe to call inside `block_on` (no Ruby C API), and it returns a raw
 /// `MicrosandboxError` so the Ruby-exception mapping happens *after* `block_on`
-/// re-acquires the GVL. Cloud backends yield `Unsupported`, mirroring pyo3's
-/// `resolve_local`.
-pub fn local_backend() -> Result<Arc<dyn Backend>, MicrosandboxError> {
+/// re-acquires the GVL. Cloud backends yield `Unsupported` for the given
+/// operation (v0.6.8 `Operation`-keyed shape), mirroring pyo3's `resolve_local`.
+pub fn local_backend(op: Operation) -> Result<Arc<dyn Backend>, MicrosandboxError> {
     let backend = microsandbox::default_backend();
     if backend.as_local().is_some() {
         Ok(backend)
     } else {
-        Err(MicrosandboxError::Unsupported {
-            feature: "this operation requires a local backend".into(),
-            available_when: "with the local backend (the default)".into(),
-        })
+        Err(MicrosandboxError::local_only(op))
     }
 }
 
@@ -53,10 +50,11 @@ pub fn local_backend() -> Result<Arc<dyn Backend>, MicrosandboxError> {
 /// it and returns the same `Arc` kept alive for the borrow — so it lives here
 /// once rather than at every call site.
 pub fn with_local_backend<T>(
+    operation: Operation,
     op: impl AsyncFnOnce(&microsandbox::LocalBackend) -> Result<T, MicrosandboxError>,
 ) -> Result<T, Error> {
     block_on(async move {
-        let backend = local_backend()?;
+        let backend = local_backend(operation)?;
         let local = backend
             .as_local()
             .expect("local_backend() guarantees a local backend");
