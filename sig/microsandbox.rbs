@@ -61,7 +61,10 @@ module Microsandbox
   class MetricsUnavailableError < Error end
   class UnsupportedOperationError < Error end
   class CloudHttpError < Error end
-  class UnsupportedError < Error end
+  class UnsupportedError < Error
+    def operation: () -> String?
+    def hint: () -> String?
+  end
 
   class ExecOutput
     def initialize: (Hash[String, untyped] data) -> void
@@ -198,6 +201,19 @@ module Microsandbox
     def observed_at: () -> Time
   end
 
+  class SandboxPage
+    include Enumerable[SandboxHandle]
+    def initialize: (Array[SandboxHandle] sandboxes, String? next_cursor) -> void
+    def sandboxes: () -> Array[SandboxHandle]
+    def next_cursor: () -> String?
+    def each: () { (SandboxHandle) -> void } -> Array[SandboxHandle]
+            | () -> Enumerator[SandboxHandle, Array[SandboxHandle]]
+    def size: () -> Integer
+    def length: () -> Integer
+    def empty?: () -> bool
+    def last_page?: () -> bool
+  end
+
   class PingResult
     def initialize: (Hash[String, untyped] data) -> void
     def name: () -> String
@@ -251,8 +267,8 @@ module Microsandbox
     def self.create_with_progress: (String name, **untyped) -> PullSession
     def self.start: (String name, ?detached: bool) -> Sandbox
     def self.get: (String name) -> SandboxHandle
-    def self.list: () -> Array[SandboxHandle]
-    def self.list_with: (?labels: Hash[untyped, untyped]) -> Array[SandboxHandle]
+    def self.list: () -> SandboxPage
+    def self.list_with: (?labels: Hash[untyped, untyped], ?limit: Integer?, ?cursor: String?) -> SandboxPage
     def self.remove: (String name) -> nil
 
     def name: () -> String

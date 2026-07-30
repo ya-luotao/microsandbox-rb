@@ -126,10 +126,13 @@ ensure
   # sb.kill          # force (SIGKILL); sb.drain for a graceful drain
 end
 
-# Inspect / manage existing sandboxes. `get`/`list` return a controllable
+# Inspect / manage existing sandboxes. `get` returns a controllable
 # SandboxHandle (the live `stop`/`kill`/`drain`/`wait` live on the object from
-# `create`/`start`; fine-grained control lives on the handle).
-Microsandbox::Sandbox.list            # => [Microsandbox::SandboxHandle, ...]
+# `create`/`start`; fine-grained control lives on the handle). `list` returns a
+# cursor-paginated, Enumerable SandboxPage of handles (runtime v0.6.8).
+Microsandbox::Sandbox.list            # => Microsandbox::SandboxPage (first page)
+Microsandbox::Sandbox.list.map(&:name)  # enumerate the page's handles
+# next page: Sandbox.list_with(cursor: page.next_cursor, limit: 50)
 h = Microsandbox::Sandbox.get("box")  # => Microsandbox::SandboxHandle
 h.status                              # :running, :stopped, :created, ...
 h.stop_with_timeout(5)                # custom escalation timeout
@@ -442,8 +445,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.11.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.7"  (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.12.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.6.8"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
@@ -465,6 +468,7 @@ Microsandbox.runtime_version   # => "v0.6.7"  (the embedded upstream runtime tag
 | `0.9.3`  | `v0.6.6` | adopts upstream `v0.6.4`+`v0.6.6` (`v0.6.5` was yanked upstream): snapshot restore by pinned digest — fixes fatal restore-after-tag-republish bug, fragmented-UDP/PMTU relay fixes, exec kills the whole process group, ephemeral stop-wait tolerance, readdir RSS-leak fix; upstream API growth is additive-only — no Ruby surface change |
 | `0.10.0` | `v0.6.6` | `v0.6.6` API parity: live `modify`/resize, `ping`/`touch`, create `max_cpus`/`max_memory` |
 | `0.11.0` | `v0.6.7` | adopts upstream `v0.6.7` (**breaking**): network profiles replace `public_only`/`non_local`, structured `root_disk:` replaces `oci_upper_size:` (deprecated alias kept), snapshot descriptor contract (`create` re-keyed by name, `save`/`load` rename, `snapshot_to` removed, on-disk auto-migration), `Image.load`/`Image.save`, `follow_root_symlinks:`; runtime carries the GHSA-4vq3-cjpp-v7fg `msb copy` fix |
+| `0.12.0` | `v0.6.8` | adopts upstream `v0.6.8` (**breaking**): `Sandbox.list`/`.list_with` return a cursor-paginated `SandboxPage` (`limit:`/`cursor:` keywords), `UnsupportedError` re-keyed by structured operations with `#operation`/`#hint`; runtime adds a shared log registry for followed streams and cloud exec/ssh reconnects |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:
@@ -544,7 +548,8 @@ lifecycle (the live `Sandbox` `stop`/`stop_and_wait`/`kill`/`drain`/`wait`/
 `status`/`detach`/`owns_lifecycle?`, plus the `SandboxHandle` controls
 `stop_with_timeout`/`request_stop`/`request_kill`/`request_drain`/
 `wait_until_stopped`/`config`/`config_json`/`snapshot` from
-`Sandbox.get`, and label-filtered `list_with`),
+`Sandbox.get`, and the cursor-paginated `list`/`list_with` with label
+filters),
 backend routing (`set_default_backend`/`with_backend`/`default_backend_kind`),
 `exec`/`shell` (collected and streaming), interactive `attach`/
 `attach_shell`, the full guest filesystem (incl. streaming `read_stream`/

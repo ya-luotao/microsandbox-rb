@@ -90,4 +90,16 @@ module Microsandbox
   # cloud backend) is distinct from `UnsupportedOperationError` above.
   define_error(:CloudHttpError, "cloud-http")
   define_error(:UnsupportedError, "unsupported")
+
+  # As of runtime v0.6.8 the core keys Unsupported errors by a structured
+  # (operation, reason) pair. The native layer renders both into the message
+  # ("sandbox.kill is not supported by this backend: ...") and also attaches
+  # them here as structured attributes, mirroring the Python SDK's
+  # `UnsupportedError.operation` / `.hint`.
+  class UnsupportedError
+    # @return [String, nil] the rejected API in Ruby rendering, e.g. "sandbox.kill"
+    attr_reader :operation
+    # @return [String, nil] why it was rejected / what to use instead
+    attr_reader :hint
+  end
 end

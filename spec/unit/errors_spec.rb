@@ -88,4 +88,27 @@ RSpec.describe "Microsandbox error hierarchy" do
       }
     end
   end
+
+  # As of runtime v0.6.8 the core keys Unsupported by (operation, reason); the
+  # native layer renders a Ruby-idiom message and attaches structured
+  # `operation` / `hint` attributes (mirroring the Python SDK). Exercise the
+  # REAL path: a local-only op under a cloud backend. Cloud construction is
+  # offline (it only builds the HTTP client), and the local-only guard fires
+  # before any request, so no network is touched.
+  it "enriches UnsupportedError with operation and hint via the native layer" do
+    Microsandbox.with_backend(:cloud, url: "https://cloud.invalid", api_key: "test-key") do
+      expect { Microsandbox::Image.list }
+        .to raise_error(Microsandbox::UnsupportedError) { |e|
+          expect(e.message).to eq("image.list is not supported by this backend: use a local backend")
+          expect(e.operation).to eq("image.list")
+          expect(e.hint).to eq("use a local backend")
+        }
+    end
+  end
+
+  it "defaults UnsupportedError operation/hint to nil when constructed directly" do
+    err = Microsandbox::UnsupportedError.new("boom")
+    expect(err.operation).to be_nil
+    expect(err.hint).to be_nil
+  end
 end

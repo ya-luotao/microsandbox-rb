@@ -6,6 +6,50 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.12.0] - 2026-07-30
+
+Adopts upstream runtime **`v0.6.7` → `v0.6.8`** and mirrors its breaking SDK
+surface (upstream #1232 "unify cloud backend and paginated listings"), keeping
+parity with the Python/Node SDKs.
+
+### Breaking
+
+- **Sandbox listing is cursor-paginated** (upstream #1232). `Sandbox.list` and
+  `Sandbox.list_with` now return a {Microsandbox::SandboxPage} — an Enumerable
+  page of `SandboxHandle`s carrying `#next_cursor` — instead of a plain Array.
+  `Sandbox.list` fetches the first page (upstream default size 20);
+  `Sandbox.list_with` gains `limit:` (1..100) and `cursor:` keywords alongside
+  the existing `labels:` filter. Code that only enumerates
+  (`list.each`/`map`/`to_a`) keeps working; code relying on the return value
+  *being* an Array (e.g. `list + other`, `Array ===`) must adapt, and listings
+  of more than one page must follow `page.next_cursor` via
+  `list_with(cursor:)`.
+- **`UnsupportedError` messages are re-keyed by structured operations**
+  (upstream #1232): the core now reports the rejected API and a remedial hint
+  (e.g. `image.list is not supported by this backend: use a local backend`)
+  instead of the old free-text `feature`/`available_when` pair. The exception
+  additionally exposes the new structured attributes below.
+
+### Added
+
+- {Microsandbox::SandboxPage} — Enumerable over its `#sandboxes`, plus
+  `#next_cursor`, `#size`/`#length`, `#empty?` and `#last_page?`.
+- `Sandbox.list_with(labels:, limit:, cursor:)` pagination keywords.
+- `UnsupportedError#operation` / `#hint` — the rejected API in Ruby rendering
+  (`"sandbox.kill"`) and the remedial hint (`"use a local backend"`),
+  mirroring the Python SDK's enriched `UnsupportedError`.
+
+### Changed
+
+- Direct `VolumeFs` operations now route through the backend's volume trait
+  (upstream #1232) instead of a construction-time local-backend guard, so an
+  unsupported backend rejects each operation with a precise per-operation
+  error.
+- The embedded runtime is `v0.6.8`; see the upstream release notes for
+  runtime-side changes (shared log registry for followed streams, cloud
+  sandbox reconnect fixes for `exec`/`ssh`, kernel sourced from
+  cdn.kernel.org).
+
 ## [0.11.0] - 2026-07-27
 
 Adopts upstream runtime **`v0.6.6` → `v0.6.7`** and mirrors its breaking SDK
