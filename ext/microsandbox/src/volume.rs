@@ -9,7 +9,6 @@ use magnus::{function, method, prelude::*, Error, RArray, RHash, RModule, RStrin
 use microsandbox::volume::VolumeHandle;
 use microsandbox::Backend;
 
-use crate::backend::local_backend;
 use crate::conv;
 use crate::error;
 use crate::runtime::{block_on, ruby};
@@ -108,10 +107,13 @@ pub struct VolumeFs {
 }
 
 impl VolumeFs {
-    /// Resolve the (local) backend once and bind it to `name`.
+    /// Resolve the ambient backend once and bind it to `name`. As of v0.6.8
+    /// every `VolumeFs` op dispatches through the backend's `VolumeBackend`
+    /// trait, which yields precise per-operation `Unsupported` errors on
+    /// backends that can't serve it — no local-only downcast needed here.
     fn for_volume(name: String) -> Result<VolumeFs, Error> {
         Ok(VolumeFs {
-            backend: local_backend().map_err(error::to_ruby)?,
+            backend: microsandbox::default_backend(),
             name,
         })
     }
