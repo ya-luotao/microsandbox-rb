@@ -141,14 +141,18 @@ assert_contains "$out" "FAILED: Microsandbox::Error" "SDK-level resolution fails
 assert_contains "$out" "msb binary not found" "SDK error names the missing runtime"
 assert_not_contains "$out" "resolved:" "resolution must NOT succeed in scenario A"
 
-echo "--- the #1305-agreed surface, gem exec microsandbox -- run <image>:"
+echo "--- the #1305-agreed surface (working spelling), gem exec microsandbox run <image>:"
 # Resolution-failure precondition asserted above, so this can only hit the
 # shim's 127 path — it can never reach an actual `msb run` (which would boot a
 # VM). Our prototype gem is named microsandbox-rb while the exe is
 # microsandbox, so -g bridges the two; the official gem's name and exe
-# coincide and need no -g.
+# coincide and need no -g. NOTE the spelling: no `--` — RubyGems' exec command
+# silently EATS a `--` placed after the command name plus everything behind
+# it (empirically verified; see the scenario-C demonstration), so the
+# issue-as-written `gem exec microsandbox -- run <image>` never forwards its
+# arguments.
 out=$(MICROSANDBOX_NO_AUTO_INSTALL=1 gem exec --config-file "$WORK/gemrc" --conservative \
-  -g microsandbox-rb microsandbox -- run alpine 2>&1) && rc=0 || rc=$?
+  -g microsandbox-rb microsandbox run alpine 2>&1) && rc=0 || rc=$?
 echo "$out"
 assert_eq "$rc" "127" "gem exec surface exits 127 on the clean machine"
 assert_contains "$out" "no msb runtime found" "shim explains the failure"
@@ -193,12 +197,24 @@ ver=$("$GEM_HOME/bin/msb" --version) || fail "binaries-gem msb binstub does not 
 echo "$ver"
 assert_eq "$ver" "msb $RUNTIME_V" "binstub delegates to the vendored msb"
 
-echo "--- and the agreed gem exec surface works end to end (delegating --version, never run):"
+echo "--- and the gem exec surface works end to end (delegating --version, never run):"
 out=$(MICROSANDBOX_NO_AUTO_INSTALL=1 gem exec --config-file "$WORK/gemrc" --conservative \
-  -g microsandbox-rb microsandbox -- --version 2>&1) && rc=0 || rc=$?
+  -g microsandbox-rb microsandbox --version 2>&1) && rc=0 || rc=$?
 echo "$out"
 assert_eq "$rc" "0" "gem exec surface succeeds with the binaries gem installed"
 assert_contains "$out" "msb $RUNTIME_V" "gem exec surface delegates to the vendored msb"
+
+echo "--- #1305 gotcha, pinned as an assertion: the issue-as-written spelling"
+echo "--- (gem exec microsandbox -- run <image>) silently DROPS the arguments:"
+# RubyGems' exec command eats a `--` after the command name plus everything
+# behind it, so the delegated binary runs with EMPTY argv — msb prints its
+# usage instead of running the subcommand. The agreed surface needs the
+# no-`--` spelling above.
+out=$(MICROSANDBOX_NO_AUTO_INSTALL=1 gem exec --config-file "$WORK/gemrc" --conservative \
+  -g microsandbox-rb microsandbox -- --version 2>&1) && rc=0 || rc=$?
+echo "$out" | head -2
+assert_contains "$out" "Usage: msb" "post-command -- drops args (msb got empty argv, printed usage)"
+assert_not_contains "$out" "msb $RUNTIME_V" "the --version after -- never reached msb"
 
 step "B. microsandbox-rb today: auto-provision bootstraps the clean machine"
 # Decontaminate: C installed the binaries gem into the shared GEM_HOME, which
