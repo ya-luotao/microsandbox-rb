@@ -6,6 +6,31 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [Unreleased]
+
+Prototype branch for the two-gem "binaries companion gem" split proposed in
+upstream #1305 — not intended for release as-is.
+
+### Added
+
+- **`microsandbox-rb-binaries` companion-gem resolver tier** (prototype,
+  upstream #1305). When the companion gem is installed, `ensure_runtime!` and
+  `Microsandbox.runtime_path` feed its vendored `msb`/`libkrunfw` into the
+  native set-once resolver slots and skip first-use auto-provisioning
+  entirely. Effective precedence: `MSB_PATH` env > a startup-time
+  `Microsandbox.runtime_path=` call > binaries gem > `~/.microsandbox` > PATH.
+  The empty ruby-platform fallback build of the companion gem (nil paths) is
+  treated as "tier absent" and falls through to auto-provisioning.
+- **Per-tier runtime version check** (warn-only): whatever tier the resolver
+  picks, `ensure_runtime!` now runs `msb --version` against it and warns when
+  it differs from the runtime this gem embeds (`RUNTIME_VERSION`), instead of
+  letting the mismatch surface later as an opaque host↔guest protocol error.
+  The auto-provision tier keeps its existing version-*correcting* install.
+- `binaries-gem/` subdirectory: the companion gem prototype itself (platform
+  gem + empty ruby fallback, sha256-fail-closed `rake vendor`, `msb` exe
+  ownership) plus the clean-machine `gem exec` demo (`binaries-gem/DEMO.md`).
+  Local `gem build`/`gem install --local` only — never published.
+
 ## [0.12.0] - 2026-07-30
 
 Adopts upstream runtime **`v0.6.7` → `v0.6.8`** and mirrors its breaking SDK

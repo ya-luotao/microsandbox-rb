@@ -128,10 +128,25 @@ module Microsandbox
       # uses the same lazy env/profile/config ladder every operation already
       # consults, so this adds no work for local hosts (the common case).
       return if default_backend_kind == :cloud
+      claim_binaries_gem_slots!
+      # A binaries companion gem IS the provisioning: its vendored runtime was
+      # sha256-verified at gem build time and version-matched by lockstep
+      # versioning, so the first-use download is unnecessary — skip it even when
+      # auto-install is otherwise enabled. The per-tier version check below still
+      # runs against whatever the resolver actually picks (an `MSB_PATH` env
+      # override outranks the gem and may be stale).
+      if binaries_gem_msb_path
+        verify_runtime_version!
+        @runtime_ready = true
+        return
+      end
       # Opted out: the caller manages the runtime out of band, so don't fetch,
       # verify, or repair it here. Memoize the decision (the env var is stable for
       # the process); the operation resolves `msb` itself and surfaces any problem.
+      # The version check still runs (warn-only) so a stale out-of-band runtime is
+      # at least diagnosed, if not repaired.
       if auto_install_disabled?
+        verify_runtime_version!
         @runtime_ready = true
         return
       end
@@ -141,12 +156,20 @@ module Microsandbox
              "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip)..."
       end
       install
+      # {install} version-corrects `~/.microsandbox`, but the resolver may pick a
+      # different tier entirely (`MSB_PATH`, a set-once override, PATH) — verify
+      # the binary that will actually run, not the one that was just installed.
+      verify_runtime_version!
       @runtime_ready = true
       nil
     end
 
     # @return [String] the resolved path to the `msb` runtime binary
     def runtime_path
+      # Claim the binaries-gem tier first so a bare getter (called before any
+      # sandbox operation ran ensure_runtime!) reports the same path an
+      # operation would resolve.
+      claim_binaries_gem_slots!
       Native.resolved_msb_path
     end
 
@@ -243,6 +266,94 @@ module Microsandbox
     def auto_install_disabled?
       v = ENV["MICROSANDBOX_NO_AUTO_INSTALL"]
       !v.nil? && !v.empty? && !%w[0 false no].include?(v.downcase)
+    end
+
+    # Feed the binaries companion gem's vendored runtime into the resolver
+    # (prototype of the two-gem split from upstream #1305). The core resolver
+    # ladder is `MSB_PATH` env → SDK slot → config → `~/.microsandbox` → PATH,
+    # and lives inside the pinned core crate — there is no dedicated
+    # "language-package binary" tier to target, but the SDK slot's own docs name
+    # exactly this use ("FFI bindings that ship a binary inside their language
+    # package"), so the gem tier piggybacks on it. The slot is a set-once
+    # OnceLock, which yields the intended precedence for free: a user's
+    # startup-time {runtime_path=} call lands first and this claim becomes a
+    # silent no-op, while `MSB_PATH` outranks the slot entirely. Net order:
+    # env > user set-once > binaries gem > `~/.microsandbox` > PATH.
+    #
+    # Known edge of sharing the slot: once this claims it (first sandbox use or
+    # first {runtime_path} read), a *later* {runtime_path=} call is silently
+    # ignored — previously it would still have taken effect. Setting the
+    # override after the runtime resolved was already unsupported ("call once
+    # at startup"); a real fix needs a dedicated tier in the core resolver.
+    def claim_binaries_gem_slots!
+      return if @binaries_gem_claimed
+      @binaries_gem_claimed = true
+      msb = binaries_gem_msb_path
+      return unless msb
+      Native.set_runtime_msb_path(msb)
+      libkrunfw = binaries_gem_libkrunfw_path
+      Native.set_runtime_libkrunfw_path(libkrunfw) if libkrunfw
+      nil
+    end
+
+    # Path to the vendored `msb` from the `microsandbox-rb-binaries` companion
+    # gem, or nil when the gem is absent (not installed) or is the empty
+    # ruby-platform fallback build (installed for Gemfile portability on
+    # platforms with no prebuilt bundle, ships no binaries, returns nil).
+    def binaries_gem_msb_path
+      require "microsandbox_rb_binaries"
+      MicrosandboxRbBinaries.msb_path
+    rescue LoadError
+      nil
+    end
+
+    # Companion-gem libkrunfw, mirroring {binaries_gem_msb_path}. The core
+    # ladder would also find it as `../lib/` relative to the resolved `msb`
+    # (the gem vendors `vendor/{bin,lib}` in the installed layout), but claim
+    # the explicit slot rather than rely on that layout coupling.
+    def binaries_gem_libkrunfw_path
+      require "microsandbox_rb_binaries"
+      MicrosandboxRbBinaries.libkrunfw_path
+    rescue LoadError
+      nil
+    end
+
+    # Warn-only check that the `msb` the resolver actually picked matches the
+    # runtime version this gem build embeds ({RUNTIME_VERSION}). Presence is not
+    # correctness: any tier (`MSB_PATH`, a set-once override, the binaries gem,
+    # a stale `~/.microsandbox`, PATH) can resolve a version-mismatched binary,
+    # and the failure it causes downstream — a host↔guest wire-protocol error at
+    # {Sandbox.create} — does not name the real cause. This runs once per
+    # process (from {ensure_runtime!}) and deliberately warns instead of
+    # raising: a mismatched runtime often still works across patch releases,
+    # and hard-failing would break users the old behavior tolerated.
+    def verify_runtime_version!
+      path = begin
+        Native.resolved_msb_path
+      rescue => e
+        # Nothing resolved at all (no runtime anywhere). Not this check's error
+        # to raise — the operation that needs msb surfaces it with context.
+        warn "[microsandbox] could not resolve an msb runtime binary: #{e.message}"
+        return
+      end
+      expected = RUNTIME_VERSION.delete_prefix("v")
+      output = begin
+        IO.popen([path, "--version"], err: File::NULL, &:read)
+      rescue SystemCallError
+        nil
+      end
+      actual = output&.[](/\bmsb\s+(\S+)/, 1)
+      if actual.nil?
+        warn "[microsandbox] could not verify the msb runtime at #{path} " \
+             "(`msb --version` failed or printed unrecognized output); " \
+             "this gem embeds runtime #{expected}"
+      elsif actual != expected
+        warn "[microsandbox] runtime version mismatch: msb at #{path} is #{actual}, " \
+             "but this gem embeds runtime #{expected} — sandbox operations may fail " \
+             "on a host/guest protocol mismatch. Align the runtime with the gem, or " \
+             "remove the override that selected it."
+      end
+      nil
     end
   end
 end

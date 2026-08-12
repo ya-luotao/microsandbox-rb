@@ -61,11 +61,24 @@ RSpec.describe "Microsandbox runtime helpers" do
 
   describe ".ensure_runtime!" do
     # The memoized "ready" flag would leak across examples (and from a real
-    # source-built runtime on the dev box), so reset it around each one.
+    # source-built runtime on the dev box), so reset it around each one. Same
+    # for the binaries-gem claim flag.
     around do |example|
       Microsandbox.instance_variable_set(:@runtime_ready, nil)
+      Microsandbox.instance_variable_set(:@binaries_gem_claimed, nil)
       example.run
       Microsandbox.instance_variable_set(:@runtime_ready, nil)
+      Microsandbox.instance_variable_set(:@binaries_gem_claimed, nil)
+    end
+
+    # These examples pin the auto-provision paths, so take the binaries-gem
+    # tier out of play (a host with the companion gem installed would otherwise
+    # skip install entirely) and stub the per-tier version check — it shells
+    # out to the real resolved msb and its warn would bleed into the
+    # warn-counting assertions below. The check has its own spec file.
+    before do
+      allow(Microsandbox).to receive(:binaries_gem_msb_path).and_return(nil)
+      allow(Microsandbox).to receive(:verify_runtime_version!)
     end
 
     it "still runs the version-correcting installer when the runtime is present" do
