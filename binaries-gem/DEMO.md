@@ -2,17 +2,31 @@
 
 Companion evidence for issue #1305 (the `microsandbox` + `microsandbox-binaries`
 two-gem split for Ruby). Everything below was produced by
-[`demo/gem_exec_127.sh`](demo/gem_exec_127.sh) on a clean environment:
-throwaway `GEM_HOME`/`GEM_PATH`, empty `MSB_HOME`, and a sanitized `PATH` with
-no `msb` anywhere — i.e. the exact state `gem exec` (RubyGems' `npx`
-equivalent) creates on a machine that has never seen microsandbox.
+[`demo/gem_exec_127.sh`](demo/gem_exec_127.sh) — a **self-verifying** script
+(every claimed exit code, winner path, version, and empty directory is
+asserted; any assertion failure exits nonzero) — in a clean room: isolated
+`HOME`, throwaway `GEM_HOME`/`GEM_PATH`, empty `MSB_HOME`, offline gemrc for
+every `gem exec` call, and a sanitized `PATH` with no `msb` anywhere — i.e.
+the exact state `gem exec` (RubyGems' `npx` equivalent) creates on a machine
+that has never seen microsandbox.
 
 The prototype under test is `microsandbox-rb`, a Ruby gem wrapping the
 microsandbox core crate, extended with the #1305 design: a
 `microsandbox-rb-binaries` companion gem (platform gem vendoring `msb` +
 `libkrunfw` from the v0.6.8 release, sha256-verified against the release's
-`checksums.sha256`; plus an empty `ruby`-platform fallback), a resolver tier
-for it, and a warn-only per-tier `msb --version` check.
+`checksums.sha256` and revalidated fail-closed at gem build time via a staged
+manifest; plus an empty `ruby`-platform fallback), a resolver tier for it, a
+warn-only per-tier `msb --version` check (bounded timeout, exit status
+required), and a `microsandbox` CLI shim on the SDK gem implementing the
+agreed `gem exec microsandbox -- run <image>` surface with node-SDK parity
+(resolve through the full ladder, exit 127 when nothing is found).
+
+One naming note for reading the transcripts: this prototype's gem is named
+`microsandbox-rb` (the `microsandbox` gem name is taken on rubygems.org)
+while the executable is `microsandbox`, so the demo bridges the two with
+`gem exec -g microsandbox-rb microsandbox -- …`. The official gem's name and
+executable would coincide, making it the literal
+`gem exec microsandbox -- run <image>`.
 
 ## Why `gem exec` can never save you
 
