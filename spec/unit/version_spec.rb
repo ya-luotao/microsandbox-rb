@@ -47,11 +47,12 @@ RSpec.describe Microsandbox do
     # On unpin, drop APPROVED_BACKPORT and the rev branch.
     official_repo = "https://github.com/superradcompany/microsandbox"
     approved_backport = {
-      # ya-luotao/microsandbox branch `v0.6.8-digest-backport`: v0.6.8 (==
-      # RUNTIME_VERSION) + upstream #1300 digest verification + agentd
+      # ya-luotao/microsandbox branch `v0.6.8-digest-backport`: the `base`
+      # runtime release + upstream #1300 digest verification + agentd
       # prebuilt digest verification. Update in lock-step with Cargo.toml.
       git: "https://github.com/ya-luotao/microsandbox",
-      rev: "3b9995e7a9a589f0a60b225914f74090361f3089"
+      rev: "32b8b98ee4d61b27773404aa6b0d0978295a2edc",
+      base: "v0.6.8"
     }
 
     it "stays in sync with the upstream pin in ext/microsandbox/Cargo.toml" do
@@ -78,6 +79,10 @@ RSpec.describe Microsandbox do
         expect(tags).to all(be_nil), "mixed tag/rev pin kinds: #{deps}"
         expect(gits.uniq).to eq([approved_backport[:git]])
         expect(revs.uniq).to eq([approved_backport[:rev]])
+        # Bind the approval to the constant: the approved rev vouches for one
+        # specific base release, so RUNTIME_VERSION cannot drift while the
+        # rev pin is in place.
+        expect(Microsandbox::RUNTIME_VERSION).to eq(approved_backport[:base])
       end
     end
   end

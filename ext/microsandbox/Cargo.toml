@@ -42,8 +42,8 @@ rb-sys = "0.9"
 # official upstream tag once equivalent verification lands in a release tag.
 # The approved rev is mirrored in spec/unit/version_spec.rb — update both
 # together.
-microsandbox = { git = "https://github.com/ya-luotao/microsandbox", rev = "3b9995e7a9a589f0a60b225914f74090361f3089", default-features = true, features = ["ssh"] }
-microsandbox-network = { git = "https://github.com/ya-luotao/microsandbox", rev = "3b9995e7a9a589f0a60b225914f74090361f3089" }
+microsandbox = { git = "https://github.com/ya-luotao/microsandbox", rev = "32b8b98ee4d61b27773404aa6b0d0978295a2edc", default-features = true, features = ["ssh"] }
+microsandbox-network = { git = "https://github.com/ya-luotao/microsandbox", rev = "32b8b98ee4d61b27773404aa6b0d0978295a2edc" }
 
 # Async core bridged to Ruby's synchronous API via a blocking tokio runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

@@ -2955,7 +2955,7 @@ dependencies = [
 [[package]]
 name = "microsandbox"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "anyhow",
  "astral-tokio-tar",
@@ -3013,7 +3013,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-agent-client"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "ciborium",
  "microsandbox-protocol",
@@ -3026,7 +3026,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-db"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "async-trait",
  "sea-orm",
@@ -3038,7 +3038,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-filesystem"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "hex",
  "libc",
@@ -3053,7 +3053,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-image"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -3080,7 +3080,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-metrics"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "chrono",
  "libc",
@@ -3092,7 +3092,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-migration"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "sea-orm-migration",
  "serde_json",
@@ -3101,7 +3101,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-network"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "base64",
  "bytes",
@@ -3145,7 +3145,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-protocol"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "chrono",
  "ciborium",
@@ -3160,7 +3160,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-runtime"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "bytes",
  "chrono",
@@ -3192,7 +3192,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-types"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "chrono",
  "ipnetwork",
@@ -3206,7 +3206,7 @@ dependencies = [
 [[package]]
 name = "microsandbox-utils"
 version = "0.6.8"
-source = "git+https://github.com/ya-luotao/microsandbox?rev=3b9995e7a9a589f0a60b225914f74090361f3089#3b9995e7a9a589f0a60b225914f74090361f3089"
+source = "git+https://github.com/ya-luotao/microsandbox?rev=32b8b98ee4d61b27773404aa6b0d0978295a2edc#32b8b98ee4d61b27773404aa6b0d0978295a2edc"
 dependencies = [
  "dirs",
  "libc",
