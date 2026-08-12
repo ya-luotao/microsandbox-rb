@@ -12,7 +12,8 @@ require "tmpdir"
 RSpec.describe "binaries companion gem integration" do
   around do |example|
     reset = lambda do
-      %i[@runtime_ready @binaries_gem_claimed @msb_slot_owner @verified_msb_paths].each do |ivar|
+      %i[@runtime_ready @binaries_gem_claimed @binaries_gem_tier_active
+        @msb_slot_owner @firmware_slot_owner @verified_msb_paths].each do |ivar|
         Microsandbox.instance_variable_set(ivar, nil)
       end
     end
@@ -68,10 +69,31 @@ RSpec.describe "binaries companion gem integration" do
       Microsandbox.runtime_path = "/opt/user/msb"
       Microsandbox.send(:claim_binaries_gem_slots!)
       # The user's call reached the native slot; the gem saw the ownership and
-      # never issued a competing set.
+      # never issued a competing set — and the tier reports itself inactive.
       expect(Microsandbox::Native).to have_received(:set_runtime_msb_path).once
         .with("/opt/user/msb")
+      expect(Microsandbox.send(:binaries_gem_tier_active?)).to be(false)
       expect(Microsandbox).not_to have_received(:warn)
+    end
+
+    it "stands down entirely when a user libkrunfw_path= landed first (no mixed runtime)" do
+      # The user's firmware override outranks the adjacency probe that would
+      # pair the gem's msb with the gem's own firmware — claiming msb anyway
+      # would assemble gem-msb + foreign-firmware. All or nothing: the gem
+      # claims NEITHER slot.
+      allow(Microsandbox).to receive(:binaries_gem_msb_path).and_return("/gems/b/vendor/bin/msb")
+      Microsandbox.libkrunfw_path = "/opt/user/libkrunfw.dylib"
+      Microsandbox.send(:claim_binaries_gem_slots!)
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_msb_path)
+      expect(Microsandbox.send(:binaries_gem_tier_active?)).to be(false)
+    end
+
+    it "stands down entirely when MSB_LIBKRUNFW_PATH is set (checked at claim time)" do
+      allow(Microsandbox).to receive(:binaries_gem_msb_path).and_return("/gems/b/vendor/bin/msb")
+      stub_const("ENV", ENV.to_h.merge("MSB_LIBKRUNFW_PATH" => "/opt/env/libkrunfw.dylib"))
+      Microsandbox.send(:claim_binaries_gem_slots!)
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_msb_path)
+      expect(Microsandbox.send(:binaries_gem_tier_active?)).to be(false)
     end
 
     it "probes the gem once per process (memoized claim)" do
@@ -209,6 +231,18 @@ RSpec.describe "binaries companion gem integration" do
       allow(Microsandbox).to receive(:binaries_gem_msb_path).and_return(nil)
       Microsandbox.ensure_runtime!
       expect(Microsandbox).to have_received(:install)
+    end
+
+    it "still auto-provisions when the gem is present but its tier stood down (claim outcome, not presence)" do
+      # Behavior fork of the stand-down rule: a suppressed tier provides
+      # nothing, so it must not suppress provisioning either — otherwise a
+      # user firmware override would leave the process with no runtime at all.
+      allow(Microsandbox).to receive(:binaries_gem_msb_path).and_return("/gems/b/vendor/bin/msb")
+      allow(Microsandbox::Native).to receive(:set_runtime_libkrunfw_path)
+      Microsandbox.libkrunfw_path = "/opt/user/libkrunfw.dylib"
+      Microsandbox.ensure_runtime!
+      expect(Microsandbox).to have_received(:install)
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_msb_path)
     end
 
     it "verifies but does not install when auto-install is disabled and no gem is present" do

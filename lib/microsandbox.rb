@@ -142,15 +142,16 @@ module Microsandbox
       # (MSB_PATH changed, a PATH entry appeared) and "verify whatever tier
       # actually wins" must hold for the binary that wins NOW.
       unless @runtime_ready
-        claim_binaries_gem_slots!
-        if binaries_gem_msb_path
-          # A binaries companion gem IS the provisioning: its vendored runtime
-          # was sha256-verified at gem build time and version-matched by
-          # lockstep versioning, so the first-use download is unnecessary —
-          # skip it even when auto-install is otherwise enabled. The per-tier
-          # version check still runs against whatever the resolver actually
-          # picks (an `MSB_PATH` env override outranks the gem and may be
-          # stale).
+        if binaries_gem_tier_active?
+          # The binaries companion gem's claim landed, so it IS the
+          # provisioning: its vendored runtime was sha256-verified at gem
+          # build time and version-matched by lockstep versioning — the
+          # first-use download is unnecessary even when auto-install is
+          # otherwise enabled. Keyed off the claim OUTCOME: a gem whose tier
+          # stood down (user msb/firmware override) provides nothing and must
+          # not suppress provisioning. The per-tier version check still runs
+          # against whatever the resolver actually picks (an `MSB_PATH` env
+          # override outranks the gem and may be stale).
         elsif auto_install_disabled?
           # Opted out: the caller manages the runtime out of band, so don't
           # fetch, verify, or repair it here. The warn-only version check below
@@ -210,10 +211,18 @@ module Microsandbox
     # below the `MSB_LIBKRUNFW_PATH` environment variable). Process-level and
     # set-once: a second call is silently ignored, and the env var still wins.
     # Mirrors {runtime_path=} for libkrunfw.
+    #
+    # A user firmware override (this setter or the env var) also stands the
+    # binaries companion gem's resolver tier down entirely — see
+    # {claim_binaries_gem_slots!}: the gem must never pair its own msb with
+    # firmware from a different source.
     # @param path [String]
     # @return [void]
     def libkrunfw_path=(path)
-      Native.set_runtime_libkrunfw_path(path.to_s)
+      RUNTIME_SLOT_MUTEX.synchronize do
+        Native.set_runtime_libkrunfw_path(path.to_s)
+        @firmware_slot_owner ||= :user
+      end
     end
 
     # Install a process-wide default backend (v0.5.8 backend routing). Without a
@@ -300,26 +309,42 @@ module Microsandbox
     # package"), so the gem tier piggybacks on it. Net order:
     # env > user set-once > binaries gem > `~/.microsandbox` > PATH.
     #
-    # Only the `msb` slot is claimed, and only when no user {runtime_path=}
-    # call landed first (tracked under RUNTIME_SLOT_MUTEX, not left to the
-    # native OnceLock race). The firmware slot is deliberately NOT claimed:
-    # `msb` and `libkrunfw` sit behind two independent set-once locks, so a
-    # partial claim could pair the gem's firmware with a user-overridden `msb`
-    # from a different release — a mixed runtime nobody chose. The core ladder
-    # instead finds the gem's firmware by adjacency (`../lib/<libkrunfw>` next
-    # to the resolved `msb`, which the gem's `vendor/{bin,lib}` layout hits
-    # exactly), keeping both binaries from the same tier by construction. An
-    # atomic multi-path package tier needs core support.
+    # Only the `msb` slot is ever claimed, and the whole tier stands down —
+    # all or nothing, never partial — unless the runtime it would assemble is
+    # entirely its own:
+    #
+    # - A user {runtime_path=} landed first: the user's msb wins the slot, and
+    #   firmware follows *their* binary by adjacency/home. The gem stays out.
+    # - A user firmware override exists ({libkrunfw_path=} or the
+    #   `MSB_LIBKRUNFW_PATH` env var): those outrank the adjacency probe that
+    #   would otherwise pair the gem's msb with the gem's own firmware, so
+    #   claiming msb would assemble gem-msb + foreign-firmware — a mixed
+    #   runtime nobody chose. The gem stays out entirely (and auto-provision
+    #   stays available; see {ensure_runtime!}, which keys off the claim
+    #   OUTCOME, not gem presence).
+    #
+    # The firmware slot itself is never claimed: `msb` and `libkrunfw` sit
+    # behind two independent set-once locks, so no SDK-side protocol can
+    # select the pair atomically. When the gem's claim does land, the core
+    # ladder finds the matching firmware by adjacency (`../lib/<libkrunfw>`
+    # next to the resolved `msb` — the gem's `vendor/{bin,lib}` layout hits
+    # that probe exactly), keeping both binaries same-tier by construction.
+    # Known residual gap needing core support: a firmware path in
+    # `~/.microsandbox/config.json` also outranks adjacency and is not
+    # visible here — only an atomic multi-path package tier in the core
+    # resolver closes that for good.
     def claim_binaries_gem_slots!
       return if @binaries_gem_claimed
       RUNTIME_SLOT_MUTEX.synchronize do
         return if @binaries_gem_claimed
+        @binaries_gem_tier_active = false
         msb = binaries_gem_msb_path
         if msb
           verify_binaries_gem_lockstep!
-          if @msb_slot_owner.nil?
+          if @msb_slot_owner.nil? && !user_firmware_override?
             Native.set_runtime_msb_path(msb)
             @msb_slot_owner = :binaries_gem
+            @binaries_gem_tier_active = true
           end
         end
         # Publish completion LAST: a concurrent caller that observes the flag
@@ -327,6 +352,24 @@ module Microsandbox
         @binaries_gem_claimed = true
       end
       nil
+    end
+
+    # Whether the binaries gem's claim actually landed (vs the tier standing
+    # down for a user override, or the gem being absent). {ensure_runtime!}
+    # must key its skip-auto-provision decision off this, not off gem
+    # presence: a stood-down tier provides nothing.
+    def binaries_gem_tier_active?
+      claim_binaries_gem_slots!
+      @binaries_gem_tier_active
+    end
+
+    # Any user-supplied firmware input that outranks the adjacency probe the
+    # gem tier relies on. Checked at claim time (not memoized at load), so a
+    # test or late env change is honored.
+    def user_firmware_override?
+      return true if @firmware_slot_owner == :user
+      v = ENV["MSB_LIBKRUNFW_PATH"]
+      !v.nil? && !v.empty?
     end
 
     # Path to the vendored `msb` from the `microsandbox-rb-binaries` companion

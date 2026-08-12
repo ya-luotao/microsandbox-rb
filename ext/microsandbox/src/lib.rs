@@ -117,6 +117,26 @@ fn resolved_msb_path() -> Result<String, Error> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// The currently-resolved `libkrunfw` firmware path. Synchronous (filesystem
+/// probes, no async) — mirrors `resolved_msb_path` for the firmware side of
+/// the resolver. Exposed as a diagnostic so callers can assert which firmware
+/// actually resolves (the binaries-gem prototype's specs and demo need to
+/// prove the firmware winner matches the msb winner's tier — a mixed runtime
+/// is otherwise invisible until a VM boot fails).
+fn resolved_libkrunfw_path() -> Result<String, Error> {
+    let backend = microsandbox::default_backend();
+    // Shim-only entry point with no SDK `Operation` — report a Ruby-facing
+    // name, mirroring `resolved_msb_path`.
+    let local = backend
+        .as_local()
+        .ok_or_else(|| error::local_only("libkrunfw_runtime_path"))?;
+    let path = local
+        .config()
+        .resolve_libkrunfw_path()
+        .map_err(error::to_ruby)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// magnus entry point. RubyGems loads this via `require "microsandbox/microsandbox_rb"`,
 /// which calls `Init_microsandbox_rb` (matching the cdylib `[lib] name`).
 #[magnus::init]
@@ -134,6 +154,10 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
         function!(set_runtime_libkrunfw_path, 1),
     )?;
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
+    native.define_singleton_method(
+        "resolved_libkrunfw_path",
+        function!(resolved_libkrunfw_path, 0),
+    )?;
     native.define_singleton_method("all_sandbox_metrics", function!(all_sandbox_metrics, 0))?;
 
     backend::define(ruby, &native)?;

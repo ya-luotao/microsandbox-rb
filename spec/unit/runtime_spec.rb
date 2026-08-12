@@ -6,7 +6,8 @@ RSpec.describe "Microsandbox runtime helpers" do
   # the slot user-owned for the rest of the process.
   around do |example|
     reset = lambda do
-      %i[@runtime_ready @binaries_gem_claimed @msb_slot_owner @verified_msb_paths].each do |ivar|
+      %i[@runtime_ready @binaries_gem_claimed @binaries_gem_tier_active
+        @msb_slot_owner @firmware_slot_owner @verified_msb_paths].each do |ivar|
         Microsandbox.instance_variable_set(ivar, nil)
       end
     end

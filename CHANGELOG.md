@@ -58,6 +58,29 @@ upstream #1305 — not intended for release as-is.
   promotes** it; the platform-gem build revalidates the manifest fail-closed.
   The SDK treats the gem tier as present only when both msb and firmware ship.
 
+### Changed (review fix round 2)
+
+- The binaries-gem tier now **stands down entirely — all or nothing — when
+  any user firmware input exists** (`libkrunfw_path=` or `MSB_LIBKRUNFW_PATH`):
+  those outrank the adjacency probe pairing the gem's msb with its own
+  firmware, so a partial claim would assemble a mixed runtime.
+  `ensure_runtime!` keys its skip-auto-provision decision off the claim
+  OUTCOME, not gem presence. New `Native.resolved_libkrunfw_path` diagnostic
+  (small Rust binding mirroring `resolved_msb_path`) lets specs and the demo
+  assert which firmware actually resolves.
+- The vendor **manifest is version-bound**: it records the runtime release it
+  was staged from plus the verified release-bundle digest, and both the
+  gemspec and the post-build payload check reject a stale tree after a
+  `RUNTIME_VERSION` bump. `rake vendor`/`rake build:platform` share a file
+  lock, the finished gem's payload is re-verified against its packaged
+  manifest (TOCTOU closed), an interrupted promotion restores the previous
+  tree, orphaned backups are recovered — not deleted — on the next run, and
+  staged-msb validation requires exit 0 under a bounded timeout.
+- The `microsandbox` shim's exit codes follow shell convention: 127 only for
+  a genuinely missing runtime (ENOENT included), **126 for a runtime that
+  exists but cannot be executed**, and 1 for unrelated SDK errors, which no
+  longer masquerade as command-not-found.
+
 ## [0.12.0] - 2026-07-30
 
 Adopts upstream runtime **`v0.6.7` → `v0.6.8`** and mirrors its breaking SDK
