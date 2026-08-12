@@ -121,6 +121,9 @@ installed microsandbox-rb-binaries-0.12.0-arm64-darwin
 resolved: …/gemhome/gems/microsandbox-rb-binaries-0.12.0-arm64-darwin/vendor/bin/msb
 --- nothing was downloaded at runtime (MSB_HOME still empty):
 files under MSB_HOME: 0        (asserted)
+--- and the FIRMWARE winner is the companion gem's too (no mixed runtime):
+firmware: …/gems/microsandbox-rb-binaries-0.12.0-arm64-darwin/vendor/lib/libkrunfw.5.dylib
+                               (asserted — both binaries same-tier)
 --- the msb executable is owned by the binaries gem (binstub):
 msb 0.6.8
 --- and the gem exec surface works end to end (delegating --version, never run):

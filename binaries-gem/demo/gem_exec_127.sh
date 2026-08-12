@@ -82,7 +82,7 @@ cp "$BINGEM_DIR/vendor/bin/msb" "$HOME/.microsandbox/bin/msb"
 cp "$BINGEM_DIR/vendor/lib/libkrunfw.5.dylib" "$HOME/.microsandbox/lib/libkrunfw.5.dylib"
 export GEM_HOME="$WORK/gemhome" GEM_PATH="$WORK/gemhome"
 unset RUBYOPT BUNDLE_GEMFILE BUNDLE_PATH BUNDLE_APP_CONFIG GEMRC 2>/dev/null || true
-unset MSB_PATH MSB_HOME MICROSANDBOX_NO_AUTO_INSTALL 2>/dev/null || true
+unset MSB_PATH MSB_LIBKRUNFW_PATH MSB_HOME MICROSANDBOX_NO_AUTO_INSTALL 2>/dev/null || true
 
 # Keep ruby + the Rust toolchain reachable, drop everything else so no stray
 # msb can leak in. ($REAL_HOME/.local/bin carries this host's mise version
@@ -191,6 +191,18 @@ echo "--- nothing was downloaded at runtime (MSB_HOME still empty):"
 count=$(find "$MSB_HOME" -type f | wc -l | tr -d ' ')
 echo "files under MSB_HOME: $count"
 assert_eq "$count" "0" "no runtime download happened in scenario C"
+
+echo "--- and the FIRMWARE winner is the companion gem's too (no mixed runtime):"
+fw=$(MICROSANDBOX_NO_AUTO_INSTALL=1 ruby -e '
+  require "microsandbox"
+  Microsandbox.ensure_runtime!
+  puts Microsandbox::Native.resolved_libkrunfw_path
+' 2>&1 | tail -1) || { echo "$fw"; fail "firmware resolution failed"; }
+echo "firmware: $fw"
+case "$fw" in
+  "$GEM_HOME"/gems/microsandbox-rb-binaries-*/vendor/lib/libkrunfw*) ;;
+  *) fail "scenario C firmware winner should be the gem-vendored libkrunfw (got '$fw')" ;;
+esac
 
 echo "--- the msb executable is owned by the binaries gem (binstub):"
 ver=$("$GEM_HOME/bin/msb" --version) || fail "binaries-gem msb binstub does not run"
