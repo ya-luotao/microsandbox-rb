@@ -55,6 +55,10 @@ PLATFORM_GEM="$BINGEM_DIR/microsandbox-rb-binaries-$GEM_V-arm64-darwin.gem"
   fail "missing vendor tree — run: rake vendor in binaries-gem/ (needed to seed the build-time runtime cache)"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/msb-127-demo.XXXXXX")
+# Canonicalize (macOS mktemp hands out /var/folders/…, a symlink into
+# /private/var/…): RubyGems reports gem paths in canonical form, so the
+# winner-path assertions must compare against the same form.
+WORK=$(cd "$WORK" && pwd -P)
 REAL_HOME="$HOME"
 
 # Isolate HOME BEFORE anything installs: the source gem's native build (core
