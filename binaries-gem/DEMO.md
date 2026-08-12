@@ -56,12 +56,30 @@ Two RubyGems facts combine into the hole:
 So the failure mode of the split-without-auto-provision design is not
 hypothetical — it is the *default* first-run experience:
 
+## The agreed spelling doesn't work: `--` silently drops the arguments
+
+Second RubyGems finding, hit live while wiring up the shim: **the invocation
+as written in the issue — `gem exec microsandbox -- run <image>` — does not
+work on current RubyGems (3.6.9).** The exec command eats a `--` placed
+*after* the command name plus everything behind it, so the delegated binary
+runs with an empty argv. Probed with an argv-echoing fake `msb`:
+
+```text
+gem exec … microsandbox -- --version   → delegated argv: []          (msb prints its usage)
+gem exec … microsandbox --version      → delegated argv: [--version] (works)
+gem exec … -- microsandbox --version   → Gem::CommandLineError
+```
+
+The working spelling is plain `gem exec microsandbox run <image>` — no `--`.
+The demo pins the arg-drop behavior itself as an assertion (scenario C below),
+so a future RubyGems change will surface loudly.
+
 ## Scenario A — proposed design, no auto-provision
 
 Binaries gem not installed (nothing depends on it), auto-provision disabled to
 model an SDK that never had it. The resolver falls through every tier
-(`MSB_PATH` env → SDK path → `~/.microsandbox` → PATH) and the user gets the
-127:
+(`MSB_PATH` env → SDK path → `~/.microsandbox` → PATH), and the agreed surface
+— exercised for real, via `gem exec` — exits 127:
 
 ```text
 --- installed gems (note: no binaries gem — nothing depends on it):
@@ -70,51 +88,67 @@ microsandbox-rb (0.12.0)
 [microsandbox] could not resolve an msb runtime binary: msb binary not found.
 Run `cargo clean -p microsandbox && cargo build` to reinstall, or set MSB_PATH
 to the binary location
-FAILED: Microsandbox::Error: msb binary not found. Run `cargo clean -p
-microsandbox && cargo build` to reinstall, or set MSB_PATH to the binary location
---- and the shell agrees (the classic 127):
-sh: msb: command not found
-exit code: 127
+FAILED: Microsandbox::Error: msb binary not found. …
+--- the #1305-agreed surface (working spelling), gem exec microsandbox run <image>:
+microsandbox: msb binary not found. …
+microsandbox: no msb runtime found. Install the microsandbox-rb-binaries gem,
+allow first-use auto-provisioning (unset MICROSANDBOX_NO_AUTO_INSTALL), or set
+MSB_PATH.
+    (exit code 127, asserted)
+--- and the bare shell agrees (the classic 127):
+msb: command not found
+    (exit code 127, asserted)
 ```
 
-Note what the errors say. The shell gives the classic `command not found`
-(exit 127). The SDK-level error is worse than decent: the core's "not found"
-message tells a *gem* user to run **`cargo clean -p microsandbox && cargo
-build`** — advice from the Rust-workspace world that means nothing in a Ruby
-install. Neither message can say "install microsandbox-binaries", because
-nothing in the system knows that gem exists.
+Note what the errors say. The core's "not found" message tells a *gem* user to
+run **`cargo clean -p microsandbox && cargo build`** — advice from the
+Rust-workspace world that means nothing in a Ruby install. Neither message can
+say "install microsandbox-binaries", because nothing in the system knows that
+gem exists. (The shim's own message can, and does.)
+
+## Scenario C — the two-gem design working as intended
+
+(Runs before B in the script: C is network-free by design — zero runtime
+downloads is its whole claim — so a run on a flaky network still verifies it.)
+
+Binaries platform gem installed alongside the SDK gem, auto-provision OFF.
+The runtime comes from the gem's vendored binaries; nothing is downloaded at
+runtime; the `msb` executable is owned by the binaries gem; and the agreed
+`gem exec` surface works end to end:
+
+```text
+installed microsandbox-rb-binaries-0.12.0-arm64-darwin
+resolved: …/gemhome/gems/microsandbox-rb-binaries-0.12.0-arm64-darwin/vendor/bin/msb
+--- nothing was downloaded at runtime (MSB_HOME still empty):
+files under MSB_HOME: 0        (asserted)
+--- the msb executable is owned by the binaries gem (binstub):
+msb 0.6.8
+--- and the gem exec surface works end to end (delegating --version, never run):
+msb 0.6.8                      (exit 0, asserted)
+--- #1305 gotcha, pinned as an assertion: the issue-as-written spelling
+--- (gem exec microsandbox -- run <image>) silently DROPS the arguments:
+Microsandbox CLI v0.6.8        (msb usage — empty argv — asserted)
+```
 
 ## Scenario B — auto-provision as the backstop (microsandbox-rb today)
 
-Identical clean machine, auto-provision left on. First use downloads the
-release bundle into `MSB_HOME` and proceeds:
+Same clean machine, binaries gem uninstalled again (asserted — it would
+otherwise claim the resolver tier and skip the very thing B tests),
+auto-provision left on. First use downloads the release bundle into `MSB_HOME`
+and proceeds; the download is a plain network operation, retried up to three
+times so a flaky CDN doesn't masquerade as a design failure (this very run ate
+one CDN hiccup):
 
 ```text
+auto-provision download attempt 1 failed (network); retrying:
 [microsandbox] runtime (msb + libkrunfw) not found; downloading to
 ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip)...
 resolved: …/msbhome-b/bin/msb
-msb 0.6.8
+    (path under MSB_HOME + `msb 0.6.8` version, both asserted)
 ```
 
 This is the npx-parity answer: presence is guaranteed by the SDK itself, not
 by hoping a second gem got installed.
-
-## Scenario C — the two-gem design working as intended
-
-Binaries platform gem installed alongside the SDK gem, auto-provision OFF.
-The runtime comes from the gem's vendored binaries; nothing is downloaded at
-runtime; the `msb` executable is owned by the binaries gem (the SDK gem ships
-no executables, so the two can never collide on a binstub):
-
-```text
-installed microsandbox-rb-binaries-0.12.0-arm64-darwin.gem
-resolved: …/gemhome/gems/microsandbox-rb-binaries-0.12.0-arm64-darwin/vendor/bin/msb
-msb 0.6.8
---- nothing was downloaded at runtime (MSB_HOME still empty):
-       0
---- and the msb executable is owned by the binaries gem (binstub):
-msb 0.6.8
-```
 
 Resolver precedence with the gem installed, verified separately (each line is
 one fresh process):
@@ -148,8 +182,23 @@ MSB_PATH=/env/override/msb           → /env/override/msb               # env w
   ```
 
 - **Lockstep versioning has no enforcement mechanism without a dependency
-  edge** — the runtime check above is the only backstop that actually fires.
-  (A hard `= X.Y.Z` dependency edge from SDK gem to binaries gem *would*
-  enforce it and would also close the `gem exec` hole via the empty fallback —
-  at the cost of making the ~25 MB download mandatory for everyone. Worth an
-  explicit decision either way.)
+  edge** — the runtime check above (plus a gem-to-gem VERSION comparison at
+  claim time) is the only backstop that actually fires. (A hard `= X.Y.Z`
+  dependency edge from SDK gem to binaries gem *would* enforce it and would
+  also close the `gem exec` hole via the empty fallback — at the cost of
+  making the ~25 MB download mandatory for everyone. Worth an explicit
+  decision either way.)
+- **Spell the CLI story without the `--`**: `gem exec microsandbox run
+  <image>` works; the `--` variant written in the issue silently drops every
+  argument on current RubyGems. Any docs/README produced for the two-gem
+  release should use the no-`--` form.
+- **The runtime slot needs core support to be a real package tier**: this
+  prototype piggybacks the package tier on the single set-once SDK path slot,
+  which (a) double-books it against the user override channel (a getter can
+  permanently consume the setter's chance — mitigated with a warning, not
+  fixable SDK-side) and (b) cannot atomically select msb + libkrunfw together
+  (two independent set-once locks can mix runtimes when a user overrides only
+  one; the prototype claims only the msb slot and relies on the firmware
+  resolving by `../lib` adjacency). A dedicated package tier in the core
+  resolver — below the user override, above home/PATH, carrying both paths as
+  one unit — removes both problems for every language SDK at once.
