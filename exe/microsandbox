@@ -1,31 +1,54 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# `microsandbox` CLI shim — the `gem exec microsandbox -- run <image>` surface
-# from upstream #1305, with node-SDK parity (sdk/node-ts/bin/microsandbox.cjs):
-# resolve the runtime through the SDK's full resolver (MSB_PATH env > user
-# override > binaries companion gem > ~/.microsandbox > PATH, with first-use
-# auto-provisioning as the backstop the node shim lacks) and delegate to it,
-# exiting 127 when no runtime can be found.
+# `microsandbox` CLI shim — the #1305 `gem exec` surface, with node-SDK parity
+# (sdk/node-ts/bin/microsandbox.cjs): resolve the runtime through the SDK's
+# full resolver (MSB_PATH env > user override > binaries companion gem >
+# ~/.microsandbox > PATH, with first-use auto-provisioning as the backstop the
+# node shim lacks) and delegate to it.
+#
+# Exit codes follow shell convention: 127 = no runtime found anywhere,
+# 126 = a runtime resolved but cannot be executed, 1 = an unrelated SDK error
+# (config/backend defects must not masquerade as command-not-found).
+#
+# NOTE the working invocation spelling is `gem exec microsandbox run <image>`
+# — current RubyGems silently eats a `--` placed after the command name plus
+# everything behind it (see binaries-gem/DEMO.md), so no arguments ever reach
+# this shim through that path.
 require "microsandbox"
 
 args = ARGV.dup
-# `gem exec microsandbox -- run x` forwards the `--` separator to the command.
+# Strip one literal leading "--". Unreachable via `gem exec` today (RubyGems
+# consumes it first — see above), but live for direct binstub and
+# `bundle exec microsandbox -- run x` callers, which deliver it verbatim.
 args.shift if args.first == "--"
 
 begin
   Microsandbox.ensure_runtime!
   path = Microsandbox.runtime_path
-rescue => e
+rescue Microsandbox::Error => e
+  # Only the resolver's own "nothing found" is command-not-found; any other
+  # SDK error is a real defect and reports as a plain failure (exit 1).
+  unless e.message.include?("msb binary not found")
+    warn "microsandbox: #{e.class}: #{e.message}"
+    exit 1
+  end
   warn "microsandbox: #{e.message}"
   warn "microsandbox: no msb runtime found. Install the microsandbox-rb-binaries gem, " \
     "allow first-use auto-provisioning (unset MICROSANDBOX_NO_AUTO_INSTALL), or set MSB_PATH."
   exit 127
+rescue => e
+  warn "microsandbox: #{e.class}: #{e.message}"
+  exit 1
 end
 
 begin
   exec(path, *args)
-rescue SystemCallError => e
+rescue Errno::ENOENT => e
   warn "microsandbox: failed to run #{path}: #{e.message}"
   exit 127
+rescue SystemCallError => e
+  # Present but not executable (EACCES, ENOEXEC, EISDIR, …): shell-standard 126.
+  warn "microsandbox: failed to run #{path}: #{e.message}"
+  exit 126
 end
