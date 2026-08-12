@@ -1,0 +1,75 @@
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "open-uri"
+require "tmpdir"
+
+require_relative "lib/microsandbox_rb_binaries"
+
+# The prototype targets the host platform only; the release asset naming
+# mirrors the core crate's `bundle_download_url` (darwin/aarch64 → the
+# `microsandbox-darwin-aarch64.tar.gz` bundle).
+RUNTIME_VERSION = MicrosandboxRbBinaries::RUNTIME_VERSION
+BUNDLE_ASSET = "microsandbox-darwin-aarch64.tar.gz"
+CHECKSUMS_ASSET = "checksums.sha256"
+# The releases/download/ endpoint is unauthenticated and not rate-limited
+# (unlike the api.github.com release API).
+RELEASE_BASE = "https://github.com/superradcompany/microsandbox/releases/download/#{RUNTIME_VERSION}"
+
+VENDOR_DIR = File.expand_path("vendor", __dir__)
+
+def fetch(url)
+  URI.parse(url).open("rb", &:read) # open-uri follows the S3 redirect
+end
+
+desc "Download the #{RUNTIME_VERSION} runtime bundle, verify its sha256 " \
+  "against the release's #{CHECKSUMS_ASSET}, and stage it under vendor/"
+task :vendor do
+  checksums = fetch("#{RELEASE_BASE}/#{CHECKSUMS_ASSET}")
+  # Format: "<hex>  <filename>" per line (sha256sum convention). Fail closed:
+  # a missing entry is as fatal as a mismatching one — never install unverified
+  # bytes.
+  expected = checksums.lines.find { |l| l.split.last == BUNDLE_ASSET }&.split&.first
+  raise "#{CHECKSUMS_ASSET} has no entry for #{BUNDLE_ASSET} — refusing to install unverified binaries" unless expected
+
+  data = fetch("#{RELEASE_BASE}/#{BUNDLE_ASSET}")
+  actual = Digest::SHA256.hexdigest(data)
+  unless actual.casecmp?(expected)
+    raise "sha256 mismatch for #{BUNDLE_ASSET}: expected #{expected}, got #{actual}"
+  end
+  puts "verified #{BUNDLE_ASSET} (#{data.bytesize} bytes, sha256 #{actual})"
+
+  FileUtils.rm_rf(VENDOR_DIR)
+  FileUtils.mkdir_p([File.join(VENDOR_DIR, "bin"), File.join(VENDOR_DIR, "lib")])
+  Dir.mktmpdir do |tmp|
+    tarball = File.join(tmp, BUNDLE_ASSET)
+    File.binwrite(tarball, data)
+    system("tar", "-xzf", tarball, "-C", tmp, exception: true)
+    # Route by filename like the core crate's extract_bundle: libkrunfw* → lib/,
+    # everything else → bin/.
+    Dir[File.join(tmp, "**", "*")].each do |f|
+      next unless File.file?(f) && f != tarball
+      name = File.basename(f)
+      dest = name.start_with?("libkrunfw") ? "lib" : "bin"
+      FileUtils.cp(f, File.join(VENDOR_DIR, dest, name))
+      FileUtils.chmod(0o755, File.join(VENDOR_DIR, dest, name))
+    end
+  end
+  puts "staged: #{Dir[File.join(VENDOR_DIR, "{bin,lib}", "*")].join(", ")}"
+end
+
+namespace :build do
+  desc "Build the arm64-darwin platform gem (requires rake vendor first)"
+  task :platform do
+    sh "gem build microsandbox-rb-binaries.gemspec"
+  end
+
+  desc "Build the empty ruby-platform fallback gem"
+  task :ruby do
+    sh({"MSB_BINARIES_PLATFORM" => "ruby"}, "gem build microsandbox-rb-binaries.gemspec")
+  end
+end
+
+desc "Build both variants"
+task build: ["build:platform", "build:ruby"]

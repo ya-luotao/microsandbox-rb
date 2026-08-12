@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# `msb` executable shim. The binaries gem — not the SDK gem — owns the `msb`
+# executable name (upstream #1305 exe-ownership question): the SDK gem ships no
+# executables at all, so the two gems can never collide on a binstub.
+require "microsandbox_rb_binaries"
+
+path = MicrosandboxRbBinaries.msb_path
+unless path
+  abort "msb: this is the ruby-platform fallback build of microsandbox-rb-binaries, " \
+    "which ships no binaries (unsupported platform). Install msb another way " \
+    "(e.g. let microsandbox-rb auto-provision it, or set MSB_PATH)."
+end
+
+exec(path, *ARGV)
