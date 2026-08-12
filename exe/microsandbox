@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# `microsandbox` CLI shim — the `gem exec microsandbox -- run <image>` surface
+# from upstream #1305, with node-SDK parity (sdk/node-ts/bin/microsandbox.cjs):
+# resolve the runtime through the SDK's full resolver (MSB_PATH env > user
+# override > binaries companion gem > ~/.microsandbox > PATH, with first-use
+# auto-provisioning as the backstop the node shim lacks) and delegate to it,
+# exiting 127 when no runtime can be found.
+require "microsandbox"
+
+args = ARGV.dup
+# `gem exec microsandbox -- run x` forwards the `--` separator to the command.
+args.shift if args.first == "--"
+
+begin
+  Microsandbox.ensure_runtime!
+  path = Microsandbox.runtime_path
+rescue => e
+  warn "microsandbox: #{e.message}"
+  warn "microsandbox: no msb runtime found. Install the microsandbox-rb-binaries gem, " \
+    "allow first-use auto-provisioning (unset MICROSANDBOX_NO_AUTO_INSTALL), or set MSB_PATH."
+  exit 127
+end
+
+begin
+  exec(path, *args)
+rescue SystemCallError => e
+  warn "microsandbox: failed to run #{path}: #{e.message}"
+  exit 127
+end

@@ -41,6 +41,7 @@ Gem::Specification.new do |spec|
   # for precompiled platform gems; ext/ ships for source builds.
   spec.files = Dir[
     "lib/**/*.rb",
+    "exe/*",
     "ext/**/*.{rs,toml,rb}",
     "sig/**/*.rbs",
     "rust-toolchain.toml",
@@ -52,6 +53,12 @@ Gem::Specification.new do |spec|
     "LICENSE"
   ]
   spec.require_paths = ["lib"]
+
+  # The `microsandbox` CLI shim (`gem exec microsandbox -- run <image>`,
+  # upstream #1305). Deliberately NOT named `msb`: the binaries companion gem
+  # owns the `msb` executable, so the two gems can never collide on a binstub.
+  spec.bindir = "exe"
+  spec.executables = ["microsandbox"]
 
   # The native extension. rb-sys drives the Cargo build through extconf.rb.
   spec.extensions = ["ext/microsandbox/extconf.rb"]
