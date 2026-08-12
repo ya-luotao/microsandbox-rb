@@ -37,11 +37,24 @@ RSpec.describe Microsandbox do
     # Guards against the constant silently drifting from the pinned git tag — the
     # exact failure mode (a stale "currently vX.Y.Z" note) that motivated adding
     # the constant. Also asserts both git deps share one tag.
-    it "stays in sync with the upstream tag pinned in ext/microsandbox/Cargo.toml" do
+    #
+    # TEMPORARY (matches the rev pin in ext/microsandbox/Cargo.toml): while the
+    # deps are rev-pinned to the fork's v0.6.8 + #1300 digest-verification
+    # backport, there is no `tag` to compare — instead assert both deps share
+    # one rev and that the Cargo.toml comment still records the RUNTIME_VERSION
+    # base. Restore the plain tag assertion when the pin returns to an official
+    # upstream tag.
+    it "stays in sync with the upstream pin in ext/microsandbox/Cargo.toml" do
       cargo = File.read(File.expand_path("../../ext/microsandbox/Cargo.toml", __dir__))
       tags = cargo.scan(/^microsandbox(?:-network)?\s*=\s*\{[^}]*\btag\s*=\s*"([^"]+)"/).flatten
-      expect(tags).not_to be_empty
-      expect(tags.uniq).to eq([Microsandbox::RUNTIME_VERSION])
+      if tags.empty?
+        revs = cargo.scan(/^microsandbox(?:-network)?\s*=\s*\{[^}]*\brev\s*=\s*"([^"]+)"/).flatten
+        expect(revs.length).to eq(2)
+        expect(revs.uniq.length).to eq(1)
+        expect(cargo).to include("#{Microsandbox::RUNTIME_VERSION} + upstream #1300")
+      else
+        expect(tags.uniq).to eq([Microsandbox::RUNTIME_VERSION])
+      end
     end
   end
 end
