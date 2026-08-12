@@ -13,10 +13,11 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 - The `microsandbox` / `microsandbox-network` git deps are temporarily
   rev-pinned to the `ya-luotao/microsandbox` fork's `v0.6.8-digest-backport`
   branch — upstream `v0.6.8` plus PR #1300 (runtime bundle digest verification)
-  cherry-picked — so both the `prebuilt` build-time download and the first-use
-  runtime installer verify the release bundle's published SHA-256, fail-closed.
-  No Ruby API change. The pin returns to an official upstream tag once #1300
-  ships in a release.
+  cherry-picked, plus digest verification for the prebuilt `agentd` guest-agent
+  download (a hole #1300 does not cover) — so every build-time and first-use
+  runtime download verifies the release's published SHA-256, fail-closed.
+  No Ruby API change. The pin returns to an official upstream tag once
+  equivalent verification ships in a release.
 
 ## [0.12.0] - 2026-07-30
 

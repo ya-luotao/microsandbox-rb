@@ -36,12 +36,14 @@ rb-sys = "0.9"
 # SDKs ship with; default features add "prebuilt" (provisions msb + libkrunfw at
 # build time), "net", and "keyring".
 # TEMPORARY: rev-pinned to the ya-luotao fork's `v0.6.8-digest-backport` branch —
-# v0.6.8 + upstream #1300 (runtime bundle digest verification, cherry-picked) so
-# both the prebuilt build-time download and the runtime installer verify the
-# bundle's published SHA-256. Switch back to the official upstream tag once
-# #1300 lands in a release tag.
-microsandbox = { git = "https://github.com/ya-luotao/microsandbox", rev = "13c422fd1c9f35df779911c1724f3856ff935f7e", default-features = true, features = ["ssh"] }
-microsandbox-network = { git = "https://github.com/ya-luotao/microsandbox", rev = "13c422fd1c9f35df779911c1724f3856ff935f7e" }
+# v0.6.8 + upstream #1300 (runtime bundle digest verification, cherry-picked)
+# plus agentd prebuilt digest verification, so every build-time and runtime
+# download verifies the release's published SHA-256. Switch back to the
+# official upstream tag once equivalent verification lands in a release tag.
+# The approved rev is mirrored in spec/unit/version_spec.rb — update both
+# together.
+microsandbox = { git = "https://github.com/ya-luotao/microsandbox", rev = "3b9995e7a9a589f0a60b225914f74090361f3089", default-features = true, features = ["ssh"] }
+microsandbox-network = { git = "https://github.com/ya-luotao/microsandbox", rev = "3b9995e7a9a589f0a60b225914f74090361f3089" }
 
 # Async core bridged to Ruby's synchronous API via a blocking tokio runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

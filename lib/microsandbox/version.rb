@@ -10,10 +10,16 @@ module Microsandbox
   # spec/unit/version_spec.rb.
   VERSION = "0.12.0"
 
-  # The upstream microsandbox runtime release this gem build embeds — the `tag`
-  # pinned on the `microsandbox`/`microsandbox-network` git deps in
+  # The upstream microsandbox runtime release this gem build embeds — the base
+  # of the `microsandbox`/`microsandbox-network` git deps pinned in
   # ext/microsandbox/Cargo.toml. Exposed at runtime as
-  # {Microsandbox.runtime_version}. spec/unit/version_spec.rb asserts it stays in
-  # sync with the Cargo tag so it can't silently drift out of date.
+  # {Microsandbox.runtime_version}. TEMPORARY: the deps are currently NOT
+  # tag-pinned — they are rev-pinned to the ya-luotao/microsandbox fork's
+  # `v0.6.8-digest-backport` branch (this base tag plus digest verification for
+  # the runtime bundle and agentd downloads, backported from upstream #1300)
+  # until equivalent verification ships in an upstream release tag.
+  # spec/unit/version_spec.rb enforces the pin: either both deps carry an
+  # official tag equal to this constant, or both carry the approved backport
+  # rev recorded there.
   RUNTIME_VERSION = "v0.6.8"
 end

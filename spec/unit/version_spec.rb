@@ -34,26 +34,50 @@ RSpec.describe Microsandbox do
       expect(Microsandbox.runtime_version).to eq(Microsandbox::RUNTIME_VERSION)
     end
 
-    # Guards against the constant silently drifting from the pinned git tag — the
-    # exact failure mode (a stale "currently vX.Y.Z" note) that motivated adding
-    # the constant. Also asserts both git deps share one tag.
+    # Guards against the constant silently drifting from the pinned upstream
+    # source — the exact failure mode (a stale "currently vX.Y.Z" note) that
+    # motivated adding the constant.
     #
-    # TEMPORARY (matches the rev pin in ext/microsandbox/Cargo.toml): while the
-    # deps are rev-pinned to the fork's v0.6.8 + #1300 digest-verification
-    # backport, there is no `tag` to compare — instead assert both deps share
-    # one rev and that the Cargo.toml comment still records the RUNTIME_VERSION
-    # base. Restore the plain tag assertion when the pin returns to an official
-    # upstream tag.
+    # TEMPORARY (matches the rev pin in ext/microsandbox/Cargo.toml): while
+    # upstream #1300 (digest verification) is unreleased, the deps are
+    # rev-pinned to an approved fork backport of RUNTIME_VERSION. Exactly two
+    # shapes pass — both deps tag-pinned to the official repo at
+    # RUNTIME_VERSION, or both deps rev-pinned to APPROVED_BACKPORT — and
+    # anything else (mixed pin kinds, mixed sources, an unapproved rev) fails.
+    # On unpin, drop APPROVED_BACKPORT and the rev branch.
+    official_repo = "https://github.com/superradcompany/microsandbox"
+    approved_backport = {
+      # ya-luotao/microsandbox branch `v0.6.8-digest-backport`: v0.6.8 (==
+      # RUNTIME_VERSION) + upstream #1300 digest verification + agentd
+      # prebuilt digest verification. Update in lock-step with Cargo.toml.
+      git: "https://github.com/ya-luotao/microsandbox",
+      rev: "3b9995e7a9a589f0a60b225914f74090361f3089"
+    }
+
     it "stays in sync with the upstream pin in ext/microsandbox/Cargo.toml" do
       cargo = File.read(File.expand_path("../../ext/microsandbox/Cargo.toml", __dir__))
-      tags = cargo.scan(/^microsandbox(?:-network)?\s*=\s*\{[^}]*\btag\s*=\s*"([^"]+)"/).flatten
-      if tags.empty?
-        revs = cargo.scan(/^microsandbox(?:-network)?\s*=\s*\{[^}]*\brev\s*=\s*"([^"]+)"/).flatten
-        expect(revs.length).to eq(2)
-        expect(revs.uniq.length).to eq(1)
-        expect(cargo).to include("#{Microsandbox::RUNTIME_VERSION} + upstream #1300")
-      else
+      deps = ["microsandbox", "microsandbox-network"].to_h do |name|
+        decl = cargo[/^#{Regexp.escape(name)}\s*=\s*\{[^}]*\}/]
+        expect(decl).not_to be_nil, "missing #{name} git dependency declaration"
+        [name, {
+          git: decl[/\bgit\s*=\s*"([^"]+)"/, 1],
+          tag: decl[/\btag\s*=\s*"([^"]+)"/, 1],
+          rev: decl[/\brev\s*=\s*"([^"]+)"/, 1]
+        }]
+      end
+
+      gits = deps.values.map { |dep| dep[:git] }
+      tags = deps.values.map { |dep| dep[:tag] }
+      revs = deps.values.map { |dep| dep[:rev] }
+
+      if tags.all?
+        expect(revs).to all(be_nil), "mixed tag+rev pin: #{deps}"
+        expect(gits.uniq).to eq([official_repo])
         expect(tags.uniq).to eq([Microsandbox::RUNTIME_VERSION])
+      else
+        expect(tags).to all(be_nil), "mixed tag/rev pin kinds: #{deps}"
+        expect(gits.uniq).to eq([approved_backport[:git]])
+        expect(revs.uniq).to eq([approved_backport[:rev]])
       end
     end
   end
