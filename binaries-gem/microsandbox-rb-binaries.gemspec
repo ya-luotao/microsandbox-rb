@@ -48,7 +48,13 @@ Gem::Specification.new do |spec|
     require_relative "lib/microsandbox_rb_binaries/vendor_tools"
     vendor_dir = File.join(__dir__, "vendor")
     begin
-      entries = MicrosandboxRbBinaries::VendorTools.verify_manifest!(vendor_dir)
+      # The manifest binds the tree to the runtime release it was staged from,
+      # so a stale vendor tree fails here after a RUNTIME_VERSION bump. (The
+      # finished gem's payload is verified again after packaging — see
+      # rake build:platform — closing the gemspec-to-packaging TOCTOU window.)
+      entries = MicrosandboxRbBinaries::VendorTools.verify_manifest!(
+        vendor_dir, expected_runtime_version: MicrosandboxRbBinaries::RUNTIME_VERSION
+      )
     rescue => e
       raise Gem::InvalidSpecificationException, e.message
     end
