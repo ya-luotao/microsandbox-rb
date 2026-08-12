@@ -23,10 +23,19 @@ the full findings.
 ## Building
 
 ```sh
-rake vendor          # download + sha256-verify (fail-closed) + stage binaries
+rake vendor          # download + sha256-verify (fail-closed, both a missing
+                     # checksums entry and a mismatch abort) + stage into a
+                     # fresh sibling dir + validate the complete runtime set +
+                     # atomic promote, writing vendor/manifest.sha256
 rake build:platform  # microsandbox-rb-binaries-<v>-arm64-darwin.gem
+                     # (revalidates the manifest fail-closed)
 rake build:ruby      # microsandbox-rb-binaries-<v>.gem (empty fallback, no exe)
 ```
+
+The gemspec builds the **fallback by default** (platform builds opt in via
+`MSB_BINARIES_PLATFORM`): the parent repo's Gemfile `gemspec` directive makes
+bundler eval this file on every `bundle` invocation, so the default variant
+must load without a vendor tree.
 
 ## Versioning (lockstep)
 

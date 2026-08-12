@@ -2,15 +2,23 @@
 
 require_relative "lib/microsandbox_rb_binaries"
 
-# One gemspec, two build variants (upstream #1305 prototype):
+# One gemspec, two build variants (upstream #1305 prototype), selected by
+# MSB_BINARIES_PLATFORM:
 #
-# - default: platform gem for the host this prototype targets (arm64-darwin).
-#   Requires `rake vendor` to have staged the runtime binaries first — the
-#   build fails closed rather than silently producing an empty platform gem.
-# - MSB_BINARIES_PLATFORM=ruby: the empty ruby-platform fallback. No binaries,
-#   no executables — a stub `msb` exe here would shadow a real msb on PATH via
-#   bundler binstubs, so the fallback ships none and consumers get nil from
-#   MicrosandboxRbBinaries.msb_path instead.
+# - "arm64-darwin" (any non-"ruby" value): the platform gem. Requires `rake
+#   vendor` to have staged + manifested the runtime binaries first — the build
+#   fails closed (manifest revalidation) rather than shipping a stale, partial,
+#   or tampered vendor tree. Built via `rake build:platform`.
+# - unset / "ruby" (the DEFAULT): the empty ruby-platform fallback. No
+#   binaries, no executables — a stub `msb` exe here would shadow a real msb
+#   on PATH via bundler binstubs, so the fallback ships none and consumers get
+#   nil from MicrosandboxRbBinaries.msb_path instead.
+#
+# The fallback must be the default: the parent repo's Gemfile uses `gemspec`,
+# whose bundler path source globs `*/*.gemspec` and EVALS this file on every
+# `bundle` invocation — a default that demands a vendor manifest would break
+# every vendor-less checkout (fresh clones, CI). Platform builds opt in
+# explicitly.
 Gem::Specification.new do |spec|
   spec.name = "microsandbox-rb-binaries"
   spec.version = MicrosandboxRbBinaries::VERSION
@@ -29,16 +37,26 @@ Gem::Specification.new do |spec|
 
   base_files = ["lib/microsandbox_rb_binaries.rb", "README.md"]
 
-  fallback = ENV["MSB_BINARIES_PLATFORM"] == "ruby"
-  vendored = Dir.glob("vendor/{bin,lib}/*", base: __dir__).select do |f|
-    File.file?(File.join(__dir__, f))
-  end
-  if !fallback && vendored.empty?
-    raise Gem::InvalidSpecificationException,
-      "no vendored binaries found — run `rake vendor` before building the platform gem"
+  requested = ENV["MSB_BINARIES_PLATFORM"].to_s
+  fallback = requested.empty? || requested == "ruby"
+  vendored = []
+  unless fallback
+    # Fail-closed revalidation at build time: the vendor tree must match the
+    # sha256 manifest `rake vendor` wrote when it staged + validated the
+    # bundle, and must contain the complete runtime (msb + firmware). A stale,
+    # partial, or tampered tree fails the build instead of shipping.
+    require_relative "lib/microsandbox_rb_binaries/vendor_tools"
+    vendor_dir = File.join(__dir__, "vendor")
+    begin
+      entries = MicrosandboxRbBinaries::VendorTools.verify_manifest!(vendor_dir)
+    rescue => e
+      raise Gem::InvalidSpecificationException, e.message
+    end
+    vendored = entries.map { |rel| "vendor/#{rel}" } +
+      ["vendor/#{MicrosandboxRbBinaries::VendorTools::MANIFEST_NAME}"]
   end
 
-  spec.platform = fallback ? Gem::Platform::RUBY : "arm64-darwin"
+  spec.platform = fallback ? Gem::Platform::RUBY : requested
   spec.files = fallback ? base_files : base_files + vendored
   spec.bindir = "exe"
   spec.executables = fallback ? [] : ["msb"]

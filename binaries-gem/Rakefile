@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
-require "digest"
 require "fileutils"
 require "open-uri"
 require "tmpdir"
 
 require_relative "lib/microsandbox_rb_binaries"
+require_relative "lib/microsandbox_rb_binaries/vendor_tools"
 
 # The prototype targets the host platform only; the release asset naming
 # mirrors the core crate's `bundle_download_url` (darwin/aarch64 → the
@@ -24,48 +24,48 @@ def fetch(url)
 end
 
 desc "Download the #{RUNTIME_VERSION} runtime bundle, verify its sha256 " \
-  "against the release's #{CHECKSUMS_ASSET}, and stage it under vendor/"
+  "against the release's #{CHECKSUMS_ASSET}, stage + validate it in a fresh " \
+  "sibling dir, and atomically promote it to vendor/ (with a sha256 manifest " \
+  "the gem build revalidates)"
 task :vendor do
-  checksums = fetch("#{RELEASE_BASE}/#{CHECKSUMS_ASSET}")
-  # Format: "<hex>  <filename>" per line (sha256sum convention). Fail closed:
-  # a missing entry is as fatal as a mismatching one — never install unverified
-  # bytes.
-  expected = checksums.lines.find { |l| l.split.last == BUNDLE_ASSET }&.split&.first
-  raise "#{CHECKSUMS_ASSET} has no entry for #{BUNDLE_ASSET} — refusing to install unverified binaries" unless expected
+  tools = MicrosandboxRbBinaries::VendorTools
 
+  # Leftovers from crashed runs are stale state, never resume points.
+  FileUtils.rm_rf(Dir["#{VENDOR_DIR}.staging-*"] + Dir["#{VENDOR_DIR}.old-*"])
+
+  checksums = fetch("#{RELEASE_BASE}/#{CHECKSUMS_ASSET}")
+  expected = tools.expected_sha256!(checksums, BUNDLE_ASSET)
   data = fetch("#{RELEASE_BASE}/#{BUNDLE_ASSET}")
-  actual = Digest::SHA256.hexdigest(data)
-  unless actual.casecmp?(expected)
-    raise "sha256 mismatch for #{BUNDLE_ASSET}: expected #{expected}, got #{actual}"
-  end
+  actual = tools.verify_sha256!(data, expected, BUNDLE_ASSET)
   puts "verified #{BUNDLE_ASSET} (#{data.bytesize} bytes, sha256 #{actual})"
 
-  FileUtils.rm_rf(VENDOR_DIR)
-  FileUtils.mkdir_p([File.join(VENDOR_DIR, "bin"), File.join(VENDOR_DIR, "lib")])
-  Dir.mktmpdir do |tmp|
-    tarball = File.join(tmp, BUNDLE_ASSET)
-    File.binwrite(tarball, data)
-    system("tar", "-xzf", tarball, "-C", tmp, exception: true)
-    # Route by filename like the core crate's extract_bundle: libkrunfw* → lib/,
-    # everything else → bin/.
-    Dir[File.join(tmp, "**", "*")].each do |f|
-      next unless File.file?(f) && f != tarball
-      name = File.basename(f)
-      dest = name.start_with?("libkrunfw") ? "lib" : "bin"
-      FileUtils.cp(f, File.join(VENDOR_DIR, dest, name))
-      FileUtils.chmod(0o755, File.join(VENDOR_DIR, dest, name))
+  staging = "#{VENDOR_DIR}.staging-#{Process.pid}"
+  begin
+    Dir.mktmpdir do |tmp|
+      tarball = File.join(tmp, BUNDLE_ASSET)
+      File.binwrite(tarball, data)
+      tools.stage_bundle!(tarball, staging)
     end
+    tools.validate_staged!(staging, RUNTIME_VERSION)
+    tools.write_manifest!(staging)
+    tools.promote!(staging, VENDOR_DIR)
+  rescue
+    # Fail-closed: a failed run never leaves a staging tree behind, and the
+    # previous vendor tree (if any) is only replaced by the atomic promote.
+    FileUtils.rm_rf(staging)
+    raise
   end
-  puts "staged: #{Dir[File.join(VENDOR_DIR, "{bin,lib}", "*")].join(", ")}"
+  puts "staged: #{tools.verify_manifest!(VENDOR_DIR).join(", ")}"
 end
 
 namespace :build do
-  desc "Build the arm64-darwin platform gem (requires rake vendor first)"
+  desc "Build the arm64-darwin platform gem (requires rake vendor first; " \
+    "the build revalidates vendor/manifest.sha256 fail-closed)"
   task :platform do
-    sh "gem build microsandbox-rb-binaries.gemspec"
+    sh({"MSB_BINARIES_PLATFORM" => "arm64-darwin"}, "gem build microsandbox-rb-binaries.gemspec")
   end
 
-  desc "Build the empty ruby-platform fallback gem"
+  desc "Build the empty ruby-platform fallback gem (the gemspec default)"
   task :ruby do
     sh({"MSB_BINARIES_PLATFORM" => "ruby"}, "gem build microsandbox-rb-binaries.gemspec")
   end
