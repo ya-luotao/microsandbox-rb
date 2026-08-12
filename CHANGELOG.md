@@ -30,6 +30,31 @@ upstream #1305 — not intended for release as-is.
   gem + empty ruby fallback, sha256-fail-closed `rake vendor`, `msb` exe
   ownership) plus the clean-machine `gem exec` demo (`binaries-gem/DEMO.md`).
   Local `gem build`/`gem install --local` only — never published.
+- **`microsandbox` executable** (the #1305-agreed `gem exec microsandbox --
+  run <image>` surface): a thin shim with node-SDK parity that resolves the
+  runtime through the full resolver (auto-provision backstop included) and
+  delegates, exiting 127 when nothing resolves. Named `microsandbox`, not
+  `msb` — the binaries companion gem owns `msb`.
+
+### Changed (review fix round)
+
+- The binaries-gem tier claims **only the msb slot**, and only when no
+  `runtime_path=` call landed first (ownership tracked under a mutex, so the
+  claim is thread-safe and can never race the setter). The firmware slot is
+  never claimed — libkrunfw resolves by adjacency to the vendored msb —
+  eliminating the mixed-runtime pairing two independent set-once slots allow.
+- `runtime_path=` now **warns when it can no longer take effect** because the
+  binaries gem already claimed the slot (previously silent); a second user
+  call keeps the documented silent-ignore semantics.
+- The per-tier runtime version check now requires a **successful exit status
+  under a bounded timeout** (a hung `msb --version` no longer blocks first use
+  forever), is cached **per resolved path** instead of once per process (a
+  tier change between calls is re-verified), and warns when the two gems'
+  lockstep versions drift.
+- `rake vendor` stages into a fresh sibling dir, validates the complete
+  runtime set + msb version, writes a sha256 manifest, and **atomically
+  promotes** it; the platform-gem build revalidates the manifest fail-closed.
+  The SDK treats the gem tier as present only when both msb and firmware ship.
 
 ## [0.12.0] - 2026-07-30
 

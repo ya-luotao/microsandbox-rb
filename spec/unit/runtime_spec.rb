@@ -1,6 +1,20 @@
 # frozen_string_literal: true
 
 RSpec.describe "Microsandbox runtime helpers" do
+  # Runtime-slot bookkeeping (claim flag, slot owner, per-path verify cache)
+  # would otherwise leak between examples — e.g. a runtime_path= example marks
+  # the slot user-owned for the rest of the process.
+  around do |example|
+    reset = lambda do
+      %i[@runtime_ready @binaries_gem_claimed @msb_slot_owner @verified_msb_paths].each do |ivar|
+        Microsandbox.instance_variable_set(ivar, nil)
+      end
+    end
+    reset.call
+    example.run
+    reset.call
+  end
+
   describe ".installed?" do
     it "returns a boolean" do
       expect([true, false]).to include(Microsandbox.installed?)
@@ -60,17 +74,6 @@ RSpec.describe "Microsandbox runtime helpers" do
   end
 
   describe ".ensure_runtime!" do
-    # The memoized "ready" flag would leak across examples (and from a real
-    # source-built runtime on the dev box), so reset it around each one. Same
-    # for the binaries-gem claim flag.
-    around do |example|
-      Microsandbox.instance_variable_set(:@runtime_ready, nil)
-      Microsandbox.instance_variable_set(:@binaries_gem_claimed, nil)
-      example.run
-      Microsandbox.instance_variable_set(:@runtime_ready, nil)
-      Microsandbox.instance_variable_set(:@binaries_gem_claimed, nil)
-    end
-
     # These examples pin the auto-provision paths, so take the binaries-gem
     # tier out of play (a host with the companion gem installed would otherwise
     # skip install entirely) and stub the per-tier version check — it shells
