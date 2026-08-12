@@ -29,6 +29,9 @@
 set -eu
 
 # ---------- assertion helpers ------------------------------------------------
+# Silence must never look like success: any unguarded command that trips
+# `set -e` reports the line it died on instead of aborting mouthless.
+trap 'echo "ASSERT FAIL: aborted at line $LINENO" >&2; exit 1' ERR
 FAILED=0
 fail() { echo "ASSERT FAIL: $*" >&2; FAILED=1; exit 1; }
 assert_eq() { [ "$1" = "$2" ] || fail "$3 (got '$1', want '$2')"; }
@@ -151,23 +154,10 @@ out=$(msb --version 2>&1) && rc=0 || rc=$?
 echo "$out"
 assert_eq "$rc" "127" "bare msb is command-not-found"
 
-step "B. microsandbox-rb today, same clean machine: auto-provision bootstraps"
-export MSB_HOME="$WORK/msbhome-b"
-mkdir -p "$MSB_HOME"
-out=$(ruby -e '
-  require "microsandbox"
-  Microsandbox.ensure_runtime!   # downloads the runtime bundle into MSB_HOME
-  puts "resolved: #{Microsandbox.runtime_path}"
-' 2>&1)
-echo "$out"
-resolved=$(echo "$out" | sed -n 's/^resolved: //p')
-case "$resolved" in
-  "$MSB_HOME"/*) ;;
-  *) fail "scenario B winner should live under MSB_HOME (got '$resolved')" ;;
-esac
-ver=$("$resolved" --version) || fail "provisioned msb does not run"
-assert_eq "$ver" "msb $RUNTIME_V" "provisioned msb reports the embedded runtime version"
-
+# Scenario order note: C (network-free by design — its whole claim is zero
+# runtime downloads) runs BEFORE B (whose bootstrap genuinely downloads from
+# the GitHub release CDN), so one run on a flaky network still verifies
+# 0/0b/A/C completely before gambling on B's download.
 step "C. two-gem design as intended: binaries gem installed, auto-provision OFF"
 export MSB_HOME="$WORK/msbhome-c"
 mkdir -p "$MSB_HOME"
@@ -179,7 +169,7 @@ out=$(MICROSANDBOX_NO_AUTO_INSTALL=1 ruby -e '
   require "microsandbox"
   Microsandbox.ensure_runtime!
   puts "resolved: #{Microsandbox.runtime_path}"
-' 2>&1)
+' 2>&1) || { echo "$out"; fail "scenario C resolution failed (see output above)"; }
 echo "$out"
 resolved=$(echo "$out" | sed -n 's/^resolved: //p')
 case "$resolved" in
@@ -205,5 +195,40 @@ out=$(MICROSANDBOX_NO_AUTO_INSTALL=1 gem exec --config-file "$WORK/gemrc" --cons
 echo "$out"
 assert_eq "$rc" "0" "gem exec surface succeeds with the binaries gem installed"
 assert_contains "$out" "msb $RUNTIME_V" "gem exec surface delegates to the vendored msb"
+
+step "B. microsandbox-rb today: auto-provision bootstraps the clean machine"
+# Decontaminate: C installed the binaries gem into the shared GEM_HOME, which
+# would claim the resolver tier and skip auto-provisioning — the very thing B
+# exists to test. Remove it and assert it is gone.
+gem uninstall microsandbox-rb-binaries -a -x --force >/dev/null 2>&1 || true
+listing=$(gem list 2>&1 | grep -i microsandbox || true)
+assert_not_contains "$listing" "microsandbox-rb-binaries" "binaries gem removed before scenario B"
+export MSB_HOME="$WORK/msbhome-b"
+mkdir -p "$MSB_HOME"
+# The bootstrap's release-bundle download is a plain network operation; retry
+# it a few times so a flaky CDN doesn't masquerade as a design failure. Every
+# attempt exercises the true SDK path (install is idempotent, a failed
+# download leaves nothing behind); the assertions below still run exactly
+# once, against the attempt that succeeded.
+bootstrap_ok=""
+for i in 1 2 3; do
+  out=$(ruby -e '
+    require "microsandbox"
+    Microsandbox.ensure_runtime!   # downloads the runtime bundle into MSB_HOME
+    puts "resolved: #{Microsandbox.runtime_path}"
+  ' 2>&1) && { bootstrap_ok=1; break; }
+  echo "auto-provision download attempt $i failed (network); retrying:"
+  echo "$out" | tail -1
+  sleep 20
+done
+[ -n "$bootstrap_ok" ] || { echo "$out"; fail "scenario B bootstrap failed after 3 attempts"; }
+echo "$out"
+resolved=$(echo "$out" | sed -n 's/^resolved: //p')
+case "$resolved" in
+  "$MSB_HOME"/*) ;;
+  *) fail "scenario B winner should live under MSB_HOME (got '$resolved')" ;;
+esac
+ver=$("$resolved" --version) || fail "provisioned msb does not run"
+assert_eq "$ver" "msb $RUNTIME_V" "provisioned msb reports the embedded runtime version"
 
 step "ALL ASSERTIONS PASSED — artifacts in $WORK"
