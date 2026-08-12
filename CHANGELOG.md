@@ -30,11 +30,13 @@ upstream #1305 — not intended for release as-is.
   gem + empty ruby fallback, sha256-fail-closed `rake vendor`, `msb` exe
   ownership) plus the clean-machine `gem exec` demo (`binaries-gem/DEMO.md`).
   Local `gem build`/`gem install --local` only — never published.
-- **`microsandbox` executable** (the #1305-agreed `gem exec microsandbox --
-  run <image>` surface): a thin shim with node-SDK parity that resolves the
-  runtime through the full resolver (auto-provision backstop included) and
-  delegates, exiting 127 when nothing resolves. Named `microsandbox`, not
-  `msb` — the binaries companion gem owns `msb`.
+- **`microsandbox` executable** (the #1305 `gem exec` surface — note the
+  working spelling is `gem exec microsandbox run <image>` with NO `--`: on
+  current RubyGems a `--` after the command name silently drops every
+  argument, as the demo pins by assertion): a thin shim with node-SDK parity
+  that resolves the runtime through the full resolver (auto-provision
+  backstop included) and delegates, exiting 127 when nothing resolves. Named
+  `microsandbox`, not `msb` — the binaries companion gem owns `msb`.
 
 ### Changed (review fix round)
 
