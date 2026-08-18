@@ -18,7 +18,7 @@ use microsandbox::logs::{
     LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
 use microsandbox::sandbox::{
-    AttachOptionsBuilder, DiskImageFormat, EnvVar, FsEntry, FsEntryKind, FsMetadata,
+    AttachOptionsBuilder, DiskImageFormat, EnvVar, FlatClone, FsEntry, FsEntryKind, FsMetadata,
     HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle, RlimitResource,
     RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics, SandboxModificationBuilder,
     SandboxModificationPatch, SandboxStatus, SandboxStopResult, SecretBuilder,
@@ -128,12 +128,40 @@ impl Sandbox {
         for (k, v) in conv::opt_string_map(opts, "scripts")? {
             b = b.script(k, v);
         }
-        let entrypoint = conv::opt_string_vec(opts, "entrypoint")?;
-        if !entrypoint.is_empty() {
+        // entrypoint/cmd: presence-keyed, NOT non-emptiness-keyed — an
+        // explicitly *empty* array is meaningful for both (it clears the
+        // image's ENTRYPOINT / CMD, blocking the image-config merge), exactly
+        // like the Python binding. Keying on non-emptiness silently resurrects
+        // the image ENTRYPOINT and runs the wrong command under
+        // `exec_default`/`attach_default`.
+        if let Some(entrypoint) = conv::opt::<Vec<String>>(opts, "entrypoint")? {
             b = b.entrypoint(entrypoint);
+        }
+        if let Some(cmd) = conv::opt::<Vec<String>>(opts, "cmd")? {
+            b = b.cmd(cmd);
         }
         for (host, guest) in conv::opt_port_map(opts, "ports")? {
             b = b.port(host, guest);
+        }
+        // vsock: host Unix sockets exposed on guest-to-host vsock ports
+        // (v0.6.9). Each route is normalized by the Ruby layer to a
+        // string-keyed Hash {host_socket:, port:, socket_type: "stream"|"dgram"}.
+        for route in conv::opt_hash_vec(opts, "vsock")? {
+            let Some(host_socket) = conv::opt_string(route, "host_socket")? else {
+                return Err(error::base_error("vsock route requires host_socket:"));
+            };
+            let Some(port) = conv::opt_u32(route, "port")? else {
+                return Err(error::base_error("vsock route requires port:"));
+            };
+            match conv::opt_string(route, "socket_type")?.as_deref() {
+                None | Some("stream") => b = b.vsock(host_socket, port),
+                Some("dgram") => b = b.vsock_dgram(host_socket, port),
+                Some(other) => {
+                    return Err(error::base_error(format!(
+                        "unknown vsock socket_type {other:?} (expected stream/dgram)"
+                    )))
+                }
+            }
         }
         // volumes: each mount is normalized by the Ruby layer to a string-keyed
         // Hash — guest (req), kind ("bind"/"named"/"tmpfs"/"disk"), source
@@ -413,6 +441,28 @@ impl Sandbox {
                 n
             });
         }
+        // rate_limiter: per-sandbox egress/ingress token-bucket limits
+        // (v0.6.9). The Ruby layer normalizes the option to a string-keyed
+        // Hash {egress:, ingress:} of {bandwidth:, ops:} buckets
+        // {size:, refill_time_ms:, one_time_burst:}; mirrors the Python SDK's
+        // `NetworkRateLimiter`. Applied via the network builder, accumulating
+        // on top of any configuration above.
+        if let Some(spec) = conv::opt::<RHash>(opts, "rate_limiter")?
+            .map(parse_rate_limiter)
+            .transpose()?
+        {
+            b = b.network(move |n| {
+                n.rate_limiter(move |mut r| {
+                    if let Some(egress) = spec.egress {
+                        r = r.egress(move |rl| egress.apply(rl));
+                    }
+                    if let Some(ingress) = spec.ingress {
+                        r = r.ingress(move |rl| ingress.apply(rl));
+                    }
+                    r
+                })
+            });
+        }
         // init: hand guest PID 1 to an init system. The Ruby layer normalizes
         // `init:` to a Hash { cmd:, args?:, env?: }. `init_with` with empty
         // args/env builds the same HandoffInit as the plain `init(cmd)`, so route
@@ -557,6 +607,29 @@ impl Sandbox {
         let parsed = ExecOpts::parse(args, opts)?;
         let handle = block_on(self.inner.exec_stream_with(cmd, move |b| parsed.apply(b)))
             .map_err(error::to_ruby)?;
+        Ok(ExecHandle::from_core(handle))
+    }
+
+    /// Run the image's resolved OCI ENTRYPOINT and CMD (the default workload,
+    /// v0.6.9) and wait for completion. `create` is strictly boot-only, so this
+    /// is how the image's own command is executed. `opts` matches `exec` minus
+    /// the command: cwd, user, env, timeout, tty, stdin, rlimits. Raises
+    /// NoDefaultCommandError when the image resolves no executable command.
+    fn exec_default(&self, opts: RHash) -> Result<RHash, Error> {
+        let parsed = ExecOpts::parse(Vec::new(), opts)?;
+        let output = block_on(self.inner.exec_default_with(move |b| parsed.apply(b)))
+            .map_err(error::to_ruby)?;
+        exec_output_to_hash(output)
+    }
+
+    /// Streaming default-workload execution. Returns an ExecHandle.
+    fn exec_default_stream(&self, opts: RHash) -> Result<ExecHandle, Error> {
+        let parsed = ExecOpts::parse(Vec::new(), opts)?;
+        let handle = block_on(
+            self.inner
+                .exec_default_stream_with(move |b| parsed.apply(b)),
+        )
+        .map_err(error::to_ruby)?;
         Ok(ExecHandle::from_core(handle))
     }
 
@@ -852,6 +925,14 @@ impl Sandbox {
     /// Attach an interactive terminal running the sandbox's default shell.
     fn attach_shell(&self) -> Result<i32, Error> {
         block_on(self.inner.attach_shell()).map_err(error::to_ruby)
+    }
+
+    /// Attach an interactive terminal to the image's resolved OCI ENTRYPOINT
+    /// and CMD (the default workload, v0.6.9); returns its exit code. `opts`:
+    /// cwd, user, env, detach_keys, rlimits.
+    fn attach_default(&self, opts: RHash) -> Result<i32, Error> {
+        let parsed = AttachOpts::parse(Vec::new(), opts)?;
+        block_on(self.inner.attach_default_with(move |b| parsed.apply(b))).map_err(error::to_ruby)
     }
 }
 
@@ -1268,6 +1349,83 @@ fn parse_dns(d: RHash) -> Result<DnsSpec, Error> {
     })
 }
 
+/// One token bucket of the `rate_limiter` create option (v0.6.9):
+/// `(size, refill_time_ms, one_time_burst)`. Size is bytes for bandwidth
+/// buckets, frames for ops buckets.
+type TokenBucketSpec = (u64, u64, u64);
+
+/// One direction of the `rate_limiter` create option.
+struct RateLimiterSpec {
+    bandwidth: Option<TokenBucketSpec>,
+    ops: Option<TokenBucketSpec>,
+}
+
+/// Parsed `rate_limiter` create option (v0.6.9, mirrors the Python SDK's
+/// `NetworkRateLimiter`): per-direction bandwidth/ops token buckets. Parsed up
+/// front because the network builder closure cannot return an error.
+struct NetworkRateLimiterSpec {
+    egress: Option<RateLimiterSpec>,
+    ingress: Option<RateLimiterSpec>,
+}
+
+fn parse_token_bucket(b: RHash, dir: &str, dim: &str) -> Result<TokenBucketSpec, Error> {
+    let Some(size) = conv::opt::<u64>(b, "size")? else {
+        return Err(error::base_error(format!(
+            "rate_limiter {dir} {dim} bucket requires size:"
+        )));
+    };
+    let Some(refill) = conv::opt::<u64>(b, "refill_time_ms")? else {
+        return Err(error::base_error(format!(
+            "rate_limiter {dir} {dim} bucket requires refill_time_ms:"
+        )));
+    };
+    let burst = conv::opt::<u64>(b, "one_time_burst")?.unwrap_or(0);
+    Ok((size, refill, burst))
+}
+
+fn parse_rate_limiter_direction(h: RHash, dir: &str) -> Result<RateLimiterSpec, Error> {
+    Ok(RateLimiterSpec {
+        bandwidth: conv::opt::<RHash>(h, "bandwidth")?
+            .map(|b| parse_token_bucket(b, dir, "bandwidth"))
+            .transpose()?,
+        ops: conv::opt::<RHash>(h, "ops")?
+            .map(|b| parse_token_bucket(b, dir, "ops"))
+            .transpose()?,
+    })
+}
+
+fn parse_rate_limiter(h: RHash) -> Result<NetworkRateLimiterSpec, Error> {
+    Ok(NetworkRateLimiterSpec {
+        egress: conv::opt::<RHash>(h, "egress")?
+            .map(|d| parse_rate_limiter_direction(d, "egress"))
+            .transpose()?,
+        ingress: conv::opt::<RHash>(h, "ingress")?
+            .map(|d| parse_rate_limiter_direction(d, "ingress"))
+            .transpose()?,
+    })
+}
+
+impl RateLimiterSpec {
+    fn apply(
+        self,
+        mut rl: microsandbox_network::builder::RateLimiterBuilder,
+    ) -> microsandbox_network::builder::RateLimiterBuilder {
+        if let Some((size, refill_ms, burst)) = self.bandwidth {
+            rl = rl.bandwidth(size, Duration::from_millis(refill_ms));
+            if burst > 0 {
+                rl = rl.bandwidth_burst(burst);
+            }
+        }
+        if let Some((count, refill_ms, burst)) = self.ops {
+            rl = rl.ops(count, Duration::from_millis(refill_ms));
+            if burst > 0 {
+                rl = rl.ops_burst(burst);
+            }
+        }
+        rl
+    }
+}
+
 struct TlsSpec {
     bypass: Vec<String>,
     verify_upstream: Option<bool>,
@@ -1409,12 +1567,14 @@ struct RootDiskSpec {
     size_mib: Option<u32>,
     format: Option<DiskImageFormat>,
     fstype: Option<String>,
+    clone: Option<FlatClone>,
 }
 
 enum RootDiskKindSpec {
     Managed,
     Tmpfs,
     Disk(String),
+    Flat,
 }
 
 impl RootDiskSpec {
@@ -1423,6 +1583,7 @@ impl RootDiskSpec {
             RootDiskKindSpec::Managed => {}
             RootDiskKindSpec::Tmpfs => d = d.tmpfs(),
             RootDiskKindSpec::Disk(path) => d = d.disk_image(path),
+            RootDiskKindSpec::Flat => d = d.flat(),
         }
         if let Some(mib) = self.size_mib {
             d = d.size(mib);
@@ -1432,6 +1593,9 @@ impl RootDiskSpec {
         }
         if let Some(ft) = self.fstype {
             d = d.fstype(ft);
+        }
+        if let Some(c) = self.clone {
+            d = d.clone_strategy(c);
         }
         d
     }
@@ -1444,12 +1608,13 @@ fn parse_root_disk(v: Value) -> Result<RootDiskSpec, Error> {
             size_mib: Some(mib),
             format: None,
             fstype: None,
+            clone: None,
         });
     }
     let Ok(h) = RHash::try_convert(v) else {
         return Err(error::base_error(
             "root_disk: expects an Integer (managed size in MiB) or a Hash \
-             (use Microsandbox::RootDisk.managed/tmpfs/disk)",
+             (use Microsandbox::RootDisk.managed/tmpfs/disk/flat)",
         ));
     };
     let kind = match conv::opt_string(h, "kind")?.as_deref() {
@@ -1461,20 +1626,35 @@ fn parse_root_disk(v: Value) -> Result<RootDiskSpec, Error> {
             };
             RootDiskKindSpec::Disk(path)
         }
+        Some("flat") => RootDiskKindSpec::Flat,
         Some(other) => {
             return Err(error::base_error(format!(
-                "unknown root_disk kind {other:?} (expected managed/tmpfs/disk)"
+                "unknown root_disk kind {other:?} (expected managed/tmpfs/disk/flat)"
             )))
         }
     };
     let format = conv::opt_string(h, "format")?
         .map(|f| disk_format_from_str(&f))
         .transpose()?;
+    // clone: flat-only private-disk clone strategy (v0.6.9). Validated here
+    // (unknown values error) but kind cross-validation stays in the core
+    // builder, matching the other fields.
+    let clone = conv::opt_string(h, "clone")?
+        .map(|c| match c.as_str() {
+            "auto" => Ok(FlatClone::Auto),
+            "copy" => Ok(FlatClone::Copy),
+            "reflink" => Ok(FlatClone::Reflink),
+            other => Err(error::base_error(format!(
+                "unknown root_disk clone strategy {other:?} (expected auto/copy/reflink)"
+            ))),
+        })
+        .transpose()?;
     Ok(RootDiskSpec {
         kind,
         size_mib: conv::opt_u32(h, "size_mib")?,
         format,
         fstype: conv::opt_string(h, "fstype")?,
+        clone,
     })
 }
 
@@ -1969,9 +2149,9 @@ fn run_modify(builder: SandboxModificationBuilder, opts: RHash) -> Result<String
 
 /// Build the canonical `SandboxModificationPatch` from the modify Hash. Env and
 /// label pairs are sorted so repeated calls with the same arguments produce the
-/// same patch (and plan) ordering, mirroring the Python binding. `oci_upper_size`
-/// is deliberately not surfaced (CLI-only upstream; the Python/Node SDKs omit it
-/// too), so it stays unset via `..Default::default()`.
+/// same patch (and plan) ordering, mirroring the Python binding. As of v0.6.9
+/// every patch field is surfaced (`root_disk_size` covers what the deprecated
+/// CLI-only `oci_upper_size` used to mean).
 fn build_modify_patch(opts: RHash) -> Result<SandboxModificationPatch, Error> {
     let mut env_pairs = conv::opt_string_map(opts, "env")?;
     env_pairs.sort();
@@ -1983,6 +2163,10 @@ fn build_modify_patch(opts: RHash) -> Result<SandboxModificationPatch, Error> {
         max_cpus: conv::opt_u8(opts, "max_cpus")?,
         memory_mib: conv::opt_u32(opts, "memory")?,
         max_memory_mib: conv::opt_u32(opts, "max_memory")?,
+        // v0.6.9 ("root disk resizing in every SDK"): grow the sandbox-owned
+        // layered upper or flat root disk. Restart/next-start semantics and
+        // backing-specific limits are enforced by the core.
+        root_disk_size_mib: conv::opt_u32(opts, "root_disk_size")?,
         env: env_pairs
             .into_iter()
             .map(|(k, v)| EnvVar::new(k, v))
@@ -1993,7 +2177,6 @@ fn build_modify_patch(opts: RHash) -> Result<SandboxModificationPatch, Error> {
         workdir: conv::opt_string(opts, "workdir")?,
         secrets: parse_modify_secrets(opts)?,
         secrets_remove: conv::opt_string_vec(opts, "remove_secrets")?,
-        ..Default::default()
     })
 }
 
@@ -2422,6 +2605,11 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("shell", method!(Sandbox::shell, 2))?;
     class.define_method("exec_stream", method!(Sandbox::exec_stream, 3))?;
     class.define_method("shell_stream", method!(Sandbox::shell_stream, 2))?;
+    class.define_method("exec_default", method!(Sandbox::exec_default, 1))?;
+    class.define_method(
+        "exec_default_stream",
+        method!(Sandbox::exec_default_stream, 1),
+    )?;
     class.define_method("stop", method!(Sandbox::stop, 0))?;
     class.define_method("stop_and_wait", method!(Sandbox::stop_and_wait, 0))?;
     class.define_method("kill", method!(Sandbox::kill, 0))?;
@@ -2461,6 +2649,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     )?;
 
     class.define_method("attach", method!(Sandbox::attach, 3))?;
+    class.define_method("attach_default", method!(Sandbox::attach_default, 1))?;
     class.define_method("attach_shell", method!(Sandbox::attach_shell, 0))?;
 
     let handle = native.define_class("SandboxHandle", ruby.class_object())?;

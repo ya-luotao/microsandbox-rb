@@ -288,7 +288,14 @@ module Microsandbox
       # @param hostname [String, nil] guest hostname
       # @param labels [Hash, nil] metadata labels
       # @param scripts [Hash, nil] named scripts to install
-      # @param entrypoint [Array<String>, nil] image entrypoint override
+      # @param entrypoint [Array<String>, nil] image ENTRYPOINT override. An
+      #   explicit `[]` clears the image's ENTRYPOINT (so `exec_default` runs
+      #   the CMD alone); `nil` (the default) inherits it.
+      # @param cmd [Array<String>, nil] image CMD override used by
+      #   default-workload execution ({Sandbox#exec_default} et al., runtime
+      #   v0.6.9). Durable configuration — it does **not** execute anything at
+      #   create time (`create` boots the VM only). An explicit `[]` clears the
+      #   image CMD; `nil` (the default) inherits it.
       # @param ports [Hash, nil] host_port => guest_port TCP publications
       # @param ports_udp [Hash, nil] host_port => guest_port UDP publications
       # @param volumes [Hash, nil] guest_path => mount spec. Each value is a host
@@ -322,6 +329,17 @@ module Microsandbox
       # @param ipv6_pool [String, nil] guest IPv6 address pool CIDR
       # @param max_connections [Integer, nil] cap on concurrent proxied connections
       # @param trust_host_cas [Boolean, nil] trust the host's CA bundle for upstream TLS
+      # @param rate_limiter [Hash, nil] per-sandbox egress/ingress token-bucket
+      #   limits (runtime v0.6.9, local backend):
+      #   `{ egress: { bandwidth: { size: 1_048_576, refill_time_ms: 1000,
+      #   one_time_burst: 0 }, ops: { size: 1000, refill_time_ms: 1000 } },
+      #   ingress: { ... } }`. `bandwidth` buckets meter bytes, `ops` buckets
+      #   meter network frames; an omitted bucket or direction is unlimited.
+      # @param vsock [Hash, Array, nil] host sockets exposed on guest-to-host
+      #   vsock ports (runtime v0.6.9): `{ "/host/api.sock" => 5000 }` (stream
+      #   sockets), or an Array of
+      #   `{ host_socket:, port:, socket_type: :stream|:dgram }` Hashes. Guests
+      #   connect to host CID 2 on the given port; no in-guest proxy required.
       # @param from_snapshot [String, nil] boot from a snapshot name or digest
       #   instead of an image (mutually exclusive with `image:`)
       # @param fstype [String, nil] inner filesystem type (e.g. "ext4") when
@@ -343,9 +361,12 @@ module Microsandbox
       #   disk (runtime v0.6.7). An Integer is the managed ext4 upper's size cap
       #   in MiB (default kind, 4 GiB when unset); a Hash picks a kind via the
       #   {RootDisk} factory — `RootDisk.managed(8192)`, `RootDisk.tmpfs(2048)`
-      #   (RAM-backed, pristine on every boot), or
+      #   (RAM-backed, pristine on every boot),
       #   `RootDisk.disk("./scratch.img", format: "raw", fstype: "ext4")`
-      #   (user-supplied image attached writable).
+      #   (user-supplied image attached writable), or
+      #   `RootDisk.flat(8192, clone: :auto)` (a single complete ext4 root disk
+      #   materialized from the OCI image, runtime v0.6.9 — skips the overlay
+      #   stack; content-addressed and cached across sandboxes).
       # @param oci_upper_size [Integer, nil] deprecated alias for
       #   `root_disk: <Integer>` (the managed kind); warns, and conflicts with
       #   `root_disk:`
@@ -418,9 +439,9 @@ module Microsandbox
       def build_create_opts(image: nil, cpus: nil, max_cpus: nil, memory: nil, max_memory: nil,
         env: nil, workdir: nil,
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
-        entrypoint: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
+        entrypoint: nil, cmd: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
-        max_connections: nil, trust_host_cas: nil,
+        max_connections: nil, trust_host_cas: nil, rate_limiter: nil, vsock: nil,
         patches: nil,
         from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
         log_level: nil, quiet_logs: false, security: nil,
@@ -465,7 +486,11 @@ module Microsandbox
         opts["env"] = stringify(env) if env
         opts["labels"] = stringify(labels) if labels
         opts["scripts"] = stringify(scripts) if scripts
-        opts["entrypoint"] = Array(entrypoint).map(&:to_s) if entrypoint
+        # entrypoint/cmd: an explicit empty Array clears the image's value
+        # (blocking the image-config merge), so presence is keyed on the kwarg
+        # itself — nil (the default) inherits from the image.
+        opts["entrypoint"] = Array(entrypoint).map(&:to_s) unless entrypoint.nil?
+        opts["cmd"] = Array(cmd).map(&:to_s) unless cmd.nil?
         opts["ports"] = intify_ports(ports) if ports
         opts["ports_udp"] = intify_ports(ports_udp) if ports_udp
         opts["volumes"] = normalize_volumes(volumes) if volumes
@@ -477,6 +502,8 @@ module Microsandbox
         opts["ipv6_pool"] = ipv6_pool.to_s if ipv6_pool
         opts["max_connections"] = Integer(max_connections) if max_connections
         set_bool(opts, "trust_host_cas", trust_host_cas)
+        opts["rate_limiter"] = normalize_rate_limiter(rate_limiter) if rate_limiter
+        opts["vsock"] = normalize_vsock(vsock) if vsock
         opts["log_level"] = log_level.to_s if log_level
         opts["quiet_logs"] = true if quiet_logs
         opts["security"] = security.to_s if security
@@ -638,6 +665,7 @@ module Microsandbox
       # always set (defaulting to "no_restart"); everything else is included only
       # when provided so an unset option means "leave unchanged".
       def build_modify_opts(cpus: nil, max_cpus: nil, memory: nil, max_memory: nil,
+        root_disk_size: nil,
         env: nil, remove_env: nil, labels: nil, remove_labels: nil, workdir: nil,
         secrets: nil, remove_secrets: nil, policy: nil, dry_run: false)
         opts = {}
@@ -645,6 +673,7 @@ module Microsandbox
         opts["max_cpus"] = Integer(max_cpus) if max_cpus
         opts["memory"] = Integer(memory) if memory
         opts["max_memory"] = Integer(max_memory) if max_memory
+        opts["root_disk_size"] = Integer(root_disk_size) if root_disk_size
         opts["env"] = stringify(env) if env
         opts["remove_env"] = Array(remove_env).map(&:to_s) if remove_env
         opts["labels"] = stringify(labels) if labels
@@ -831,6 +860,71 @@ module Microsandbox
       end
 
       # Normalize the `dns:` config Hash for the native layer.
+      # Normalize the `rate_limiter:` Hash (v0.6.9) — per-direction
+      # bandwidth/ops token buckets — for the native layer. Mirrors the Python
+      # SDK's `NetworkRateLimiter`/`RateLimiter`/`TokenBucket` shapes as plain
+      # Hashes: `{egress: {bandwidth: {size:, refill_time_ms:, one_time_burst:},
+      # ops: {...}}, ingress: {...}}`.
+      def normalize_rate_limiter(rl)
+        raise ArgumentError, "rate_limiter: must be a Hash" unless rl.is_a?(Hash)
+        out = {}
+        %i[egress ingress].each do |dir|
+          spec = fetch_opt(rl, dir)
+          next if spec.nil?
+          unless spec.is_a?(Hash)
+            raise ArgumentError, "rate_limiter #{dir}: must be a Hash"
+          end
+          dout = {}
+          %i[bandwidth ops].each do |dim|
+            bucket = fetch_opt(spec, dim)
+            next if bucket.nil?
+            unless bucket.is_a?(Hash)
+              raise ArgumentError, "rate_limiter #{dir} #{dim}: must be a Hash"
+            end
+            size = fetch_opt(bucket, :size)
+            refill = fetch_opt(bucket, :refill_time_ms)
+            if size.nil? || refill.nil?
+              raise ArgumentError,
+                "rate_limiter #{dir} #{dim}: requires size: and refill_time_ms:"
+            end
+            bout = {"size" => Integer(size), "refill_time_ms" => Integer(refill)}
+            burst = fetch_opt(bucket, :one_time_burst)
+            bout["one_time_burst"] = Integer(burst) if burst
+            dout[dim.to_s] = bout
+          end
+          out[dir.to_s] = dout
+        end
+        out
+      end
+
+      # Normalize the `vsock:` create option (v0.6.9) into the native array of
+      # route Hashes. Accepts the Python SDK's two shapes: a Hash of
+      # `{ host_socket => port }` (stream sockets), or an Array of
+      # `{host_socket:, port:, socket_type: :stream|:dgram}` Hashes.
+      def normalize_vsock(vsock)
+        if vsock.is_a?(Hash)
+          vsock.map { |path, port| {"host_socket" => path.to_s, "port" => Integer(port)} }
+        elsif vsock.is_a?(Array)
+          vsock.map do |route|
+            unless route.is_a?(Hash)
+              raise ArgumentError, "vsock: array entries must be Hashes {host_socket:, port:, socket_type:}"
+            end
+            path = fetch_opt(route, :host_socket)
+            port = fetch_opt(route, :port)
+            if path.nil? || port.nil?
+              raise ArgumentError, "vsock route requires host_socket: and port:"
+            end
+            out = {"host_socket" => path.to_s, "port" => Integer(port)}
+            st = fetch_opt(route, :socket_type)
+            out["socket_type"] = st.to_s if st
+            out
+          end
+        else
+          raise ArgumentError,
+            "vsock: must be a Hash of {host_socket => port} or an Array of route Hashes"
+        end
+      end
+
       def normalize_dns(dns)
         raise ArgumentError, "dns: must be a Hash" unless dns.is_a?(Hash)
         out = {}
@@ -928,9 +1022,29 @@ module Microsandbox
           h["format"] = spec["format"].to_s if spec["format"]
           h["fstype"] = spec["fstype"].to_s if spec["fstype"]
           h
+        when "flat"
+          %w[path format].each do |key|
+            if spec[key]
+              raise ArgumentError, "root_disk #{key}: is only valid for the disk kind"
+            end
+          end
+          h = {"kind" => "flat"}
+          if spec["size_mib"]
+            h["size_mib"] = coerce_root_disk_size(spec["size_mib"], "root_disk size_mib:")
+          end
+          h["fstype"] = spec["fstype"].to_s if spec["fstype"]
+          if spec["clone"]
+            clone = spec["clone"].to_s
+            unless %w[auto copy reflink].include?(clone)
+              raise ArgumentError,
+                "unknown root_disk clone strategy #{clone.inspect} (expected auto/copy/reflink)"
+            end
+            h["clone"] = clone
+          end
+          h
         else
           raise ArgumentError,
-            "unknown root_disk kind #{kind.inspect} (expected managed/tmpfs/disk)"
+            "unknown root_disk kind #{kind.inspect} (expected managed/tmpfs/disk/flat)"
         end
       end
 
@@ -1116,6 +1230,21 @@ module Microsandbox
         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)))
     end
 
+    # Run the image's resolved OCI `ENTRYPOINT` and `CMD` — the **default
+    # workload** (runtime v0.6.9) — and collect output. {Sandbox.create} is
+    # strictly boot-only, so this is how the image's own command gets
+    # executed; override the durable CMD at create time via `cmd:`.
+    #
+    # Options match {#exec} minus the command itself.
+    # @return [ExecOutput]
+    # @raise [NoDefaultCommandError] when the image's effective entrypoint and
+    #   CMD resolve to no executable command
+    def exec_default(cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
+      ExecOutput.new(@native.exec_default(
+        exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:)
+      ))
+    end
+
     # Run a command and stream its output as it arrives.
     #
     # Pass +stdin: :pipe+ to feed the process interactively: {ExecHandle#stdin}
@@ -1140,6 +1269,17 @@ module Microsandbox
     def shell_stream(script, cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
       ExecHandle.new(@native.shell_stream(script.to_s,
         exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)))
+    end
+
+    # Run the default workload (see {#exec_default}) and stream its output.
+    # @note Like {#exec_stream}, +timeout:+ is accepted but **not applied** on
+    #   the streaming path.
+    # @return [ExecHandle]
+    # @raise [NoDefaultCommandError] when no executable default command resolves
+    def exec_default_stream(cwd: nil, user: nil, env: nil, timeout: nil, tty: false, stdin: nil, rlimits: nil)
+      ExecHandle.new(@native.exec_default_stream(
+        exec_opts(cwd:, user:, env:, timeout:, tty:, stdin:, rlimits:, pipe_ok: true)
+      ))
     end
 
     # Attach an interactive terminal to a command in the sandbox.
@@ -1179,6 +1319,32 @@ module Microsandbox
     # @return [Integer] the shell's exit code (or the code at detach)
     def attach_shell
       @native.attach_shell
+    end
+
+    # Attach an interactive terminal to the image's resolved OCI `ENTRYPOINT`
+    # and `CMD` — the default workload (runtime v0.6.9). See {#attach} for the
+    # host-TTY requirements and {#exec_default} for default-workload semantics.
+    #
+    # @param cwd [String, nil] working directory
+    # @param user [String, nil] user to run as
+    # @param env [Hash, nil] extra environment variables
+    # @param detach_keys [String, nil] detach sequence (default "ctrl-]")
+    # @param rlimits [Hash, nil] resource limits (see {#exec})
+    # @return [Integer] the workload's exit code (or the code at detach)
+    # @raise [NoDefaultCommandError] when no executable default command resolves
+    def attach_default(cwd: nil, user: nil, env: nil, detach_keys: nil, rlimits: nil)
+      opts = {}
+      opts["cwd"] = cwd.to_s if cwd
+      opts["user"] = user.to_s if user
+      opts["env"] = env.each_with_object({}) { |(k, v), a| a[k.to_s] = v.to_s } if env
+      opts["detach_keys"] = detach_keys.to_s if detach_keys
+      if rlimits
+        opts["rlimits"] = rlimits.map do |resource, limit|
+          soft, hard = limit.is_a?(Array) ? [limit[0], limit[1]] : [limit, limit]
+          [resource.to_s, Integer(soft), Integer(hard)]
+        end
+      end
+      @native.attach_default(opts)
     end
 
     # Guest filesystem operations.
@@ -1241,6 +1407,11 @@ module Microsandbox
     # @param max_cpus [Integer, nil] desired boot-time maximum vCPU ceiling
     # @param memory [Integer, nil] desired effective guest memory in MiB
     # @param max_memory [Integer, nil] desired boot-time maximum memory (MiB)
+    # @param root_disk_size [Integer, nil] desired root-disk size in MiB
+    #   (runtime v0.6.9): grows the sandbox-owned managed upper or flat root
+    #   disk. Growth-only, applied while the sandbox is stopped —
+    #   restart/next-start semantics and backing-specific limits are enforced
+    #   by the runtime
     # @param env [Hash, nil] environment variables to set for future execs
     # @param remove_env [Array<String>, nil] environment variable names to remove
     # @param labels [Hash, nil] labels to set
@@ -1406,8 +1577,9 @@ module Microsandbox
       when :pipe
         unless pipe_ok
           raise ArgumentError,
-            "stdin: :pipe is only valid for exec_stream/shell_stream — a blocking " \
-            "exec/shell cannot expose a writable stdin sink; pass a String to feed bytes"
+            "stdin: :pipe is only valid for the streaming variants (exec_stream/" \
+            "shell_stream/exec_default_stream) — a blocking exec cannot expose a " \
+            "writable stdin sink; pass a String to feed bytes"
         end
         opts["stdin_pipe"] = true
       when Symbol

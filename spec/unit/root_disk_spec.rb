@@ -21,6 +21,13 @@ RSpec.describe Microsandbox::RootDisk do
     )
   end
 
+  it "builds a flat spec with optional size/fstype/clone (v0.6.9)" do
+    expect(described_class.flat).to eq("kind" => "flat")
+    expect(described_class.flat(8192, fstype: "ext4", clone: :reflink)).to eq(
+      "kind" => "flat", "size_mib" => 8192, "fstype" => "ext4", "clone" => "reflink"
+    )
+  end
+
   it "coerces a non-Integer size via Integer()" do
     expect { described_class.managed("not-a-size") }.to raise_error(ArgumentError)
   end

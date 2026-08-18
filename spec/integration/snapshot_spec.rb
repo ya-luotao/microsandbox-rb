@@ -14,7 +14,9 @@ RSpec.describe "snapshots + pull policy", :integration do
       sb.fs.write("/root/marker.txt", marker)
       sb.stop
 
-      info = Microsandbox::Snapshot.create(snap, from_sandbox: src)
+      # v0.6.9: payload integrity is opt-in — record it here so the verify
+      # below exercises the :verified path.
+      info = Microsandbox::Snapshot.create(snap, from_sandbox: src, record_integrity: true)
       expect(info).to be_a(Microsandbox::SnapshotInfo)
       expect(info.digest).to start_with("sha256:")
       expect(info.scope).to eq(:disk)
@@ -24,6 +26,7 @@ RSpec.describe "snapshots + pull policy", :integration do
       report = Microsandbox::Snapshot.verify(snap)
       expect(report).to be_a(Microsandbox::SnapshotVerifyReport)
       expect(report).to be_verified
+      expect(report.algorithm).not_to be_nil
 
       Microsandbox::Sandbox.create(unique_sandbox_name("rb-snapboot"), from_snapshot: snap) do |sb2|
         expect(sb2.fs.read_text("/root/marker.txt")).to eq(marker)
@@ -56,6 +59,35 @@ RSpec.describe "snapshots + pull policy", :integration do
       # it by digest so a run doesn't leak the re-imported artifact.
       begin
         Microsandbox::Snapshot.remove(info.digest, force: true) if info
+      rescue
+        Microsandbox::Error
+      end
+      begin
+        Microsandbox::Sandbox.remove(src)
+      rescue
+        Microsandbox::Error
+      end
+    end
+  end
+
+  # v0.6.9 breaking change: without record_integrity: true no content digest
+  # is recorded, and verify reports :not_recorded instead of :verified.
+  it "reports :not_recorded for a snapshot created without record_integrity" do
+    src = unique_sandbox_name("rb-snapnorec")
+    snap = "rb-snapnorec-#{Process.pid}-#{rand(100_000)}"
+    begin
+      sb = Microsandbox::Sandbox.create(src, image: image)
+      sb.stop
+
+      Microsandbox::Snapshot.create(snap, from_sandbox: src)
+      report = Microsandbox::Snapshot.verify(snap)
+      expect(report).not_to be_verified
+      expect(report.status).to eq(:not_recorded)
+      expect(report.algorithm).to be_nil
+      expect(report.content_digest).to be_nil
+    ensure
+      begin
+        Microsandbox::Snapshot.remove(snap, force: true)
       rescue
         Microsandbox::Error
       end

@@ -6,6 +6,88 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [Unreleased] - 0.13.0
+
+Adopts upstream runtime **`v0.6.8` → `v0.6.9`**.
+
+### Breaking
+
+- **A bare `MSB_API_KEY` no longer selects the cloud backend** (upstream
+  backend-selection hardening: "a bare API key is credential material, not
+  backend intent"). Cloud intent must now be explicit: set `MSB_BACKEND=cloud`
+  (with a non-empty `MSB_API_KEY`), select a cloud profile, or call
+  `Microsandbox.set_default_backend(:cloud, ...)`. Code that relied on
+  exporting only `MSB_API_KEY` now silently runs on the **local** backend —
+  audit deployment environments when upgrading.
+- **Invalid cloud configuration fails closed** instead of silently falling
+  back to local execution: `MSB_BACKEND=cloud` without a usable API key or
+  cloud profile raises {Microsandbox::InvalidConfigError} at first use rather
+  than dispatching sandboxes locally.
+- **Snapshot payload integrity is opt-in** (upstream #1346). New snapshots no
+  longer record a content digest unless created with
+  `record_integrity: true` (previously documented as a no-op because schema-1
+  always recorded integrity — that default reversed upstream, as hashing
+  large allocated uppers is expensive). {Microsandbox::Snapshot.verify} on a
+  snapshot without recorded integrity now reports
+  `SnapshotVerifyReport#status == :not_recorded` (with `#algorithm` /
+  `#content_digest` nil, `#verified?` false) instead of always `:verified`.
+
+### Added
+
+`v0.6.9` SDK parity (matching the official Python binding surface):
+
+- **Default-workload execution** — `Sandbox.create` is strictly boot-only, so
+  the image's resolved OCI `ENTRYPOINT`+`CMD` now runs via
+  {Microsandbox::Sandbox#exec_default} (buffered),
+  {Microsandbox::Sandbox#exec_default_stream} (streaming), and
+  {Microsandbox::Sandbox#attach_default} (interactive). New
+  {Microsandbox::NoDefaultCommandError} when the image resolves no executable
+  command. New `cmd:` create keyword overrides the durable image CMD (an
+  explicit `[]` clears it) without executing anything at create time.
+- **Flat OCI root disks** — `RootDisk.flat(size_mib, fstype:, clone:)` boots
+  from a single complete ext4 root disk materialized from the OCI image
+  (skips the overlay stack; content-addressed and cached; `clone:` picks
+  `:auto`/`:copy`/`:reflink` private-disk cloning).
+- **Root-disk resizing** — `modify(root_disk_size:)` grows the managed upper
+  or flat root disk (MiB).
+- **Per-sandbox network rate limits** — `rate_limiter:` create keyword with
+  per-direction (`egress:`/`ingress:`) `bandwidth:`/`ops:` token buckets
+  (`size:`, `refill_time_ms:`, `one_time_burst:`).
+- **Host vsock routes** — `vsock:` create keyword exposes host Unix sockets
+  on guest-to-host vsock ports: `{ "/host/api.sock" => 5000 }` or an Array of
+  `{host_socket:, port:, socket_type: :stream|:dgram}`.
+- **Active backend context** — {Microsandbox.default_backend_info} returns a
+  secret-safe {Microsandbox::BackendInfo} (`kind`, `api_url`, `source`,
+  `profile`; never the API key).
+- **Default volume** — {Microsandbox::Volume.get_default} (cloud backend;
+  local raises {Microsandbox::UnsupportedError}) and
+  `VolumeInfo#default?`. The full `VolumeInfo#fs` surface works against cloud
+  default and managed directory volumes as of `v0.6.9`.
+
+Not exposed, matching the official Python binding at `v0.6.9`:
+`DeploymentProfile`/CPU-placement/THP create options (upstream wires them via
+`config.json`/CLI only so far) and the Rust-only sparse
+`SandboxConfigPatch`/`builder.configure` surface.
+
+### Fixed
+
+- `entrypoint: []` now clears the image's `ENTRYPOINT` (blocking the
+  image-config merge), matching the upstream builder contract and the Python
+  binding. Previously the empty array was silently dropped in the native
+  layer, so the image ENTRYPOINT survived — observable under the new
+  `exec_default`/`attach_default`, which would have run the wrong command.
+  `nil` (the default) still inherits the image value.
+
+### Runtime
+
+- Upstream `v0.6.9` runtime changes carried without further Ruby surface
+  change: NUMA-aware placement profiles, degraded placement under pressure,
+  integrated host performance stack (topology-aware CPU placement, THP
+  policy, bounded block writeback), long-link-target preservation in saved
+  image archives, nested OCI image index loads, backpressured published-port
+  data preservation, DNS network-rule parsing in release builds, and
+  child-process reaping in `agentd`.
+
 ## [0.12.0] - 2026-07-30
 
 Adopts upstream runtime **`v0.6.7` → `v0.6.8`** and mirrors its breaking SDK

@@ -120,6 +120,21 @@ RSpec.describe "streaming exec, images, volumes" do
       Microsandbox::Volume.remove("v")
       expect(Microsandbox::Native::Volume).to have_received(:remove).with("v")
     end
+
+    # v0.6.9: the backend's default volume (cloud only — local raises
+    # UnsupportedError through the native layer).
+    it "wraps get_default and surfaces the default flag" do
+      allow(Microsandbox::Native::Volume).to receive(:get_default)
+        .and_return("name" => "default", "kind" => "dir", "default" => true)
+      info = Microsandbox::Volume.get_default
+      expect(info).to be_a(Microsandbox::VolumeInfo)
+      expect(info.name).to eq("default")
+      expect(info).to be_default
+
+      allow(Microsandbox::Native::Volume).to receive(:get)
+        .and_return("name" => "v", "kind" => "dir", "default" => false)
+      expect(Microsandbox::Volume.get("v")).not_to be_default
+    end
   end
 
   describe "Sandbox streaming + volume/snapshot option mapping" do

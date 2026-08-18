@@ -16,6 +16,37 @@ RSpec.describe "Microsandbox backend routing" do
     end
   end
 
+  describe ".default_backend_info" do
+    # v0.6.9: a secret-safe description of the resolved default backend. In the
+    # unit environment nothing selects a backend, so the final local fallback
+    # applies — and the API key is never part of the shape.
+    it "describes the default-local fallback without exposing credentials" do
+      info = Microsandbox.default_backend_info
+      expect(info).to be_a(Microsandbox::BackendInfo)
+      expect(info.kind).to eq(:local)
+      expect(info).to be_local
+      expect(info).not_to be_cloud
+      expect(info.api_url).to be_nil
+      expect(%i[default programmatic]).to include(info.source)
+      expect(info).not_to respond_to(:api_key)
+    end
+  end
+
+  describe Microsandbox::BackendInfo do
+    it "wraps the native hash and symbolizes kind/source" do
+      info = described_class.new(
+        "kind" => "cloud", "api_url" => "https://api.example.com",
+        "source" => "MSB_BACKEND", "profile" => nil
+      )
+      expect(info.kind).to eq(:cloud)
+      expect(info).to be_cloud
+      expect(info.source).to eq(:MSB_BACKEND)
+      expect(info.api_url).to eq("https://api.example.com")
+      expect(info.profile).to be_nil
+      expect(info.inspect).not_to include("api_key")
+    end
+  end
+
   describe ".set_default_backend" do
     it "rejects an unknown kind with InvalidConfigError" do
       expect { Microsandbox.set_default_backend(:bogus) }

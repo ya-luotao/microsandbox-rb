@@ -17,6 +17,7 @@ rescue LoadError
 end
 
 require_relative "microsandbox/errors"
+require_relative "microsandbox/backend_info"
 require_relative "microsandbox/exec_output"
 require_relative "microsandbox/exec_handle"
 require_relative "microsandbox/fs"
@@ -172,9 +173,13 @@ module Microsandbox
 
     # Install a process-wide default backend (v0.5.8 backend routing). Without a
     # call to this, operations use a local libkrun backend; the env/profile
-    # ladder (`MSB_BACKEND`, `MSB_API_URL`+`MSB_API_KEY`, `MSB_PROFILE`,
-    # `~/.microsandbox/config.json`) is resolved lazily on first use. Call once
-    # at startup, before any sandbox operations.
+    # ladder (`MSB_BACKEND` → `MSB_PROFILE` → `~/.microsandbox/config.json`) is
+    # resolved lazily on first use. Since runtime v0.6.9 a bare `MSB_API_KEY`
+    # no longer selects the cloud — cloud intent must be explicit via
+    # `MSB_BACKEND=cloud` (paired with `MSB_API_URL`/`MSB_API_KEY`), a cloud
+    # profile, or this method; invalid cloud config raises
+    # {InvalidConfigError} instead of falling back to local. Call once at
+    # startup, before any sandbox operations.
     #
     # @param kind ["local","cloud", Symbol] backend kind
     # @param url [String, nil] cloud control-plane URL (cloud, unless `profile:`)
@@ -214,6 +219,14 @@ module Microsandbox
     #   The first call resolves the env/profile/config ladder.
     def default_backend_kind
       Native.default_backend_kind.to_sym
+    end
+
+    # Secret-safe description of the active default backend (runtime v0.6.9).
+    # Like {default_backend_kind}, the first call freezes ambient env/profile
+    # resolution for the process. The API key is never included.
+    # @return [BackendInfo]
+    def default_backend_info
+      BackendInfo.new(Native.default_backend_info)
     end
 
     # Latest resource-usage snapshot for every running sandbox, keyed by name.

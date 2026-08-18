@@ -13,12 +13,18 @@ module Microsandbox
   # - {disk} — a user-supplied disk image attached writable as the upper. The
   #   file determines its own size; the runtime never creates, resizes, or
   #   deletes it. Cannot be snapshotted or patched.
+  # - {flat} — a single complete ext4 root disk materialized directly from the
+  #   OCI image (runtime v0.6.9), skipping the layered EROFS+OverlayFS stack at
+  #   runtime. Content-addressed and cached across sandboxes; resizable.
+  #   Pre-materialize with `msb pull IMAGE --materialize flat`.
   #
   # @example
   #   Sandbox.create("worker", image: "python", root_disk: 8192)
   #   Sandbox.create("ci", image: "python", root_disk: Microsandbox::RootDisk.tmpfs(2048))
   #   Sandbox.create("warm", image: "python",
   #     root_disk: Microsandbox::RootDisk.disk("./scratch.img", fstype: "ext4"))
+  #   Sandbox.create("fast", image: "python",
+  #     root_disk: Microsandbox::RootDisk.flat(8192, clone: :reflink))
   #
   # Mirrors the `RootDisk` factory in the official Python/Node/Go SDKs.
   module RootDisk
@@ -52,6 +58,24 @@ module Microsandbox
       h = {"kind" => "disk", "path" => path.to_s}
       h["format"] = format.to_s if format
       h["fstype"] = fstype.to_s if fstype
+      h
+    end
+
+    # A complete, microsandbox-owned root disk materialized from the OCI image
+    # (runtime v0.6.9).
+    # @param size_mib [Integer, nil] resizable ext4 size in MiB
+    # @param fstype [String, nil] generated filesystem type (default "ext4")
+    # @param clone [Symbol, String, nil] how each sandbox's private disk is
+    #   created from the cached artifact: `:auto` (CoW clone when the host
+    #   filesystem supports it, else a sparse copy — the default), `:copy`
+    #   (always an independent sparse copy), or `:reflink` (require a CoW
+    #   clone; fail where unsupported)
+    # @return [Hash]
+    def flat(size_mib = nil, fstype: nil, clone: nil)
+      h = {"kind" => "flat"}
+      h["size_mib"] = Integer(size_mib) if size_mib
+      h["fstype"] = fstype.to_s if fstype
+      h["clone"] = clone.to_s if clone
       h
     end
   end

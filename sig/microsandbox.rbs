@@ -27,6 +27,7 @@ module Microsandbox
   def self.set_default_backend: (String | Symbol kind, ?url: String?, ?api_key: String?, ?profile: String?) -> void
   def self.with_backend: [T] (String | Symbol kind, ?url: String?, ?api_key: String?, ?profile: String?) { () -> T } -> T
   def self.default_backend_kind: () -> Symbol
+  def self.default_backend_info: () -> BackendInfo
 
   class Error < StandardError
     def self.code: () -> String
@@ -40,6 +41,7 @@ module Microsandbox
   class SandboxStillRunningError < Error end
   class ExecTimeoutError < Error end
   class ExecFailedError < Error end
+  class NoDefaultCommandError < Error end
   class FilesystemError < Error end
   class PathNotFoundError < Error end
   class VolumeNotFoundError < Error end
@@ -180,6 +182,7 @@ module Microsandbox
     def ping: () -> PingResult
     def touch: () -> TouchResult
     def modify: (?cpus: Integer?, ?max_cpus: Integer?, ?memory: Integer?, ?max_memory: Integer?,
+                 ?root_disk_size: Integer?,
                  ?env: Hash[untyped, untyped]?, ?remove_env: Array[String]?,
                  ?labels: Hash[untyped, untyped]?, ?remove_labels: Array[String]?,
                  ?workdir: String?, ?secrets: Hash[untyped, untyped]?,
@@ -245,11 +248,14 @@ module Microsandbox
                       ?env: Hash[untyped, untyped]?, ?workdir: String?, ?shell: String?,
                       ?user: String?, ?hostname: String?, ?labels: Hash[untyped, untyped]?,
                       ?scripts: Hash[untyped, untyped]?, ?entrypoint: Array[String]?,
+                      ?cmd: Array[String]?,
                       ?ports: Hash[untyped, untyped]?, ?ports_udp: Hash[untyped, untyped]?,
                       ?volumes: Hash[untyped, untyped]?, ?network: untyped?,
                       ?dns: Hash[untyped, untyped]?, ?tls: Hash[untyped, untyped]?,
                       ?ipv4_pool: String?, ?ipv6_pool: String?,
                       ?max_connections: Integer?, ?trust_host_cas: bool?,
+                      ?rate_limiter: Hash[untyped, untyped]?,
+                      ?vsock: (Hash[untyped, untyped] | Array[Hash[untyped, untyped]])?,
                       ?patches: Array[Hash[untyped, untyped]]?, ?from_snapshot: String?,
                       ?fstype: String?, ?init: (String | Symbol | Hash[untyped, untyped])?, ?ephemeral: bool,
                       ?log_level: (String | Symbol)?, ?quiet_logs: bool, ?security: (String | Symbol)?,
@@ -282,16 +288,25 @@ module Microsandbox
                       ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def shell_stream: (String script, ?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
                        ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe | :null)?, ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
+    def exec_default: (?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
+                       ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :null)?,
+                       ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
+    def exec_default_stream: (?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
+                              ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :pipe | :null)?,
+                              ?rlimits: Hash[untyped, untyped]?) -> ExecHandle
     def attach: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
                  ?env: Hash[untyped, untyped]?, ?detach_keys: String?,
                  ?rlimits: Hash[untyped, untyped]?) -> Integer
     def attach_shell: () -> Integer
+    def attach_default: (?cwd: String?, ?user: String?, ?env: Hash[untyped, untyped]?,
+                         ?detach_keys: String?, ?rlimits: Hash[untyped, untyped]?) -> Integer
     def fs: () -> FS
     def ssh: () -> SshOps
     def metrics: () -> Metrics
     def ping: () -> PingResult
     def touch: () -> TouchResult
     def modify: (?cpus: Integer?, ?max_cpus: Integer?, ?memory: Integer?, ?max_memory: Integer?,
+                 ?root_disk_size: Integer?,
                  ?env: Hash[untyped, untyped]?, ?remove_env: Array[String]?,
                  ?labels: Hash[untyped, untyped]?, ?remove_labels: Array[String]?,
                  ?workdir: String?, ?secrets: Hash[untyped, untyped]?,
@@ -412,6 +427,7 @@ module Microsandbox
     def name: () -> String
     def path: () -> String?
     def kind: () -> Symbol?
+    def default?: () -> bool
     def quota_mib: () -> Integer?
     def used_bytes: () -> Integer?
     def capacity_bytes: () -> Integer?
@@ -441,6 +457,7 @@ module Microsandbox
     def self.create: (String name, ?kind: String, ?size_mib: Integer?, ?quota_mib: Integer?,
                       ?labels: Hash[untyped, untyped]?) -> VolumeInfo
     def self.get: (String name) -> VolumeInfo
+    def self.get_default: () -> VolumeInfo
     def self.list: () -> Array[VolumeInfo]
     def self.remove: (String name) -> nil
     def self.fs: (String name) -> VolumeFs
@@ -475,8 +492,8 @@ module Microsandbox
     def digest: () -> String
     def path: () -> String
     def status: () -> Symbol
-    def algorithm: () -> String
-    def content_digest: () -> String
+    def algorithm: () -> String?
+    def content_digest: () -> String?
     def verified?: () -> bool
   end
 
@@ -531,6 +548,16 @@ module Microsandbox
     def self.managed: (?Integer? size_mib) -> Hash[String, untyped]
     def self.tmpfs: (?Integer? size_mib) -> Hash[String, untyped]
     def self.disk: (String path, ?format: (String | Symbol)?, ?fstype: String?) -> Hash[String, untyped]
+    def self.flat: (?Integer? size_mib, ?fstype: String?, ?clone: (String | Symbol)?) -> Hash[String, untyped]
+  end
+
+  class BackendInfo
+    def kind: () -> Symbol
+    def api_url: () -> String?
+    def source: () -> Symbol
+    def profile: () -> String?
+    def local?: () -> bool
+    def cloud?: () -> bool
   end
 
   class NetworkPolicy

@@ -159,10 +159,32 @@ fn default_backend_kind() -> String {
     .to_string()
 }
 
+/// Secret-safe description of the active default backend (v0.6.9):
+/// {kind, api_url, source, profile}. `source` names what selected the backend
+/// (e.g. "MSB_BACKEND", "programmatic", "default"); the API key is never
+/// included. Like `default_backend_kind`, the first call freezes ambient
+/// env/profile resolution for the process.
+fn default_backend_info() -> magnus::RHash {
+    let info = microsandbox::default_backend_info();
+    let hash = crate::runtime::ruby().hash_new();
+    let _ = hash.aset(
+        "kind",
+        match info.kind {
+            microsandbox::BackendKind::Local => "local",
+            microsandbox::BackendKind::Cloud => "cloud",
+        },
+    );
+    let _ = hash.aset("api_url", info.api_url);
+    let _ = hash.aset("source", info.source.as_str());
+    let _ = hash.aset("profile", info.profile);
+    hash
+}
+
 pub fn define(_ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     native.define_singleton_method("set_default_backend", function!(set_default_backend, 4))?;
     native.define_singleton_method("push_default_backend", function!(push_default_backend, 4))?;
     native.define_singleton_method("pop_default_backend", function!(pop_default_backend, 1))?;
     native.define_singleton_method("default_backend_kind", function!(default_backend_kind, 0))?;
+    native.define_singleton_method("default_backend_info", function!(default_backend_info, 0))?;
     Ok(())
 }
