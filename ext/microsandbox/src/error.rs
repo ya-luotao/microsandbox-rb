@@ -60,6 +60,10 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         // unconditionally enables the core's `net` feature (default-features),
         // so this variant is always present.
         NetworkBuilder(_) => "NetworkPolicyError",
+        // v0.6.9: `exec_default`/`attach_default` on an image whose resolved
+        // ENTRYPOINT+CMD provide no executable command. Mirrors the Python
+        // SDK's `NoDefaultCommandError`.
+        NoDefaultCommand => "NoDefaultCommandError",
         _ => "Error",
     }
 }

@@ -18,6 +18,7 @@ fn handle_to_hash(h: &VolumeHandle) -> RHash {
     let hash = ruby().hash_new();
     let _ = hash.aset("name", h.name().to_string());
     let _ = hash.aset("kind", h.kind().as_str().to_string());
+    let _ = hash.aset("default", h.is_default());
     let _ = hash.aset("quota_mib", h.quota_mib());
     let _ = hash.aset("used_bytes", h.used_bytes());
     let _ = hash.aset("capacity_bytes", h.capacity_bytes());
@@ -80,6 +81,13 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
 
 fn get(name: String) -> Result<RHash, Error> {
     let handle = block_on(microsandbox::Volume::get(&name)).map_err(error::to_ruby)?;
+    Ok(handle_to_hash(&handle))
+}
+
+/// The backend's default volume (v0.6.9). Cloud-backend only — the local
+/// backend rejects it (Unsupported) to avoid accidental host access.
+fn get_default() -> Result<RHash, Error> {
+    let handle = block_on(microsandbox::Volume::get_default()).map_err(error::to_ruby)?;
     Ok(handle_to_hash(&handle))
 }
 
@@ -196,6 +204,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let class = native.define_class("Volume", ruby.class_object())?;
     class.define_singleton_method("create", function!(create, 2))?;
     class.define_singleton_method("get", function!(get, 1))?;
+    class.define_singleton_method("get_default", function!(get_default, 0))?;
     class.define_singleton_method("list", function!(list, 0))?;
     class.define_singleton_method("remove", function!(remove, 1))?;
     class.define_singleton_method("fs", function!(fs, 1))?;

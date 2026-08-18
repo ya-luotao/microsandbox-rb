@@ -17,6 +17,7 @@ rescue LoadError
 end
 
 require_relative "microsandbox/errors"
+require_relative "microsandbox/backend_info"
 require_relative "microsandbox/exec_output"
 require_relative "microsandbox/exec_handle"
 require_relative "microsandbox/fs"
@@ -218,6 +219,14 @@ module Microsandbox
     #   The first call resolves the env/profile/config ladder.
     def default_backend_kind
       Native.default_backend_kind.to_sym
+    end
+
+    # Secret-safe description of the active default backend (runtime v0.6.9).
+    # Like {default_backend_kind}, the first call freezes ambient env/profile
+    # resolution for the process. The API key is never included.
+    # @return [BackendInfo]
+    def default_backend_info
+      BackendInfo.new(Native.default_backend_info)
     end
 
     # Latest resource-usage snapshot for every running sandbox, keyed by name.

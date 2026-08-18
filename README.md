@@ -20,7 +20,13 @@ them. Our deepest thanks to the maintainers and community. 🙏
   [Rust](https://github.com/superradcompany/microsandbox/tree/main/sdk) ·
   [Python](https://github.com/superradcompany/microsandbox/tree/main/sdk/python) ·
   [TypeScript / Node](https://github.com/superradcompany/microsandbox/tree/main/sdk/node-ts) ·
-  [Go](https://github.com/superradcompany/microsandbox/tree/main/sdk/go)
+  [Go](https://github.com/superradcompany/microsandbox/tree/main/sdk/go) ·
+  [Ruby](https://github.com/superradcompany/microsandbox/tree/main/sdk/ruby)
+  (since upstream `v0.6.9` there is an **official** `microsandbox` gem — a
+  compact veneer over the same Rust SDK. This gem predates it and covers a
+  larger surface (snapshots, SSH, streaming, volumes fs, network policy DSL,
+  RBS types); both define the `Microsandbox` module, so use one or the other,
+  not both, in a single process.)
 - **Agents** — [Agent Skills](https://github.com/superradcompany/skills) · [MCP server](https://github.com/superradcompany/microsandbox-mcp)
 - **Community** — [Discord](https://discord.gg/T95Y3XnEAK)
 
@@ -193,6 +199,22 @@ end
 A non-zero exit is **not** an error — inspect `exit_code`/`success?`. Spawn-time
 failures (e.g. command not found) and timeouts raise typed errors (see below).
 
+**Default workload** (runtime `v0.6.9`): `create` is strictly boot-only — it
+never runs the image's `ENTRYPOINT`/`CMD`. Execute the image's own command
+explicitly:
+
+```ruby
+Microsandbox::Sandbox.create("worker", image: "example/worker:latest",
+  cmd: ["worker.py", "--once"]) do |sb|   # cmd: overrides the durable image CMD
+  out = sb.exec_default(timeout: 300)     # buffered; exec-style options
+  handle = sb.exec_default_stream         # or streaming (returns an ExecHandle)
+  sb.attach_default                       # or interactive (host TTY)
+end
+```
+
+An image whose entrypoint and CMD resolve to no executable command raises
+`Microsandbox::NoDefaultCommandError`.
+
 ### Guest filesystem
 
 ```ruby
@@ -255,6 +277,10 @@ Microsandbox::Sandbox.create("live", image: "public.ecr.aws/docker/library/alpin
 
   # Live resize — applies to the running VM under the default :no_restart policy:
   sb.modify(cpus: 2, memory: 1024)
+
+  # Grow the root disk (managed upper or flat, MiB — runtime v0.6.9). Applied
+  # while stopped; growth-only:
+  sb.modify(root_disk_size: 8192, policy: :next_start)
 
   # env/labels/workdir changes on a *running* sandbox require a restart, so the
   # default :no_restart policy rejects the whole apply (it raises rather than
@@ -475,7 +501,7 @@ Microsandbox.runtime_version   # => "v0.6.9"  (the embedded upstream runtime tag
 | `0.10.0` | `v0.6.6` | `v0.6.6` API parity: live `modify`/resize, `ping`/`touch`, create `max_cpus`/`max_memory` |
 | `0.11.0` | `v0.6.7` | adopts upstream `v0.6.7` (**breaking**): network profiles replace `public_only`/`non_local`, structured `root_disk:` replaces `oci_upper_size:` (deprecated alias kept), snapshot descriptor contract (`create` re-keyed by name, `save`/`load` rename, `snapshot_to` removed, on-disk auto-migration), `Image.load`/`Image.save`, `follow_root_symlinks:`; runtime carries the GHSA-4vq3-cjpp-v7fg `msb copy` fix |
 | `0.12.0` | `v0.6.8` | adopts upstream `v0.6.8` (**breaking**): `Sandbox.list`/`.list_with` return a cursor-paginated `SandboxPage` (`limit:`/`cursor:` keywords), `UnsupportedError` re-keyed by structured operations with `#operation`/`#hint`; runtime adds a shared log registry for followed streams and cloud exec/ssh reconnects |
-| `0.13.0` | `v0.6.9` | adopts upstream `v0.6.9` (**breaking**): a bare `MSB_API_KEY` no longer selects the cloud backend (explicit `MSB_BACKEND=cloud` or a cloud profile required; invalid cloud config fails closed with `InvalidConfigError`); runtime adds flat OCI root disks, deployment profiles, per-sandbox rate limits, and default-workload execution |
+| `0.13.0` | `v0.6.9` | adopts upstream `v0.6.9` (**breaking**): a bare `MSB_API_KEY` no longer selects the cloud backend (explicit `MSB_BACKEND=cloud` or a cloud profile required; invalid cloud config fails closed with `InvalidConfigError`); snapshot payload integrity becomes opt-in (`record_integrity:`, `verify` can report `:not_recorded`). Parity: default-workload execution (`exec_default`/`exec_default_stream`/`attach_default`, `cmd:`), flat root disks (`RootDisk.flat`), `modify(root_disk_size:)`, `rate_limiter:`, `vsock:`, `default_backend_info`, `Volume.get_default` |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:

@@ -13,6 +13,7 @@ module Microsandbox
       @name = data["name"]
       @path = data["path"]
       @kind = data["kind"]
+      @default = data["default"]
       @quota_mib = data["quota_mib"]
       @used_bytes = data["used_bytes"]
       @capacity_bytes = data["capacity_bytes"]
@@ -26,6 +27,13 @@ module Microsandbox
     #   input and the core's canonical names)
     def kind
       @kind&.to_sym
+    end
+
+    # Whether this is the backend's default volume (runtime v0.6.9, see
+    # {Volume.get_default}).
+    # @return [Boolean]
+    def default?
+      !!@default
     end
 
     # @return [Time, nil]
@@ -152,6 +160,14 @@ module Microsandbox
       # @return [VolumeInfo]
       def get(name)
         VolumeInfo.new(Native::Volume.get(name.to_s))
+      end
+
+      # The backend's default volume (runtime v0.6.9). Cloud backend only —
+      # the full {VolumeInfo#fs} surface works against it; the local backend
+      # raises {UnsupportedError} to avoid accidental host access.
+      # @return [VolumeInfo]
+      def get_default
+        VolumeInfo.new(Native::Volume.get_default)
       end
 
       # All volumes.

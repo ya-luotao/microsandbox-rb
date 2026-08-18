@@ -16,6 +16,7 @@ RSpec.describe "Microsandbox error hierarchy" do
     "SandboxStillRunningError" => "sandbox-still-running",
     "ExecTimeoutError" => "exec-timeout",
     "ExecFailedError" => "exec-failed",
+    "NoDefaultCommandError" => "no-default-command",
     "FilesystemError" => "filesystem-error",
     "PathNotFoundError" => "path-not-found",
     "VolumeNotFoundError" => "volume-not-found",

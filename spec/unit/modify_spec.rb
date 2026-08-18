@@ -57,6 +57,13 @@ RSpec.describe "v0.6.6 modify/ping/touch parity" do
         )
       end
 
+      it "forwards root_disk_size (v0.6.9 root-disk resize)" do
+        sandbox.modify(root_disk_size: 8192)
+        expect(native).to have_received(:modify).with(
+          hash_including("root_disk_size" => 8192)
+        )
+      end
+
       it "always sets a policy, defaulting to no_restart, and omits unspecified options" do
         sandbox.modify(cpus: 1)
         expect(native).to have_received(:modify).with({"cpus" => 1, "policy" => "no_restart"})

@@ -407,6 +407,99 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /unknown root_disk kind/)
     end
 
+    it "normalizes a flat root disk with clone strategy (v0.6.9)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        root_disk: Microsandbox::RootDisk.flat(8192, fstype: "ext4", clone: :reflink)
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("root_disk" => {
+          "kind" => "flat", "size_mib" => 8192, "fstype" => "ext4", "clone" => "reflink"
+        })
+      )
+
+      expect do
+        Microsandbox::Sandbox.create("box2", image: "x", root_disk: {kind: :flat, path: "/x"})
+      end.to raise_error(ArgumentError, /only valid for the disk kind/)
+      expect do
+        Microsandbox::Sandbox.create("box3", image: "x", root_disk: {kind: :flat, clone: :cow})
+      end.to raise_error(ArgumentError, /unknown root_disk clone strategy/)
+    end
+
+    it "forwards cmd:, distinguishing an explicit empty array from absence (v0.6.9)" do
+      Microsandbox::Sandbox.create("box", image: "x", cmd: ["worker.py", :"--once"])
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("cmd" => ["worker.py", "--once"])
+      )
+
+      Microsandbox::Sandbox.create("box2", image: "x", cmd: [])
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box2", hash_including("cmd" => [])
+      )
+
+      Microsandbox::Sandbox.create("box3", image: "x")
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box3", hash_excluding("cmd")
+      )
+    end
+
+    it "normalizes vsock routes from both accepted shapes (v0.6.9)" do
+      Microsandbox::Sandbox.create("box", image: "x", vsock: {"/host/api.sock" => 5000})
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("vsock" => [{"host_socket" => "/host/api.sock", "port" => 5000}])
+      )
+
+      Microsandbox::Sandbox.create(
+        "box2", image: "x",
+        vsock: [{host_socket: "/h/log.sock", port: 6000, socket_type: :dgram}]
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box2",
+        hash_including("vsock" => [
+          {"host_socket" => "/h/log.sock", "port" => 6000, "socket_type" => "dgram"}
+        ])
+      )
+
+      expect do
+        Microsandbox::Sandbox.create("box3", image: "x", vsock: [{port: 1}])
+      end.to raise_error(ArgumentError, /requires host_socket: and port:/)
+      expect do
+        Microsandbox::Sandbox.create("box4", image: "x", vsock: "nope")
+      end.to raise_error(ArgumentError, /vsock: must be a Hash/)
+    end
+
+    it "normalizes rate_limiter token buckets (v0.6.9)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        rate_limiter: {
+          egress: {
+            bandwidth: {size: 1_048_576, refill_time_ms: 1000, one_time_burst: 2048},
+            ops: {size: 1000, refill_time_ms: 1000}
+          },
+          ingress: {bandwidth: {size: 524_288, refill_time_ms: 500}}
+        }
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("rate_limiter" => {
+          "egress" => {
+            "bandwidth" => {"size" => 1_048_576, "refill_time_ms" => 1000, "one_time_burst" => 2048},
+            "ops" => {"size" => 1000, "refill_time_ms" => 1000}
+          },
+          "ingress" => {"bandwidth" => {"size" => 524_288, "refill_time_ms" => 500}}
+        })
+      )
+
+      expect do
+        Microsandbox::Sandbox.create("box2", image: "x", rate_limiter: {egress: {bandwidth: {size: 1}}})
+      end.to raise_error(ArgumentError, /requires size: and refill_time_ms:/)
+      expect do
+        Microsandbox::Sandbox.create("box3", image: "x", rate_limiter: "fast")
+      end.to raise_error(ArgumentError, /rate_limiter: must be a Hash/)
+    end
+
     it "rejects out-of-u32-range root_disk sizes with a clear error" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", root_disk: -1)
