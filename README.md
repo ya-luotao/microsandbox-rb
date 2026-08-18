@@ -430,9 +430,15 @@ Microsandbox.with_backend(:local) { Microsandbox::Sandbox.create("box", image: "
 ```
 
 Resolution order when no backend is set programmatically: `MSB_BACKEND`
-(`local`/`cloud`) → `MSB_API_URL` + `MSB_API_KEY` → `MSB_PROFILE` → the
-`active_profile` in `~/.microsandbox/config.json` (path overridable via
-`MSB_CONFIG_PATH`) → local. The cloud backend currently supports a subset of
+(`local`/`cloud`) → `MSB_PROFILE` → the `active_profile` in
+`~/.microsandbox/config.json` (path overridable via `MSB_CONFIG_PATH`) →
+local. **Cloud intent must be explicit** (since runtime `v0.6.9`): a bare
+`MSB_API_KEY` is treated as credential material, not backend intent, and no
+longer selects the cloud on its own — pair it with `MSB_BACKEND=cloud` (which
+reads `MSB_API_URL`/`MSB_API_KEY`), or select a cloud profile. Invalid cloud
+configuration (e.g. `MSB_BACKEND=cloud` without a usable API key or cloud
+profile) fails closed with `Microsandbox::InvalidConfigError` instead of
+silently running locally. The cloud backend currently supports a subset of
 operations (create/start/stop/remove/get/list, one-shot exec, follow log
 streaming); unsupported operations raise `Microsandbox::UnsupportedError`.
 
@@ -445,8 +451,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.12.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.8"  (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.13.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.6.9"  (the embedded upstream runtime tag)
 ```
 
 | Gem version | Upstream runtime | Notes |
@@ -469,6 +475,7 @@ Microsandbox.runtime_version   # => "v0.6.8"  (the embedded upstream runtime tag
 | `0.10.0` | `v0.6.6` | `v0.6.6` API parity: live `modify`/resize, `ping`/`touch`, create `max_cpus`/`max_memory` |
 | `0.11.0` | `v0.6.7` | adopts upstream `v0.6.7` (**breaking**): network profiles replace `public_only`/`non_local`, structured `root_disk:` replaces `oci_upper_size:` (deprecated alias kept), snapshot descriptor contract (`create` re-keyed by name, `save`/`load` rename, `snapshot_to` removed, on-disk auto-migration), `Image.load`/`Image.save`, `follow_root_symlinks:`; runtime carries the GHSA-4vq3-cjpp-v7fg `msb copy` fix |
 | `0.12.0` | `v0.6.8` | adopts upstream `v0.6.8` (**breaking**): `Sandbox.list`/`.list_with` return a cursor-paginated `SandboxPage` (`limit:`/`cursor:` keywords), `UnsupportedError` re-keyed by structured operations with `#operation`/`#hint`; runtime adds a shared log registry for followed streams and cloud exec/ssh reconnects |
+| `0.13.0` | `v0.6.9` | adopts upstream `v0.6.9` (**breaking**): a bare `MSB_API_KEY` no longer selects the cloud backend (explicit `MSB_BACKEND=cloud` or a cloud profile required; invalid cloud config fails closed with `InvalidConfigError`); runtime adds flat OCI root disks, deployment profiles, per-sandbox rate limits, and default-workload execution |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:

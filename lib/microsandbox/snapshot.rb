@@ -115,19 +115,21 @@ module Microsandbox
     end
   end
 
-  # The result of {Snapshot.verify}. Schema-1 descriptors always record
-  # integrity, so a returned report is always `:verified` — an integrity
-  # mismatch raises {SnapshotIntegrityError} instead of returning.
+  # The result of {Snapshot.verify}. Since runtime v0.6.9 payload integrity is
+  # recorded only when the snapshot was created with `record_integrity: true`:
+  # such snapshots report `:verified` (an integrity mismatch raises
+  # {SnapshotIntegrityError} instead of returning), snapshots without recorded
+  # integrity report `:not_recorded` with `algorithm`/`content_digest` nil.
   class SnapshotVerifyReport
     # @return [String] descriptor digest
     attr_reader :digest
     # @return [String] artifact directory path
     attr_reader :path
-    # @return [Symbol] :verified
+    # @return [Symbol] :verified or :not_recorded
     attr_reader :status
-    # @return [String] digest algorithm
+    # @return [String, nil] digest algorithm (nil when :not_recorded)
     attr_reader :algorithm
-    # @return [String] matched content digest
+    # @return [String, nil] matched content digest (nil when :not_recorded)
     attr_reader :content_digest
 
     def initialize(data)
@@ -161,8 +163,10 @@ module Microsandbox
       #   is written at `dest_dir/<name>` (default: the snapshots dir)
       # @param labels [Hash, nil] user labels
       # @param force [Boolean] overwrite an existing artifact at the destination
-      # @param record_integrity [Boolean] accepted for compatibility; schema-1
-      #   descriptors always record integrity, so this is a no-op
+      # @param record_integrity [Boolean] record persistent payload integrity
+      #   (a Merkle content digest) in the artifact — opt-in since runtime
+      #   v0.6.9 because hashing large allocated uppers is expensive; without
+      #   it {Snapshot.verify} reports `:not_recorded`
       # @param resumable [Boolean] request a resumable (memory+device) snapshot;
       #   raises {UnsupportedError} until VM pause/resume lands upstream
       # @return [SnapshotInfo]

@@ -72,7 +72,7 @@ RSpec.describe Microsandbox::Snapshot do
   end
 
   describe ".verify" do
-    it "maps the (always-verified) report" do
+    it "maps a verified report" do
       allow(Microsandbox::Native::Snapshot).to receive(:verify).and_return(
         "digest" => "sha256:d", "path" => "/p", "upper_status" => "verified",
         "upper_algorithm" => "sha256", "upper_digest" => "deadbeef"
@@ -82,8 +82,19 @@ RSpec.describe Microsandbox::Snapshot do
       expect(report.status).to eq(:verified)
       expect(report.algorithm).to eq("sha256")
       expect(report.content_digest).to eq("deadbeef")
-      # v0.6.7 removed the not-recorded outcome (integrity is mandatory).
-      expect(report).not_to respond_to(:not_recorded?)
+    end
+
+    # v0.6.9 (#1346): payload integrity is opt-in at create time; without
+    # `record_integrity: true` the report carries no content digest.
+    it "maps a not-recorded report" do
+      allow(Microsandbox::Native::Snapshot).to receive(:verify).and_return(
+        "digest" => "sha256:d", "path" => "/p", "upper_status" => "not_recorded"
+      )
+      report = described_class.verify("snap1")
+      expect(report).not_to be_verified
+      expect(report.status).to eq(:not_recorded)
+      expect(report.algorithm).to be_nil
+      expect(report.content_digest).to be_nil
     end
   end
 

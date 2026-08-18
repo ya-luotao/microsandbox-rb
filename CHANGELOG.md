@@ -6,6 +6,42 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [Unreleased] - 0.13.0
+
+Adopts upstream runtime **`v0.6.8` → `v0.6.9`**.
+
+### Breaking
+
+- **A bare `MSB_API_KEY` no longer selects the cloud backend** (upstream
+  backend-selection hardening: "a bare API key is credential material, not
+  backend intent"). Cloud intent must now be explicit: set `MSB_BACKEND=cloud`
+  (with a non-empty `MSB_API_KEY`), select a cloud profile, or call
+  `Microsandbox.set_default_backend(:cloud, ...)`. Code that relied on
+  exporting only `MSB_API_KEY` now silently runs on the **local** backend —
+  audit deployment environments when upgrading.
+- **Invalid cloud configuration fails closed** instead of silently falling
+  back to local execution: `MSB_BACKEND=cloud` without a usable API key or
+  cloud profile raises {Microsandbox::InvalidConfigError} at first use rather
+  than dispatching sandboxes locally.
+- **Snapshot payload integrity is opt-in** (upstream #1346). New snapshots no
+  longer record a content digest unless created with
+  `record_integrity: true` (previously documented as a no-op because schema-1
+  always recorded integrity — that default reversed upstream, as hashing
+  large allocated uppers is expensive). {Microsandbox::Snapshot.verify} on a
+  snapshot without recorded integrity now reports
+  `SnapshotVerifyReport#status == :not_recorded` (with `#algorithm` /
+  `#content_digest` nil, `#verified?` false) instead of always `:verified`.
+
+### Runtime
+
+- Upstream `v0.6.9` runtime changes carried by this build (no Ruby surface
+  change): flat OCI root disks, deployment profiles, NUMA-aware placement,
+  per-sandbox egress/ingress rate limits, degraded placement under pressure,
+  long-link-target preservation in saved image archives, nested OCI image
+  index loads, backpressured published-port data preservation, DNS
+  network-rule parsing in release builds, child-process reaping in `agentd`,
+  and opt-in snapshot payload integrity.
+
 ## [0.12.0] - 2026-07-30
 
 Adopts upstream runtime **`v0.6.7` → `v0.6.8`** and mirrors its breaking SDK

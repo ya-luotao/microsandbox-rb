@@ -172,9 +172,13 @@ module Microsandbox
 
     # Install a process-wide default backend (v0.5.8 backend routing). Without a
     # call to this, operations use a local libkrun backend; the env/profile
-    # ladder (`MSB_BACKEND`, `MSB_API_URL`+`MSB_API_KEY`, `MSB_PROFILE`,
-    # `~/.microsandbox/config.json`) is resolved lazily on first use. Call once
-    # at startup, before any sandbox operations.
+    # ladder (`MSB_BACKEND` → `MSB_PROFILE` → `~/.microsandbox/config.json`) is
+    # resolved lazily on first use. Since runtime v0.6.9 a bare `MSB_API_KEY`
+    # no longer selects the cloud — cloud intent must be explicit via
+    # `MSB_BACKEND=cloud` (paired with `MSB_API_URL`/`MSB_API_KEY`), a cloud
+    # profile, or this method; invalid cloud config raises
+    # {InvalidConfigError} instead of falling back to local. Call once at
+    # startup, before any sandbox operations.
     #
     # @param kind ["local","cloud", Symbol] backend kind
     # @param url [String, nil] cloud control-plane URL (cloud, unless `profile:`)

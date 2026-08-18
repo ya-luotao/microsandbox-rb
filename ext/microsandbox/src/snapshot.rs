@@ -171,9 +171,10 @@ fn remove(name_or_path: String, force: bool) -> Result<(), Error> {
 }
 
 /// Verify a snapshot's recorded upper-layer integrity. Returns
-/// {digest, path, upper_status, upper_algorithm, upper_digest}. Schema-1
-/// descriptors always record integrity, so the status is always "verified"
-/// on success (mismatches raise SnapshotIntegrityError instead).
+/// {digest, path, upper_status, upper_algorithm, upper_digest}. As of v0.6.9
+/// payload integrity is opt-in at create time: opted-in snapshots verify to
+/// "verified" (mismatches raise SnapshotIntegrityError), snapshots without
+/// recorded integrity report "not_recorded" with no algorithm/digest keys.
 fn verify(name_or_path: String) -> Result<RHash, Error> {
     let snap = block_on(Snapshot::open(&name_or_path)).map_err(error::to_ruby)?;
     let report = block_on(snap.verify()).map_err(error::to_ruby)?;
@@ -247,6 +248,12 @@ fn verify_report_to_hash(report: &SnapshotVerifyReport) -> RHash {
             let _ = hash.aset("upper_status", "verified");
             let _ = hash.aset("upper_algorithm", algorithm.clone());
             let _ = hash.aset("upper_digest", digest.clone());
+        }
+        // v0.6.9 (#1346): payload integrity is opt-in at create time
+        // (`record_integrity`); a snapshot without it verifies structurally
+        // but has no content digest to check.
+        UpperVerifyStatus::NotRecorded => {
+            let _ = hash.aset("upper_status", "not_recorded");
         }
     }
     hash

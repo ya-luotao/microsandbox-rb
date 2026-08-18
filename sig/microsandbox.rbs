@@ -475,8 +475,8 @@ module Microsandbox
     def digest: () -> String
     def path: () -> String
     def status: () -> Symbol
-    def algorithm: () -> String
-    def content_digest: () -> String
+    def algorithm: () -> String?
+    def content_digest: () -> String?
     def verified?: () -> bool
   end
 
