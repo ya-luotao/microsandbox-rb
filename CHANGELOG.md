@@ -6,7 +6,7 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
-## [Unreleased] - 0.13.0
+## [0.13.0] - 2026-08-18
 
 Adopts upstream runtime **`v0.6.8` → `v0.6.9`**.
 
