@@ -69,6 +69,15 @@ Not exposed, matching the official Python binding at `v0.6.9`:
 `config.json`/CLI only so far) and the Rust-only sparse
 `SandboxConfigPatch`/`builder.configure` surface.
 
+### Fixed
+
+- `entrypoint: []` now clears the image's `ENTRYPOINT` (blocking the
+  image-config merge), matching the upstream builder contract and the Python
+  binding. Previously the empty array was silently dropped in the native
+  layer, so the image ENTRYPOINT survived — observable under the new
+  `exec_default`/`attach_default`, which would have run the wrong command.
+  `nil` (the default) still inherits the image value.
+
 ### Runtime
 
 - Upstream `v0.6.9` runtime changes carried without further Ruby surface

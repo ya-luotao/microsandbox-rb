@@ -444,6 +444,18 @@ RSpec.describe Microsandbox::Sandbox do
       )
     end
 
+    it "forwards entrypoint: [] (clears the image ENTRYPOINT) distinctly from absence" do
+      Microsandbox::Sandbox.create("box", image: "x", entrypoint: [])
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("entrypoint" => [])
+      )
+
+      Microsandbox::Sandbox.create("box2", image: "x")
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box2", hash_excluding("entrypoint")
+      )
+    end
+
     it "normalizes vsock routes from both accepted shapes (v0.6.9)" do
       Microsandbox::Sandbox.create("box", image: "x", vsock: {"/host/api.sock" => 5000})
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(

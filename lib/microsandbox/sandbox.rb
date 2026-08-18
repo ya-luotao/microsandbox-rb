@@ -288,7 +288,9 @@ module Microsandbox
       # @param hostname [String, nil] guest hostname
       # @param labels [Hash, nil] metadata labels
       # @param scripts [Hash, nil] named scripts to install
-      # @param entrypoint [Array<String>, nil] image entrypoint override
+      # @param entrypoint [Array<String>, nil] image ENTRYPOINT override. An
+      #   explicit `[]` clears the image's ENTRYPOINT (so `exec_default` runs
+      #   the CMD alone); `nil` (the default) inherits it.
       # @param cmd [Array<String>, nil] image CMD override used by
       #   default-workload execution ({Sandbox#exec_default} et al., runtime
       #   v0.6.9). Durable configuration — it does **not** execute anything at
@@ -484,10 +486,10 @@ module Microsandbox
         opts["env"] = stringify(env) if env
         opts["labels"] = stringify(labels) if labels
         opts["scripts"] = stringify(scripts) if scripts
-        opts["entrypoint"] = Array(entrypoint).map(&:to_s) if entrypoint
-        # cmd: overrides the OCI image CMD used by default-workload execution
-        # (v0.6.9). An explicit empty Array clears the image CMD, so presence is
-        # keyed on the kwarg itself (nil = inherit the image CMD).
+        # entrypoint/cmd: an explicit empty Array clears the image's value
+        # (blocking the image-config merge), so presence is keyed on the kwarg
+        # itself — nil (the default) inherits from the image.
+        opts["entrypoint"] = Array(entrypoint).map(&:to_s) unless entrypoint.nil?
         opts["cmd"] = Array(cmd).map(&:to_s) unless cmd.nil?
         opts["ports"] = intify_ports(ports) if ports
         opts["ports_udp"] = intify_ports(ports_udp) if ports_udp

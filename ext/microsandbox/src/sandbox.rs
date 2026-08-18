@@ -128,14 +128,15 @@ impl Sandbox {
         for (k, v) in conv::opt_string_map(opts, "scripts")? {
             b = b.script(k, v);
         }
-        let entrypoint = conv::opt_string_vec(opts, "entrypoint")?;
-        if !entrypoint.is_empty() {
+        // entrypoint/cmd: presence-keyed, NOT non-emptiness-keyed — an
+        // explicitly *empty* array is meaningful for both (it clears the
+        // image's ENTRYPOINT / CMD, blocking the image-config merge), exactly
+        // like the Python binding. Keying on non-emptiness silently resurrects
+        // the image ENTRYPOINT and runs the wrong command under
+        // `exec_default`/`attach_default`.
+        if let Some(entrypoint) = conv::opt::<Vec<String>>(opts, "entrypoint")? {
             b = b.entrypoint(entrypoint);
         }
-        // cmd: override the OCI image CMD used by default-workload execution
-        // (v0.6.9). Unlike `entrypoint` above, an explicitly *empty* array is
-        // meaningful — it clears the image CMD — so presence is keyed on the
-        // option itself, not on non-emptiness.
         if let Some(cmd) = conv::opt::<Vec<String>>(opts, "cmd")? {
             b = b.cmd(cmd);
         }
