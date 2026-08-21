@@ -232,15 +232,20 @@ jobs:
 
       # rspec exits 0 when every example is skipped, so a lane whose runtime
       # never resolved (the exact failure this matrix exists to catch) would
-      # otherwise go green having booted nothing. Require real examples, none
-      # pending.
+      # otherwise go green having booted nothing. Require real examples and
+      # fail on any example skipped by spec_helper's runtime gate; list the
+      # other pending ones (feature-specific skips are legitimate).
       - name: Assert the integration examples actually ran
         run: |
           ruby -rjson -e '
-            s = JSON.parse(File.read("rspec-integration.json")).fetch("summary")
+            r = JSON.parse(File.read("rspec-integration.json"))
+            s = r.fetch("summary")
             puts "examples=#{s["example_count"]} failures=#{s["failure_count"]} pending=#{s["pending_count"]}"
             abort("no integration examples ran") if s["example_count"].to_i.zero?
-            abort("#{s["pending_count"]} integration examples were skipped") unless s["pending_count"].to_i.zero?
+            pending = r.fetch("examples").select { |e| e["status"] == "pending" }
+            pending.each { |e| puts "pending: #{e["full_description"]} — #{e["pending_message"]}" }
+            gated = pending.select { |e| e["pending_message"].to_s.match?(/runtime not resolvable|MICROSANDBOX_INTEGRATION/) }
+            abort("#{gated.size} integration examples were skipped by the runtime gate") unless gated.empty?
           '
 
   # The companion `microsandbox-rb-binaries` platform gems: vendor every
