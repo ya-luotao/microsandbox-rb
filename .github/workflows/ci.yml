@@ -25,12 +25,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # The core crate is statically linked into the extension and pulls in
-      # libcap-ng on Linux (via the caps/capng crates), plus the toolchain that
-      # builds libkrunfw from source whenever the prebuilt download is
-      # unavailable. The ubuntu runners don't ship libcap-ng-dev, so the final
-      # link fails with `cannot find -lcap-ng` without this. macOS uses a
-      # different code path and needs none of it. Mirrors the upstream core
-      # crate's documented Linux build dependencies.
+      # libcap-ng on Linux (via the caps/capng crates). The ubuntu runners don't
+      # ship libcap-ng-dev, so the final link fails with `cannot find -lcap-ng`
+      # without this. macOS uses a different code path and needs none of it.
+      # Mirrors the upstream core crate's documented Linux build dependencies.
+      # (The gem is SDK-only: no msb/libkrunfw host runtime is downloaded or
+      # built at compile time — see ext/microsandbox/Cargo.toml.)
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -64,7 +64,8 @@ jobs:
   # default install for every non-fat-gem platform) with no pre-publish signal.
   # No KVM/microVM boot, so it runs cheaply on a hosted runner.
   package:
-    name: package (install built source gem)
+    name: package (install built source gem + binaries gem)
+    needs: [binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -96,6 +97,34 @@ jobs:
           cd "$RUNNER_TEMP"
           ruby -e 'require "microsandbox"; puts "version=#{Microsandbox.version} runtime=#{Microsandbox.runtime_version}"'
 
+      # The two-gem model end to end, the way a user gets it (`gem install` of
+      # both, no Bundler, no checkout): the companion gem built by the
+      # `binaries` job must be what `require "microsandbox"` wires into the
+      # core resolver, its msb must run and report the wrapped runtime version,
+      # and `ensure_runtime!` must then skip the ~/.microsandbox installer. Runs
+      # with MICROSANDBOX_NO_AUTO_INSTALL unset so a silently inactive tier
+      # would surface as an unexpected download attempt, not pass by fallback.
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-gems
+          path: binaries-gems
+      - name: Install the host binaries gem and check the SDK resolves into it
+        run: |
+          gem install --local --no-document binaries-gems/microsandbox-rb-binaries-*-x86_64-linux-gnu.gem
+          cd "$RUNNER_TEMP"
+          ruby -e '
+            require "microsandbox"
+            path = Microsandbox.runtime_path
+            gem_root = Gem.loaded_specs.fetch("microsandbox-rb-binaries").full_gem_path
+            abort("resolver returned #{path}, expected the binaries gem under #{gem_root}") unless path == Microsandbox::Binaries.msb_path && path.start_with?(gem_root)
+            out = IO.popen([path, "--version"], &:read)
+            abort("msb --version failed") unless $?.success?
+            abort("msb reports #{out.strip.inspect}, expected #{Microsandbox::RUNTIME_VERSION}") unless out.split.include?(Microsandbox::RUNTIME_VERSION.delete_prefix("v"))
+            Microsandbox.define_singleton_method(:install) { abort("ensure_runtime! ran the installer despite the bundled runtime") }
+            Microsandbox.ensure_runtime!
+            puts "ok: #{out.strip} from #{path}"
+          '
+
   # Real-microVM integration tests — the round-trip verification that the unit
   # suite (which stubs the native layer) cannot provide. Boots actual sandboxes
   # from an OCI image and exercises exec/shell/fs/metrics/logs end-to-end.
@@ -108,10 +137,22 @@ jobs:
   #
   # Runs on pushes to main and manual dispatch (not on every PR) so external
   # contributors aren't gated on KVM availability.
+  #
+  # Runs once per runtime source: `provisioned` boots from the first-use
+  # download into ~/.microsandbox (the fallback tier every install without the
+  # companion gem relies on) and `bundled` boots from the msb + libkrunfw
+  # vendored by the microsandbox-rb-binaries gem — the only place the gem's
+  # binaries are proven to run a real VM, not just to resolve and print a
+  # version (a runtime that merely exists but can't boot is the failure mode
+  # that bit v0.5.9).
   integration:
-    name: integration (real microVM, KVM)
+    name: integration (real microVM, KVM, ${{ matrix.runtime }} runtime)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [provisioned, bundled]
     # A full run (compile + boot real microVMs + specs) lands around 10-12 min.
     # This cap is the safety net: a single deadlocked spec (e.g. a guest process
     # blocked on stdin that never gets EOF) would otherwise wedge the job until
@@ -147,11 +188,38 @@ jobs:
       - name: Compile native extension
         run: bundle exec rake compile
 
-      # The core's `prebuilt` build.rs provisions msb + libkrunfw at compile
-      # time; install explicitly too so a missing runtime fails loudly here
-      # rather than silently skipping the integration specs.
-      - name: Ensure runtime installed
+      # Nothing provisions the host runtime at compile time any more (SDK-only
+      # gem), so this IS the fallback tier under test: download into
+      # ~/.microsandbox explicitly so a missing runtime fails loudly here rather
+      # than silently skipping the integration specs.
+      - name: Ensure runtime installed (provisioned)
+        if: matrix.runtime == 'provisioned'
         run: bundle exec ruby -e 'require "microsandbox"; Microsandbox.install unless Microsandbox.installed?; abort("runtime not installed") unless Microsandbox.installed?'
+
+      # Vendor the companion gem's runtime for this host (sha256-verified
+      # against the upstream release) and put its lib/ on the load path, which
+      # is how `require "microsandbox"` discovers the gem when it is installed.
+      # RUBYLIB (not the Gemfile) keeps the bundle untouched; Bundler leaves
+      # RUBYLIB entries on $LOAD_PATH. Then assert the tier actually won before
+      # booting anything — with auto-install disabled below, a silently inactive
+      # tier cannot be masked by a fallback download.
+      - name: Vendor the binaries gem runtime (bundled)
+        if: matrix.runtime == 'bundled'
+        run: |
+          bundle exec rake -C binaries 'vendor[x86_64-linux-gnu]' verify
+          echo "RUBYLIB=${GITHUB_WORKSPACE}/binaries/lib" >> "$GITHUB_ENV"
+          echo "MICROSANDBOX_NO_AUTO_INSTALL=1" >> "$GITHUB_ENV"
+      - name: Check the SDK resolves msb into binaries/vendor (bundled)
+        if: matrix.runtime == 'bundled'
+        run: |
+          bundle exec ruby -e '
+            require "microsandbox"
+            path = Microsandbox.runtime_path
+            expected = File.join(Dir.pwd, "binaries", "vendor", "bin", "msb")
+            abort("resolver returned #{path}, expected #{expected}") unless path == expected && path == Microsandbox::Binaries.msb_path
+            abort("~/.microsandbox runtime present; the bundled lane must boot from the gem only") if Microsandbox.installed?
+            puts "ok: #{path}"
+          '
 
       # Pull from AWS's public ECR mirror of the Docker library rather than
       # docker.io: anonymous docker.io pulls are rate-limited and fail in CI
@@ -160,7 +228,63 @@ jobs:
         env:
           MICROSANDBOX_INTEGRATION: "1"
           MICROSANDBOX_TEST_IMAGE: public.ecr.aws/docker/library/alpine:latest
-        run: bundle exec rspec spec/integration
+        run: bundle exec rspec spec/integration --format progress --format json --out rspec-integration.json
+
+      # rspec exits 0 when every example is skipped, so a lane whose runtime
+      # never resolved (the exact failure this matrix exists to catch) would
+      # otherwise go green having booted nothing. Require real examples, none
+      # pending.
+      - name: Assert the integration examples actually ran
+        run: |
+          ruby -rjson -e '
+            s = JSON.parse(File.read("rspec-integration.json")).fetch("summary")
+            puts "examples=#{s["example_count"]} failures=#{s["failure_count"]} pending=#{s["pending_count"]}"
+            abort("no integration examples ran") if s["example_count"].to_i.zero?
+            abort("#{s["pending_count"]} integration examples were skipped") unless s["pending_count"].to_i.zero?
+          '
+
+  # The companion `microsandbox-rb-binaries` platform gems: vendor every
+  # supported platform's upstream release bundle (downloads only — no matching
+  # host needed — each sha256-verified fail-closed against the release's
+  # checksums.sha256), package them, and smoke-run the host one. The artifact
+  # feeds the `package` job's end-to-end check. No Rust toolchain, no Bundler:
+  # binaries/ is plain Ruby + rake.
+  binaries:
+    name: binaries gem (vendor + build all platforms)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: Vendor + build every platform gem
+        run: rake -C binaries vendor:all
+      - name: Smoke-test the host platform gem (msb --version)
+        # vendor:all leaves the last platform in vendor/; re-vendor the host's
+        # so `rake verify` runs the binary this runner can execute, then
+        # install the packaged gem and run msb from the *installed* location
+        # (outside the checkout) to prove the executable bit and layout survive
+        # RubyGems packaging.
+        run: |
+          rake -C binaries 'vendor[x86_64-linux-gnu]' verify
+          gem install --local --no-document binaries/pkg/microsandbox-rb-binaries-*-x86_64-linux-gnu.gem
+          cd "$RUNNER_TEMP"
+          ruby -rmicrosandbox/binaries -e '
+            msb = Microsandbox::Binaries.msb_path or abort("installed gem carries no msb")
+            abort("installed gem carries no libkrunfw") unless Microsandbox::Binaries.libkrunfw_path
+            out = IO.popen([msb, "--version"], &:read)
+            abort("msb --version failed") unless $?.success?
+            abort("msb reports #{out.strip.inspect}") unless out.split.include?(Microsandbox::Binaries::RUNTIME_VERSION.delete_prefix("v"))
+            puts "ok: #{out.strip} (#{Microsandbox::Binaries.platform}) from #{msb}"
+          '
+      - name: List built gems
+        run: ls -la binaries/pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-gems
+          path: binaries/pkg/*.gem
+          if-no-files-found: error
 
   lint:
     name: lint (rustfmt + clippy + standardrb)
@@ -178,6 +302,7 @@ jobs:
         run: cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml
       - name: clippy
         run: cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings
-      # Ruby lint/format for the lib/ + spec/ layer (StandardRB, zero-config).
+      # Ruby lint/format for the lib/ + spec/ + binaries/ layers (StandardRB,
+      # zero-config; it scans every Ruby file in the checkout).
       - name: standardrb
         run: bundle exec standardrb

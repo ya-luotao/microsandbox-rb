@@ -85,28 +85,103 @@ and the Rust→class mapping in `sdk/python/src/error.rs`.
 
 ## Runtime binary (`msb` + `libkrunfw`)
 
-The core crate's `prebuilt` feature (on by default) downloads the `msb` microVM
-runtime and `libkrunfw` firmware into `~/.microsandbox/{bin,lib}` **at build
-time** (`build.rs`). The path resolver checks, in order: `$MSB_PATH` →
-SDK-set path (`Microsandbox.runtime_path=`) → config file → workspace build →
-`~/.microsandbox/bin/msb` → `which msb`. `Microsandbox.install` / `.installed?`
-expose the core `setup::install`/`is_installed` for explicit, idempotent
-provisioning (mirrors the Python `install()`/`is_installed()`).
+The gem is **SDK-only**: nothing is provisioned while it is built or installed.
+The core crate's `prebuilt` feature — whose `build.rs` downloads the `msb`
+microVM runtime and `libkrunfw` firmware into `~/.microsandbox/{bin,lib}` at
+build time — is deliberately **off** (`default-features = false`, features
+`keyring`/`net`/`ssh`, the set the official SDKs ship). Build-time provisioning
+only ever helped the source gem: for a precompiled gem the download lands on the
+CI host, and even for a source install it couples "compile a Ruby extension" to
+"fetch 50 MB of host binaries", which is not the compiler's business.
 
-Build-time provisioning only helps the **source gem**, where `build.rs` runs on
-the user's own machine. A **precompiled gem** is built in CI, so its build-time
-download lands on the CI host, not the user's — the user's `~/.microsandbox` is
-empty. `Microsandbox.ensure_runtime!` closes that gap: `Sandbox.create`/`start`
-call it to fetch the runtime on first use (by the *running* host's arch, which is
-always correct), at most once per process. `MICROSANDBOX_NO_AUTO_INSTALL` opts
-out (air-gapped hosts that provision out of band). libkrunfw is `dlopen`'d by
-`msb` at runtime and is never linked into the extension.
+The *guest* agent is a different story and is still embedded at build time: the
+`agentd` binary that runs as PID 1 inside every microVM is `include_bytes!`-d
+into the extension by `microsandbox-filesystem`'s `build.rs`, keyed by *target*
+arch. Without its `prebuilt` feature that build script demands a locally built
+`build/agentd` (workspace-only), so `ext/microsandbox/Cargo.toml` enables exactly
+that one sub-feature through a direct `microsandbox-runtime` dependency
+(`default-features = false, features = ["prebuilt"]`, whose `prebuilt` is just
+`microsandbox-filesystem/prebuilt`) while the SDK-level host download stays off.
+
+### The companion gem
+
+The host runtime ships as its own gem, **`microsandbox-rb-binaries`** (source in
+`binaries/`), one platform gem per `arm64-darwin` / `x86_64-linux-gnu` /
+`aarch64-linux-gnu` (Linux binaries are glibc-linked, hence
+`required_rubygems_version >= 3.3.11`). It carries `vendor/bin/msb`,
+`vendor/lib/libkrunfw.*` and a `vendor/manifest.json` — a layout that mirrors
+both the upstream release bundle and `~/.microsandbox`, so the core finds the
+firmware by `../lib` adjacency to `msb` and only the binary path needs handing
+over (same trick as the Python and Node SDKs). Everything is downloaded from the
+upstream GitHub release named by `Microsandbox::Binaries::RUNTIME_VERSION` and
+sha256-verified fail-closed against that release's `checksums.sha256` — the copy
+committed as `binaries/checksums/<tag>.sha256` when the runtime was adopted
+(a GitHub release is mutable, so the live file must agree with the reviewed
+one, not replace it) — at vendoring time; the gem build re-verifies the staged
+tree against the manifest (regular files only), so nothing unverified is ever
+packaged. Build pipeline:
+`rake -C binaries vendor[<platform>] build[<platform>] verify`.
+
+There is **no dependency edge in either direction**. RubyGems has no optional
+dependencies, and cloud-only users (`MSB_BACKEND=cloud`) must not be forced to
+download ~50 MB of binaries they will never execute — so the SDK discovers the
+companion gem instead of depending on it, and the companion gem stays a pure
+payload. The two are versioned in lockstep (`Binaries::VERSION` ==
+`Microsandbox::VERSION`, `Binaries::RUNTIME_VERSION` == `RUNTIME_VERSION`, both
+asserted by `spec/unit/version_spec.rb`).
+
+### Activation and the resolver ladder
+
+`lib/microsandbox.rb` runs a private `activate_bundled_runtime!` once, at
+`require "microsandbox"` time: `gem "microsandbox-rb-binaries", "= VERSION"`
+(pins the lockstep version when RubyGems, not Bundler, picks the gem; a failure
+here is tolerated) → `require "microsandbox/binaries"` (`LoadError` → the tier is
+simply absent, silently) → `Binaries::RUNTIME_VERSION` must equal
+`RUNTIME_VERSION` **and** both `msb_path` and `libkrunfw_path` must exist →
+`Native.set_runtime_msb_path(msb)`. The version gate is the load-bearing part: a
+runtime from a different upstream release passes any exists-check and then fails
+every `create` on a wire-protocol mismatch, so a mismatch is reported with a
+warning and skipped rather than handed to the core. The whole path is
+non-raising — a broken companion gem must never take `require "microsandbox"`
+down with it.
+
+Activation is **eager** rather than lazy, mirroring the Node SDK (`napi.ts`
+pushes its platform package's `msb` into the same set-once slot at module load).
+A lazy hook inside `ensure_runtime!` would only cover `Sandbox.create`/`start`
+and silently miss every other entry point that resolves or spawns `msb`.
+
+The resolver order is therefore: `$MSB_PATH` → SDK-set path (claimed by the
+companion gem at load; `Microsandbox.runtime_path=` targets this same set-once
+slot, so with the gem installed the setter is a **no-op** — override via
+`MSB_PATH`) → config file → workspace build → `~/.microsandbox/bin/msb` →
+`which msb`. `Microsandbox.runtime_path` reports the winner.
+`Microsandbox.install` / `.installed?` expose the core `setup::install`/
+`is_installed` for explicit, idempotent provisioning (mirrors the Python
+`install()`/`is_installed()`).
+
+Auto-provisioning stays as the **lowest tier**, deliberately (npx-style
+first-use download; see upstream discussion
+[superradcompany/microsandbox#1305](https://github.com/superradcompany/microsandbox/issues/1305)):
+`Sandbox.create`/`start` call `Microsandbox.ensure_runtime!`, which fetches a
+missing or version-stale runtime into `~/.microsandbox` on first use — by the
+*running* host's arch, which is always correct — at most once per process.
+`MICROSANDBOX_NO_AUTO_INSTALL` opts out (air-gapped hosts that provision out of
+band). When the companion gem won the resolver (`bundled_runtime_active?`),
+`ensure_runtime!` returns immediately: those binaries are already the matching
+version, so nothing is downloaded or touched in `~/.microsandbox`. Note the
+asymmetry in trust: the companion gem's payload is digest-verified when it is
+vendored, while the first-use download is not yet content-verified (pending
+upstream
+[superradcompany/microsandbox#1300](https://github.com/superradcompany/microsandbox/issues/1300)).
+
+libkrunfw is `dlopen`'d by `msb` at runtime and is never linked into the
+extension.
 
 ## Core-crate dependency (self-contained)
 
 `ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
 (`microsandbox` / `microsandbox-network`, pinned to the same tag as
-`Microsandbox::RUNTIME_VERSION` — currently `v0.6.2`), so the gem builds anywhere
+`Microsandbox::RUNTIME_VERSION` — currently `v0.6.9`), so the gem builds anywhere
 — CI, `rake-compiler-dock` release containers, and end-user source installs —
 without an adjacent checkout. For fast local development against a sibling
 microsandbox checkout, copy `.cargo/config.toml.example` to `.cargo/config.toml`
@@ -122,7 +197,8 @@ git. The override must never be committed — it would break container builds.
   (`rake-compiler-dock`) per `Gem::Platform`, shipping multi-ABI
   `lib/microsandbox/<ruby_abi>/` native artifacts — the same model Node uses with
   per-platform packages. End users then install with no Rust toolchain, and the
-  runtime is fetched on first use (see above). The guest `agentd` is baked into
+  host runtime comes from the `microsandbox-rb-binaries` gem — or, without it, is
+  fetched on first use (see above). The guest `agentd` is baked into
   the extension by *target* arch (`filesystem/build.rs` uses
   `CARGO_CFG_TARGET_ARCH` + `include_bytes!`), so it cross-compiles correctly;
   the real cross work is linking the *target* native libs — `libcap-ng` on Linux
@@ -133,6 +209,16 @@ git. The override must never be committed — it would break container builds.
   since CI can't boot a microVM to prove a built gem actually works, gems are
   promoted to the publish path manually after per-platform validation. Published
   to RubyGems via Trusted Publishing (OIDC). See [Releasing](README.md#releasing).
+* **Runtime binaries gems** (`microsandbox-rb-binaries`): a distinct artifact
+  from the precompiled *extension* gems above — no Ruby code beyond a small
+  locator module, just the verified upstream `msb` + `libkrunfw` for one
+  platform. CI's `binaries` job vendors and builds all three platforms on every
+  run and smoke-tests the host one; the `package` job installs the source gem
+  together with the host binaries gem and asserts `Microsandbox.runtime_path`
+  resolves into it, and the real-microVM integration job runs twice — once
+  against a `~/.microsandbox` provision (the fallback tier) and once booting from
+  the gem's vendored runtime. Publishing them is a follow-up (it needs a pending
+  trusted publisher on rubygems.org) and lands with the next release.
 
 ## Build requirements
 
