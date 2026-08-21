@@ -56,8 +56,17 @@ RSpec.configure do |config|
     unless ENV["MICROSANDBOX_INTEGRATION"]
       skip "set MICROSANDBOX_INTEGRATION=1 to run integration specs (boots real microVMs)"
     end
-    unless Microsandbox.installed?
-      skip "microsandbox runtime not installed (run Microsandbox.install)"
+    # Gate on what the resolver will actually spawn, not on `installed?` — that
+    # only checks ~/.microsandbox, so with the runtime coming from the
+    # microsandbox-rb-binaries gem (or MSB_PATH) every example would skip and
+    # the suite would go green having booted nothing.
+    runtime = begin
+      Microsandbox.runtime_path
+    rescue Microsandbox::Error
+      nil
+    end
+    unless runtime && File.file?(runtime)
+      skip "microsandbox runtime not resolvable (install the microsandbox-rb-binaries gem or run Microsandbox.install)"
     end
   end
 end

@@ -64,12 +64,13 @@ module Microsandbox
     # Download and install the `msb` runtime + `libkrunfw` into
     # `~/.microsandbox` (idempotent).
     #
-    # When the gem is built from source, the native extension provisions the
-    # runtime at build time, so this is usually a no-op. Precompiled platform
-    # gems (which skip the local Rust build) do NOT provision it that way, so the
-    # runtime is fetched on first use — see {ensure_runtime!}. Call this
-    # explicitly to provision ahead of time (e.g. while baking a container
-    # image) so the first {Sandbox.create} doesn't pay the download.
+    # This gem is SDK-only: nothing is provisioned at build/install time. The
+    # runtime comes from the companion `microsandbox-rb-binaries` gem when it is
+    # installed (see {ensure_runtime!}); otherwise it is fetched into
+    # `~/.microsandbox` on first use. Call this explicitly to provision ahead of
+    # time (e.g. while baking a container image) so the first {Sandbox.create}
+    # doesn't pay the download. Not needed — and not used — when the binaries
+    # gem supplies the runtime.
     # @return [nil]
     def install
       Native.install
@@ -102,10 +103,14 @@ module Microsandbox
 
     # Ensure the `msb` runtime + `libkrunfw` are present *and version-matched*,
     # provisioning them on first use if not. Called automatically by
-    # {Sandbox.create}/{Sandbox.start} so precompiled-gem users (who never ran the
-    # source build) get a working runtime without a manual {install} step.
+    # {Sandbox.create}/{Sandbox.start} so a freshly installed gem gets a working
+    # runtime without a manual {install} step.
     #
-    # Runs at most once per process. Opt out by setting
+    # Runs at most once per process. When the companion `microsandbox-rb-binaries`
+    # gem supplies the runtime (it was activated at load time and its `msb` is
+    # what the resolver now returns from {runtime_path}), nothing is downloaded
+    # or touched in `~/.microsandbox` — the bundled binaries are already the
+    # matching version. Opt out of the download by setting
     # `MICROSANDBOX_NO_AUTO_INSTALL` (e.g. air-gapped hosts that provision the
     # runtime out of band); the runtime is then left untouched and a missing or
     # stale one surfaces at the operation itself.
@@ -129,6 +134,14 @@ module Microsandbox
       # uses the same lazy env/profile/config ladder every operation already
       # consults, so this adds no work for local hosts (the common case).
       return if default_backend_kind == :cloud
+      # The binaries gem won the resolver: its vendored msb (and the libkrunfw
+      # beside it) are exactly the version this gem was built for, so there is
+      # nothing to verify or download. (If `MSB_PATH` overrides it, the user owns
+      # the runtime and we fall through to the existing behaviour.)
+      if bundled_runtime_active?
+        @runtime_ready = true
+        return
+      end
       # Opted out: the caller manages the runtime out of band, so don't fetch,
       # verify, or repair it here. Memoize the decision (the env var is stable for
       # the process); the operation resolves `msb` itself and surfaces any problem.
@@ -139,7 +152,8 @@ module Microsandbox
 
       unless installed?
         warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
-             "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip)..."
+             "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip, " \
+             "or install the microsandbox-rb-binaries gem to ship it with your bundle)..."
       end
       install
       @runtime_ready = true
@@ -155,9 +169,17 @@ module Microsandbox
     # resolver, below only the `MSB_PATH` environment variable). Process-level
     # and set-once: a second call is silently ignored, and the `MSB_PATH`
     # environment variable still wins. Mirrors {libkrunfw_path=}.
+    #
+    # The companion `microsandbox-rb-binaries` gem claims this same slot when
+    # `require "microsandbox"` activates it, so with that gem installed this
+    # setter is a no-op — use `MSB_PATH` to override a bundled runtime.
     # @param path [String]
     # @return [void]
     def runtime_path=(path)
+      if @bundled_msb_path && path.to_s != @bundled_msb_path
+        warn "[microsandbox] runtime_path= ignored: the microsandbox-rb-binaries gem already " \
+             "claimed the set-once SDK slot (#{@bundled_msb_path}); set MSB_PATH to override it"
+      end
       Native.set_runtime_msb_path(path.to_s)
     end
 
@@ -257,5 +279,92 @@ module Microsandbox
       v = ENV["MICROSANDBOX_NO_AUTO_INSTALL"]
       !v.nil? && !v.empty? && !%w[0 false no].include?(v.downcase)
     end
+
+    # Wire the companion `microsandbox-rb-binaries` gem into the core resolver.
+    # Runs once, at `require "microsandbox"` time (like the Node SDK, which pushes
+    # its platform package's msb into the same set-once SDK slot at module load)
+    # so every entry point that spawns msb — not just {Sandbox.create} — sees it.
+    #
+    # The gem is optional and has no dependency edge to this one (cloud-only
+    # users skip the ~50 MB download; RubyGems has no optional dependencies), so
+    # discovery is by require: absent → nothing happens and the resolver's lower
+    # tiers (`~/.microsandbox`, then `PATH`) plus the first-use download take
+    # over. Present but built for a different upstream runtime → warn and skip
+    # it rather than hand the core a mismatched msb (a stale runtime passes an
+    # exists-check and then fails every create on a wire-protocol mismatch).
+    # Only `MSB_PATH` (env) outranks the slot claimed here.
+    #
+    # Never raises: a broken companion gem must not take `require "microsandbox"`
+    # down with it.
+    # @return [String, nil] the activated msb path
+    def activate_bundled_runtime!
+      @bundled_msb_path = nil
+      begin
+        # Pin the lockstep version when RubyGems (not Bundler) picks the gem, so
+        # a newer/older companion left around doesn't get activated over the
+        # matching one. Under Bundler the Gemfile already decides; a companion
+        # that isn't in the bundle raises here and `require` then fails below.
+        gem "microsandbox-rb-binaries", "= #{VERSION}"
+      rescue Gem::LoadError
+        # Not installed at this version — `require` settles it.
+      end
+      begin
+        require "microsandbox/binaries"
+      rescue LoadError
+        return nil
+      end
+      # A bare require activates the newest gem of ANY name that ships this
+      # feature path; only accept the companion gem itself, this gem's own tree
+      # (a source checkout, where Bundler's path gem spans the whole repo and so
+      # owns binaries/lib too), or a plain load path (RUBYLIB/-I) no gem owns.
+      owner = bundled_runtime_owner
+      if owner && !TRUSTED_BINARIES_OWNERS.include?(owner)
+        warn "[microsandbox] ignoring microsandbox/binaries provided by the #{owner} gem " \
+             "(only microsandbox-rb-binaries is trusted for the bundled runtime)"
+        return nil
+      end
+      unless Binaries::RUNTIME_VERSION == RUNTIME_VERSION
+        warn "[microsandbox] ignoring microsandbox-rb-binaries #{Binaries::VERSION} " \
+             "(runtime #{Binaries::RUNTIME_VERSION}): microsandbox-rb #{VERSION} needs " \
+             "runtime #{RUNTIME_VERSION}. Install both gems at the same version; " \
+             "falling back to ~/.microsandbox."
+        return nil
+      end
+      msb = Binaries.msb_path
+      unless msb && Binaries.libkrunfw_path
+        warn "[microsandbox] microsandbox-rb-binaries #{Binaries::VERSION} is installed but " \
+             "carries no runtime under #{Binaries.root}; falling back to ~/.microsandbox."
+        return nil
+      end
+      Native.set_runtime_msb_path(msb)
+      @bundled_msb_path = msb
+    rescue => e
+      warn "[microsandbox] could not activate microsandbox-rb-binaries: #{e.class}: #{e.message}"
+      nil
+    end
+
+    # Gems allowed to provide `microsandbox/binaries` (see activate_bundled_runtime!).
+    TRUSTED_BINARIES_OWNERS = %w[microsandbox-rb-binaries microsandbox-rb].freeze
+    private_constant :TRUSTED_BINARIES_OWNERS
+
+    # Name of the loaded gem whose files define Microsandbox::Binaries, or nil
+    # when it came from a bare load path.
+    def bundled_runtime_owner
+      source = Binaries.method(:msb_path).source_location&.first
+      return nil unless source
+      spec = Gem.loaded_specs.values.find { |s| source.start_with?(File.join(s.full_gem_path, "")) }
+      spec&.name
+    end
+
+    # Whether the binaries gem's msb is what the resolver actually returns — i.e.
+    # it was activated and nothing higher in the ladder (`MSB_PATH`) overrides it.
+    def bundled_runtime_active?
+      return false unless @bundled_msb_path
+      runtime_path == @bundled_msb_path
+    rescue Microsandbox::Error
+      false
+    end
   end
+
+  send(:activate_bundled_runtime!)
 end
