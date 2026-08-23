@@ -17,18 +17,17 @@ name: Release
 # compiled Rust extension with the guest-side `agentd` baked in (the core's
 # filesystem build.rs downloads agentd by *target* arch via CARGO_CFG_TARGET_ARCH
 # and embeds it with include_bytes!, so it cross-compiles correctly). The gem
-# does NOT carry the host-side `msb` runtime + `libkrunfw`: those are downloaded
-# into ~/.microsandbox on first use by `Microsandbox.ensure_runtime!` (called
-# automatically by Sandbox.create/start). That is the piece that makes precompiled
-# gems usable at all — a precompiled-gem user never ran the source build, so the
-# runtime is provisioned lazily at runtime (by the *running* host's arch) instead.
+# does NOT carry the host-side `msb` runtime + `libkrunfw`: the SDK gem is
+# SDK-only. Those ship in the companion `microsandbox-rb-binaries` platform gems
+# (built by the `binaries-gems` job below from the upstream release, verified
+# against the checksums committed under binaries/checksums/, and published on
+# the same tag) — or, without that gem, are downloaded into ~/.microsandbox on
+# first use by `Microsandbox.ensure_runtime!` (by the *running* host's arch).
 #
 # Cross-compile reality check (corrects an earlier, pessimistic note here):
-#   - microsandbox/build.rs downloads msb + libkrunfw keyed on the *host* arch
-#     into the build container's ~/.microsandbox. That is self-consistent on the
-#     x86_64 dock host and never enters the gem, so it does NOT block the cross
-#     build — it's just wasted work. (libkrunfw is dlopen'd by msb at runtime; it
-#     is never *linked* into the extension.)
+#   - The SDK crate's `prebuilt` feature (host msb download at compile time) is
+#     off, so nothing host-arch-specific enters the build; libkrunfw is dlopen'd
+#     by msb at runtime and is never *linked* into the extension.
 #   - The genuine cross blockers are the *target* native libraries the extension
 #     links: libcap-ng on Linux (via the capng crate → msb_krun_devices) and the
 #     Hypervisor + Security system frameworks on macOS (HVF + Apple-native keyring).
@@ -123,6 +122,44 @@ jobs:
           name: gem-${{ matrix.platform }}
           path: pkg/*.gem
 
+  # The companion runtime gems: one `microsandbox-rb-binaries` gem per platform
+  # (arm64-darwin, x86_64-linux-gnu, aarch64-linux-gnu), vendored from the
+  # upstream release named by Microsandbox::Binaries::RUNTIME_VERSION and
+  # sha256-verified fail-closed against binaries/checksums/<tag>.sha256 (the live
+  # release file must agree). Builds on every run; only `publish` pushes. Their
+  # RubyGems trusted publisher is a separate entry for the new gem name (same
+  # repo + workflow), created as a *pending* publisher before the first push.
+  binaries-gems:
+    name: binaries gems (all platforms)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      # The companion gem rides the lockstep version train: its VERSION must be
+      # the tag's, or the SDK would warn and ignore it at runtime.
+      - name: Check the binaries gem version matches the tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ruby -r./binaries/lib/microsandbox/binaries -e '
+            tag = ENV.fetch("GITHUB_REF_NAME").delete_prefix("v")
+            v = Microsandbox::Binaries::VERSION
+            abort("Microsandbox::Binaries::VERSION is #{v} but the tag is v#{tag} — bump binaries/lib/microsandbox/binaries.rb") unless v == tag
+            puts "binaries gem version #{v} matches tag"
+          '
+      - name: Vendor + build every platform gem
+        run: rake -C binaries vendor:all
+      - name: Smoke-test the host platform gem (msb --version)
+        run: rake -C binaries 'vendor[x86_64-linux-gnu]' verify
+      - run: ls -la binaries/pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gem-binaries
+          path: binaries/pkg/*.gem
+          if-no-files-found: error
+
   source-gem:
     name: source gem
     runs-on: ubuntu-latest
@@ -140,12 +177,14 @@ jobs:
 
   publish:
     name: publish to RubyGems
-    # On a tag push, only `source-gem` runs (cross-gems is workflow_dispatch-only),
-    # so this publishes the source gem alone — the safe default. The push loop
-    # globs every gem under dist/, so once precompiled gems are validated they can
-    # be promoted by either (a) re-adding `cross-gems` to `needs` and dropping its
-    # workflow_dispatch gate, or (b) attaching the validated artifacts to the
-    # release run. Until then, tag releases stay source-only on purpose.
+    # On a tag push, only `source-gem` is needed here: this publishes the SDK
+    # source gem alone, exactly the pre-companion path. The companion runtime
+    # gems are pushed by `publish-binaries` below, which runs AFTER this job —
+    # a companion build or push failure is therefore its own red job and can
+    # never block the SDK release (a `needs` on `binaries-gems` here would skip
+    # this whole job when that build fails). cross-gems (precompiled extension
+    # gems) remain workflow_dispatch-only; once validated they can be promoted
+    # by re-adding `cross-gems` to `needs` and dropping its dispatch gate.
     needs: [source-gem]
     runs-on: ubuntu-latest
     # Real tag pushes only — never on a manual dry run.
@@ -156,8 +195,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          name: gem-source
           path: dist
-          merge-multiple: true
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
@@ -171,10 +210,12 @@ jobs:
         # holds publish privileges); the comment tracks the human-readable version.
         # Bump the SHA when upgrading (e.g. via Dependabot).
         uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
-      - name: Push gems
+      - name: Push the SDK gem
         run: |
           shopt -s nullglob
-          for gem in dist/*.gem; do
+          gems=(dist/microsandbox-rb-[0-9]*.gem)
+          [ "${#gems[@]}" -eq 1 ] || { echo "expected exactly one SDK gem, found: ${gems[*]}"; exit 1; }
+          for gem in "${gems[@]}"; do
             echo "Pushing $gem"
             # Idempotent: RubyGems rejects re-pushing an existing version. Tolerate
             # that specific rejection so a re-run (e.g. after a later job failed, or
@@ -182,6 +223,51 @@ jobs:
             # other failure still aborts the publish. The `if` guard is required so
             # `set -e` (Actions' default `bash -eo pipefail`) does not exit on the
             # push before we can inspect the rejection message.
+            if out="$(gem push "$gem" 2>&1)"; then
+              printf '%s\n' "$out"
+            else
+              rc=$?
+              printf '%s\n' "$out"
+              if printf '%s' "$out" | grep -qiE 'already been pushed|Repushing of gem versions|already exists'; then
+                echo "::notice::$gem is already on RubyGems — skipping (idempotent re-run)"
+              else
+                exit "$rc"
+              fi
+            fi
+          done
+
+  publish-binaries:
+    name: publish binaries gems to RubyGems
+    # The three companion runtime gems, pushed only once the SDK gem is live
+    # (`needs: publish`). Isolated on purpose: if `binaries-gems` failed this
+    # job is skipped, if a push fails (e.g. the trusted publisher for the new
+    # gem name not configured) only this job goes red — the SDK release and the
+    # GitHub Release (gated on `publish`) are unaffected. Same OIDC exchange:
+    # the companion gem has its own trusted-publisher entry for this workflow.
+    # Re-run is idempotent (see the push loop).
+    needs: [binaries-gems, publish]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gem-binaries
+          path: dist
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: Configure RubyGems credentials (OIDC trusted publishing)
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+      - name: Push the binaries gems
+        run: |
+          shopt -s nullglob
+          gems=(dist/microsandbox-rb-binaries-*.gem)
+          [ "${#gems[@]}" -eq 3 ] || { echo "expected three companion gems, found: ${gems[*]}"; exit 1; }
+          for gem in "${gems[@]}"; do
+            echo "Pushing $gem"
             if out="$(gem push "$gem" 2>&1)"; then
               printf '%s\n' "$out"
             else

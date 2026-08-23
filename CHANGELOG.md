@@ -44,8 +44,11 @@ Runtime tag unchanged — still upstream **`v0.6.9`**.
   committed one aborts), `rake -C binaries build[<platform>]` re-verifies the staged tree
   against its manifest before packaging, `rake -C binaries verify` runs the
   vendored `msb` on the host, and `vendor:all` covers every platform from any
-  host. CI builds all three platform gems; publishing to RubyGems lands with the
-  next release.
+  host. CI builds all three platform gems on every run, and `release.yml`
+  builds and publishes them on each version tag in a separate
+  `publish-binaries` job that runs after the SDK gem is live (a companion-gem
+  failure is its own red job and never blocks the SDK release; re-runs are
+  idempotent). The companion gem has its own RubyGems trusted-publisher entry.
 
 ### Changed
 
