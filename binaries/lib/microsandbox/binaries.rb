@@ -20,7 +20,7 @@ module Microsandbox
   module Binaries
     # Gem version — kept in lockstep with `Microsandbox::VERSION` (asserted by
     # the SDK's spec/unit/version_spec.rb).
-    VERSION = "0.13.0"
+    VERSION = "0.14.0"
 
     # The upstream microsandbox release the vendored binaries come from. Must
     # equal the SDK's `Microsandbox::RUNTIME_VERSION` for the SDK to use them.

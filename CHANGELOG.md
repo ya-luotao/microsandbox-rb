@@ -6,7 +6,7 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
-## [Unreleased]
+## [0.14.0] - 2026-08-24
 
 Runtime tag unchanged — still upstream **`v0.6.9`**.
 
@@ -1031,7 +1031,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.13.0...v0.14.0
 [0.9.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.0...v0.8.1
