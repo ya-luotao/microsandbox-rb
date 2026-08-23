@@ -323,11 +323,17 @@ module Microsandbox
              "(only microsandbox-rb-binaries is trusted for the bundled runtime)"
         return nil
       end
-      unless Binaries::RUNTIME_VERSION == RUNTIME_VERSION
+      # Lockstep gate on BOTH constants. The runtime tag is what the wire
+      # protocol depends on; the gem version is the documented contract
+      # ("install both at the same version") and also covers this file's own
+      # API/packaging — the `gem "…", "= VERSION"` pin above is best-effort (it
+      # raises under Bundler whenever the bundle picked any other version, and
+      # that is swallowed), so it cannot be what enforces it.
+      unless Binaries::VERSION == VERSION && Binaries::RUNTIME_VERSION == RUNTIME_VERSION
         warn "[microsandbox] ignoring microsandbox-rb-binaries #{Binaries::VERSION} " \
-             "(runtime #{Binaries::RUNTIME_VERSION}): microsandbox-rb #{VERSION} needs " \
-             "runtime #{RUNTIME_VERSION}. Install both gems at the same version; " \
-             "falling back to ~/.microsandbox."
+             "(runtime #{Binaries::RUNTIME_VERSION}): microsandbox-rb #{VERSION} " \
+             "(runtime #{RUNTIME_VERSION}) needs the companion gem at the same version. " \
+             "Install both gems at the same version; falling back to ~/.microsandbox."
         return nil
       end
       msb = Binaries.msb_path
@@ -338,7 +344,10 @@ module Microsandbox
       end
       Native.set_runtime_msb_path(msb)
       @bundled_msb_path = msb
-    rescue => e
+    rescue StandardError, ScriptError => e
+      # ScriptError too: a corrupt or newer-syntax binaries.rb raises
+      # SyntaxError (not a StandardError) out of `require`, and the optional
+      # companion must never take `require "microsandbox"` down with it.
       warn "[microsandbox] could not activate microsandbox-rb-binaries: #{e.class}: #{e.message}"
       nil
     end

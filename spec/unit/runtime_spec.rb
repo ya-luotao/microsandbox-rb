@@ -111,6 +111,28 @@ RSpec.describe "Microsandbox runtime helpers" do
       expect(Microsandbox).to have_received(:warn).with(a_string_matching(/ignoring microsandbox-rb-binaries .*v0\.0\.1/))
     end
 
+    it "warns and skips a companion gem at a different gem version, even on the same runtime" do
+      # Gem-only SDK releases share the runtime tag; the lockstep contract is
+      # still "same version", and the `gem "= VERSION"` pin can't enforce it
+      # (it raises under Bundler and is swallowed).
+      mod = fake_binaries
+      mod.send(:remove_const, :VERSION)
+      mod.const_set(:VERSION, "0.0.1")
+      stub_companion(mod)
+      expect(activate).to be_nil
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_msb_path)
+      expect(Microsandbox).to have_received(:warn).with(a_string_matching(/ignoring microsandbox-rb-binaries 0\.0\.1 .*same version/))
+    end
+
+    it "survives a companion gem whose binaries.rb does not even parse (SyntaxError is not a StandardError)" do
+      stub_companion(nil)
+      allow(Microsandbox).to receive(:require).with("microsandbox/binaries").and_raise(SyntaxError, "unexpected end-of-input")
+      expect { activate }.not_to raise_error
+      expect(activate).to be_nil
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_msb_path)
+      expect(Microsandbox).to have_received(:warn).with(a_string_matching(/could not activate microsandbox-rb-binaries: SyntaxError/)).at_least(:once)
+    end
+
     it "warns and skips a companion gem that carries no runtime" do
       stub_companion(fake_binaries(msb: nil))
       expect(activate).to be_nil

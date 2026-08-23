@@ -136,8 +136,11 @@ asserted by `spec/unit/version_spec.rb`).
 `require "microsandbox"` time: `gem "microsandbox-rb-binaries", "= VERSION"`
 (pins the lockstep version when RubyGems, not Bundler, picks the gem; a failure
 here is tolerated) → `require "microsandbox/binaries"` (`LoadError` → the tier is
-simply absent, silently) → `Binaries::RUNTIME_VERSION` must equal
-`RUNTIME_VERSION` **and** both `msb_path` and `libkrunfw_path` must exist →
+simply absent, silently) → `Binaries::VERSION` must equal `VERSION` and
+`Binaries::RUNTIME_VERSION` must equal `RUNTIME_VERSION` (the `gem` pin above
+cannot enforce lockstep: under Bundler it raises whenever the bundle picked any
+other version, and that is swallowed) **and** both `msb_path` and
+`libkrunfw_path` must exist →
 `Native.set_runtime_msb_path(msb)`. The version gate is the load-bearing part: a
 runtime from a different upstream release passes any exists-check and then fails
 every `create` on a wire-protocol mismatch, so a mismatch is reported with a

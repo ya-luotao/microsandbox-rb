@@ -23,7 +23,8 @@ Runtime tag unchanged — still upstream **`v0.6.9`**.
   ~50 MB of binaries. Motivated by upstream
   [superradcompany/microsandbox#1305](https://github.com/superradcompany/microsandbox/issues/1305).
 - **A new tier in the runtime resolver.** `require "microsandbox"` activates the
-  companion gem (if installed and built for the same upstream runtime) and hands
+  companion gem (if installed at the same version and built for the same
+  upstream runtime) and hands
   its `msb` to the core's set-once SDK slot; the firmware is found by the
   runtime's `../lib` adjacency, exactly as in the Python/Node SDKs. The
   effective order is now `MSB_PATH` → `microsandbox-rb-binaries` → config file →

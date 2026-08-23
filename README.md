@@ -99,7 +99,7 @@ gem "microsandbox-rb-binaries"
 ```
 
 That's all the wiring there is: `require "microsandbox"` finds the companion
-gem, checks it was built for the same upstream runtime, and points the resolver
+gem, checks it is the same version and built for the same upstream runtime, and points the resolver
 at its vendored `msb` — so your bundle carries the runtime and nothing is
 downloaded at install time or on first call. **Recommended whenever you boot
 local microVMs.** Cloud-only users (`MSB_BACKEND=cloud`) should skip it: it is a
@@ -477,8 +477,8 @@ Microsandbox.libkrunfw_path = "/opt/microsandbox/lib/libkrunfw.dylib"  # overrid
 When [`microsandbox-rb-binaries`](#the-runtime-binaries) is installed,
 `require "microsandbox"` claims that SDK-set slot with the gem's vendored `msb`
 (the firmware is found alongside it), and `runtime_path` points into the gem.
-The two gems are versioned in lockstep and the companion gem must have been
-built for the same upstream runtime — a mismatch is reported with a warning and
+The two gems are versioned in lockstep and the companion gem must be the same
+version **and** built for the same upstream runtime — a mismatch of either is reported with a warning and
 skipped, and the SDK falls back to `~/.microsandbox` rather than driving a
 runtime it doesn't match. Because the slot is **set-once**,
 `Microsandbox.runtime_path=` is then a no-op: use the `MSB_PATH` environment

@@ -11,10 +11,11 @@ gem "microsandbox-rb", require: "microsandbox"
 gem "microsandbox-rb-binaries"
 ```
 
-That's it: `require "microsandbox"` finds this gem, checks that it was built
-for the same upstream runtime release (`Microsandbox::Binaries::RUNTIME_VERSION`
-must equal `Microsandbox::RUNTIME_VERSION`), and hands its `msb` to the core
-resolver. `Microsandbox.runtime_path` then points into this gem's `vendor/`.
+That's it: `require "microsandbox"` finds this gem, checks that it is the
+lockstep version built for the same upstream runtime release
+(`Microsandbox::Binaries::VERSION` must equal `Microsandbox::VERSION` and
+`::RUNTIME_VERSION` must equal `Microsandbox::RUNTIME_VERSION`), and hands its
+`msb` to the core resolver. `Microsandbox.runtime_path` then points into this gem's `vendor/`.
 `MSB_PATH` (environment) still overrides it. A version mismatch is reported
 with a warning and the SDK falls back to its first-use download.
 
