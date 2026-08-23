@@ -641,8 +641,9 @@ or credential setup is needed.
 > verified against the release's published `checksums.sha256` when vendored. CI's
 > `binaries` job vendors and builds all three (`arm64-darwin`,
 > `x86_64-linux-gnu`, `aarch64-linux-gnu`) on every run and smoke-tests the host
-> one; `release.yml`'s `binaries-gems` job does the same on a tag and `publish`
-> pushes them right after the SDK gem (the SDK push is never blocked by them).
+> one; `release.yml`'s `binaries-gems` job does the same on a tag and a separate
+> `publish-binaries` job pushes them after the SDK gem is live (a companion
+> failure is its own red job and never blocks the SDK release).
 > They use their own RubyGems trusted-publisher entry (same repo + workflow,
 > gem name `microsandbox-rb-binaries`). To build them by hand:
 > `rake -C binaries vendor[<platform>]` then `rake -C binaries build[<platform>]`

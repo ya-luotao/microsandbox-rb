@@ -104,7 +104,7 @@ Push a `vX.Y.Z` tag → `.github/workflows/release.yml` builds the source gem AN
 `microsandbox-rb-binaries` platform gems (`binaries-gems` job: `rake -C binaries vendor:all`,
 version checked against the tag) and publishes all four to RubyGems via Trusted Publishing (OIDC —
 no API key; the binaries gem has its own trusted-publisher entry for its gem name, same repo +
-workflow). The SDK gem is pushed first and on its own, so a companion-gem push failure never
-blocks the SDK release — it fails the job afterwards, and a re-run finishes the set
-(idempotent). Precompiled *extension* platform gems are built only via manual `workflow_dispatch`
+workflow). The SDK gem is pushed by `publish` (needs only `source-gem`, the pre-split path); the companions
+by a separate `publish-binaries` job that runs after it, so a companion build or push failure is
+its own red job and never blocks the SDK release or the GitHub Release (re-runs are idempotent). Precompiled *extension* platform gems are built only via manual `workflow_dispatch`
 and require per-platform validation before promotion; they do not auto-publish on tags.
