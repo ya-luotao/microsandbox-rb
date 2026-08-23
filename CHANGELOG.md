@@ -6,6 +6,71 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [Unreleased]
+
+Runtime tag unchanged — still upstream **`v0.6.9`**.
+
+### Added
+
+- **Companion gem `microsandbox-rb-binaries`** (source in `binaries/`): the
+  prebuilt `msb` microVM runtime and the `libkrunfw` firmware, shipped as one
+  gem per platform (`arm64-darwin`, `x86_64-linux-gnu`, `aarch64-linux-gnu`;
+  the Linux binaries are glibc-linked, hence `required_rubygems_version >=
+  3.3.11`). Install it alongside `microsandbox-rb` at the same version and your
+  bundle carries the runtime instead of downloading it into `~/.microsandbox`
+  on first use. There is no dependency edge in either direction — RubyGems has
+  no optional dependencies, and cloud-only users should not be made to fetch
+  ~50 MB of binaries. Motivated by upstream
+  [superradcompany/microsandbox#1305](https://github.com/superradcompany/microsandbox/issues/1305).
+- **A new tier in the runtime resolver.** `require "microsandbox"` activates the
+  companion gem (if installed at the same version and built for the same
+  upstream runtime) and hands
+  its `msb` to the core's set-once SDK slot; the firmware is found by the
+  runtime's `../lib` adjacency, exactly as in the Python/Node SDKs. The
+  effective order is now `MSB_PATH` → `microsandbox-rb-binaries` → config file →
+  `~/.microsandbox/bin/msb` → `msb` on `PATH`, and
+  `Microsandbox.runtime_path` reports the winner. Activation never raises: a
+  missing gem is silent, and a gem built for a *different* runtime is reported
+  with a warning and skipped rather than handed to the core.
+- **Lock-step guard for the new gem.** `Microsandbox::Binaries::VERSION` must
+  equal `Microsandbox::VERSION` and `Microsandbox::Binaries::RUNTIME_VERSION`
+  must equal `Microsandbox::RUNTIME_VERSION`; `spec/unit/version_spec.rb`
+  asserts both, so a stale companion can't ship.
+- **Vendoring/build pipeline** for the companion gem:
+  `rake -C binaries vendor[<platform>]` downloads the upstream release bundle and
+  verifies every file against that release's `checksums.sha256` as committed
+  in `binaries/checksums/<tag>.sha256` (fail-closed — a missing entry, a digest
+  mismatch, an unexpected file, or a live release file that disagrees with the
+  committed one aborts), `rake -C binaries build[<platform>]` re-verifies the staged tree
+  against its manifest before packaging, `rake -C binaries verify` runs the
+  vendored `msb` on the host, and `vendor:all` covers every platform from any
+  host. CI builds all three platform gems; publishing to RubyGems lands with the
+  next release.
+
+### Changed
+
+- **The SDK gem is now SDK-only: nothing is provisioned at build or install
+  time.** The core crate's default `prebuilt` feature — whose `build.rs`
+  downloaded the *host* runtime into `~/.microsandbox` while compiling the
+  extension — is off (`default-features = false`, features `keyring`, `net`,
+  `ssh`, matching the official SDKs). The *guest* agent `agentd` is still
+  embedded into the extension at build time, via a direct
+  `microsandbox-runtime` dependency with just the `prebuilt` sub-feature that
+  fetches it. Host runtime provisioning is now the companion gem's job, with the
+  first-use download as fallback.
+- **`Microsandbox.runtime_path=` is a no-op when the companion gem is active** —
+  it targets the same set-once slot the gem already claimed at load time. Use
+  the `MSB_PATH` environment variable to override a bundled runtime.
+- **`Microsandbox.ensure_runtime!` skips the installer entirely** when the
+  resolved runtime is the companion gem's `msb`: those binaries are already the
+  matching version, so nothing is downloaded or touched in `~/.microsandbox`.
+  Without the gem, behaviour is unchanged — the version-correcting first-use
+  download into `~/.microsandbox` remains the lowest tier, still opt-out-able
+  with `MICROSANDBOX_NO_AUTO_INSTALL`.
+- `Gemfile` now uses `gemspec glob: "{,*}.gemspec"` so Bundler resolves only the
+  root gemspec; its default glob would also evaluate the nested
+  `binaries/microsandbox-rb-binaries.gemspec` in every `bundle exec` process.
+
 ## [0.13.0] - 2026-08-18
 
 Adopts upstream runtime **`v0.6.8` → `v0.6.9`**.
@@ -963,7 +1028,7 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.13.0...HEAD
 [0.9.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.0...v0.8.1

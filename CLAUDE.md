@@ -12,6 +12,13 @@ magnus + rb-sys native extension. Two layers:
   bridged to sync Ruby via a shared blocking tokio runtime; the GVL is released
   (`rb_thread_call_without_gvl`) during blocking calls. Built as `microsandbox_rb.{bundle,so}`.
 
+Plus a companion gem in its own subtree:
+
+- `binaries/` — source + build pipeline for `microsandbox-rb-binaries`, the optional platform gem
+  shipping the prebuilt `msb` runtime and `libkrunfw` firmware (`rake -C binaries vendor[<platform>]
+  build[<platform>]`). It is NOT part of this gem's bundle and has no dependency edge to it in
+  either direction; the SDK discovers it at `require "microsandbox"` time. See `binaries/README.md`.
+
 Deeper architecture is in `DESIGN.md`; usage in `README.md`.
 
 ## Build / test / lint
@@ -23,6 +30,13 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
 - Integration specs (boot real microVMs, **Linux+KVM or macOS Apple Silicon**):
   `MICROSANDBOX_INTEGRATION=1 bundle exec rspec spec/integration`. They auto-skip without that env
   var or a missing runtime — never assume a green unit run exercised them.
+- Companion binaries gem: `rake -C binaries vendor[<platform>]` (download + sha256-verify the
+  upstream runtime bundle into `binaries/vendor`), `rake -C binaries build[<platform>]` (re-verify
+  against the manifest, package into `binaries/pkg`), `rake -C binaries verify` (host-only: run the
+  vendored `msb --version`), `rake -C binaries vendor:all` (every platform — vendoring only
+  downloads, so it needs no matching host). Platforms: `arm64-darwin`, `x86_64-linux-gnu`,
+  `aarch64-linux-gnu`. **`binaries/vendor` and `binaries/pkg` are gitignored — never commit
+  binaries**; CI rebuilds them from the upstream release.
 - Lint:
   - Rust: `cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml` and
     `cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings`. Always pass
@@ -33,7 +47,7 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
   CI gates on all three — run them before claiming a change is done. The `verify-local` skill runs
   the Rust + spec gate in one shot.
 
-## Version lock-step (two independent axes)
+## Version lock-step (three independent axes)
 
 1. **Gem version** — `Microsandbox::VERSION` in `lib/microsandbox/version.rb` MUST equal `version`
    in `ext/microsandbox/Cargo.toml` `[package]`. `spec/unit/version_spec.rb` asserts equality via
@@ -49,6 +63,16 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
    both deps on the same tag, AND update `Microsandbox::RUNTIME_VERSION` in
    `lib/microsandbox/version.rb` to match — `spec/unit/version_spec.rb` asserts the constant equals
    the Cargo tag, so it can't silently go stale.
+3. **Companion binaries gem** — `Microsandbox::Binaries::VERSION`
+   (`binaries/lib/microsandbox/binaries.rb`) MUST equal `Microsandbox::VERSION`, and
+   `Microsandbox::Binaries::RUNTIME_VERSION` MUST equal `Microsandbox::RUNTIME_VERSION`.
+   `spec/unit/version_spec.rb` asserts both. So a release bumps the gem version in three places
+   (version.rb, Cargo.toml, binaries.rb), and a runtime adoption bumps the tag in three places
+   (both Cargo git deps, `RUNTIME_VERSION`, `Binaries::RUNTIME_VERSION`), commits the new
+   release's `checksums.sha256` as `binaries/checksums/<tag>.sha256` (vendoring fails closed
+   without it, and refuses if the live release file disagrees with the committed one) — then
+   re-vendor the binaries for the new runtime. A mismatched companion gem isn't fatal at runtime: the SDK warns
+   and falls back to `~/.microsandbox`.
 
 ## Conventions
 
@@ -63,6 +87,13 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
   the test image (default `public.ecr.aws/docker/library/alpine:latest`, an ECR mirror to dodge
   docker.io rate limits). `MSB_PATH` — override the resolved `msb` runtime binary.
   `MICROSANDBOX_NO_AUTO_INSTALL` — opt out of first-use runtime download.
+- With the `microsandbox-rb-binaries` gem installed, `Microsandbox.runtime_path=` is a **no-op**:
+  `require "microsandbox"` already claimed the core's set-once SDK slot with the gem's vendored
+  `msb`. Use `MSB_PATH` (which outranks the slot) to point at a different runtime.
+- `Gemfile` uses `gemspec glob: "{,*}.gemspec"` on purpose: Bundler's default glob would also
+  evaluate `binaries/microsandbox-rb-binaries.gemspec` in every `bundle exec` process, defining
+  `Microsandbox::Binaries` before the SDK can decide whether the gem is actually installed. Don't
+  drop the glob.
 - Local dev against a sibling `../microsandbox` checkout: `cp .cargo/config.toml.example
   .cargo/config.toml` (gitignored). **Never commit `.cargo/config.toml`** — it breaks CI/container
   builds, which rely on the pinned git dep.

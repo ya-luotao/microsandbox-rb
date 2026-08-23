@@ -1,0 +1,91 @@
+# frozen_string_literal: true
+
+# Build pipeline for the `microsandbox-rb-binaries` platform gems. Run from this
+# directory (or `rake -C binaries …` from the repo root):
+#
+#   rake vendor[arm64-darwin]   # download + sha256-verify the runtime bundle into vendor/
+#   rake build[arm64-darwin]    # re-verify vendor/ against its manifest, package pkg/*.gem
+#   rake verify                 # host-only: run the vendored msb and check its version
+#   rake vendor:all build:all   # every supported platform (vendoring needs no
+#                               # matching host — the bundles are just downloaded)
+#
+# Platform names are RubyGems platforms (see Vendor::PLATFORMS); the runtime
+# version comes from Microsandbox::Binaries::RUNTIME_VERSION.
+
+require "rubygems/package"
+require_relative "tasks/vendor"
+
+VENDOR = Microsandbox::Binaries
+PKG_DIR = File.join(__dir__, "pkg")
+GEMSPEC_PATH = File.join(__dir__, "microsandbox-rb-binaries.gemspec")
+
+def require_platform!(platform)
+  platform ||= VENDOR::Vendor.host_platform
+  abort "no platform given and the host (#{Gem::Platform.local}) has no prebuilt bundle; pass one of: #{VENDOR::Vendor.platforms.join(", ")}" unless platform
+  VENDOR::Vendor.triple_for(platform) # validates
+  platform
+end
+
+desc "Download + verify the #{VENDOR::RUNTIME_VERSION} runtime bundle for PLATFORM into vendor/"
+task :vendor, [:platform] do |_t, args|
+  VENDOR::Vendor.vendor!(require_platform!(args[:platform]))
+end
+
+desc "Package vendor/ as the PLATFORM gem into pkg/ (verifies the manifest first)"
+task :build, [:platform] do |_t, args|
+  platform = require_platform!(args[:platform])
+  manifest = VENDOR::Vendor.verify_manifest!(VENDOR::ROOT, platform: platform, runtime_version: VENDOR::RUNTIME_VERSION)
+
+  # Gem::Specification.load caches by path, so on the second platform of a
+  # vendor:all run it would hand back the FIRST platform's spec (with its
+  # vendor/ glob already evaluated). Dup it and set the payload explicitly from
+  # the verified manifest — the gemspec's own glob is only for `gem build`.
+  spec = Gem::Specification.load(GEMSPEC_PATH)&.dup or abort "could not load #{GEMSPEC_PATH}"
+  spec.platform = Gem::Platform.new(platform)
+  vendored = manifest["files"].keys.map { |rel| "vendor/#{rel}" } + ["vendor/#{VENDOR::MANIFEST}"]
+  spec.files = (spec.files.reject { |f| f.start_with?("vendor/") } + vendored).uniq
+  missing = spec.files.reject { |f| File.file?(File.join(__dir__, f)) }
+  abort "files missing from the checkout: #{missing.join(", ")}" unless missing.empty?
+
+  FileUtils.mkdir_p(PKG_DIR)
+  out = File.join(PKG_DIR, spec.file_name)
+  Dir.chdir(__dir__) { Gem::Package.build(spec, false, false, out) }
+  puts "built #{out}"
+end
+
+desc "Run the vendored msb on this host and check it reports #{VENDOR::RUNTIME_VERSION}"
+task :verify do
+  platform = VENDOR::Vendor.host_platform or abort "host #{Gem::Platform.local} has no prebuilt bundle"
+  VENDOR::Vendor.verify_manifest!(VENDOR::ROOT, platform: platform, runtime_version: VENDOR::RUNTIME_VERSION)
+  msb = VENDOR.msb_path or abort "vendor/bin/msb missing"
+  out = IO.popen([msb, "--version"], &:read)
+  abort "#{msb} --version failed" unless $?.success?
+  expected = VENDOR::RUNTIME_VERSION.delete_prefix("v")
+  abort "vendored msb reports #{out.strip.inspect}, expected version #{expected}" unless out.split.include?(expected)
+  puts "ok: #{out.strip} (#{msb}); libkrunfw=#{VENDOR.libkrunfw_path}"
+end
+
+namespace :vendor do
+  desc "Vendor every supported platform in turn (vendor/ holds one at a time — pair with build:all)"
+  task :all do
+    VENDOR::Vendor.platforms.each do |platform|
+      Rake::Task[:vendor].reenable
+      Rake::Task[:vendor].invoke(platform)
+      Rake::Task[:build].reenable
+      Rake::Task[:build].invoke(platform)
+    end
+  end
+end
+
+namespace :build do
+  desc "Alias of vendor:all — vendor + build every supported platform"
+  task all: "vendor:all"
+end
+
+desc "Remove vendor/ and pkg/"
+task :clean do
+  FileUtils.rm_rf(VENDOR::ROOT)
+  FileUtils.rm_rf(PKG_DIR)
+end
+
+task default: %i[vendor build verify]

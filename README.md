@@ -58,6 +58,10 @@ them. Our deepest thanks to the maintainers and community. 🙏
 - A **Rust** toolchain (stable >= 1.91) — needed only when installing the source
   gem (it compiles the native extension on install). Precompiled per-platform
   gems, where available, require no Rust toolchain; see [Releasing](#releasing)
+- The **`msb` runtime + `libkrunfw` firmware** — shipped by the optional
+  companion gem `microsandbox-rb-binaries`, or downloaded into `~/.microsandbox`
+  on first use; see [The runtime binaries](#the-runtime-binaries). Cloud-only
+  users (`MSB_BACKEND=cloud`) need no local runtime at all
 
 ## Installation
 
@@ -80,17 +84,47 @@ takes a few minutes and needs a Rust toolchain (`rustc >= 1.91`) on `PATH`. When
 a **precompiled platform gem** is available for your OS/architecture, RubyGems
 picks it automatically and no Rust toolchain is required.
 
-Either way the `msb` runtime and `libkrunfw` firmware are provisioned into
-`~/.microsandbox` automatically on first use (the first `Sandbox.create`/`start`
-downloads them if missing). To provision ahead of time — e.g. while baking a
-container image, or to avoid the first-call latency — call `install` explicitly:
+### The runtime binaries
+
+`microsandbox-rb` is **SDK-only** — it wraps the microVM runtime, it doesn't
+carry it. The host-side `msb` runtime and the `libkrunfw` firmware come from an
+optional companion gem, **`microsandbox-rb-binaries`**, published as one gem per
+platform (`arm64-darwin`, `x86_64-linux-gnu`, `aarch64-linux-gnu`) and
+versioned in lockstep with this gem:
+
+```ruby
+# Gemfile — install both gems at the same version
+gem "microsandbox-rb", require: "microsandbox"
+gem "microsandbox-rb-binaries"
+```
+
+That's all the wiring there is: `require "microsandbox"` finds the companion
+gem, checks it is the same version and built for the same upstream runtime, and points the resolver
+at its vendored `msb` — so your bundle carries the runtime and nothing is
+downloaded at install time or on first call. **Recommended whenever you boot
+local microVMs.** Cloud-only users (`MSB_BACKEND=cloud`) should skip it: it is a
+separate, optional gem precisely so nobody has to fetch ~50 MB of binaries they
+won't run. Neither gem depends on the other.
+
+> **Not on RubyGems yet.** The binaries gems are built in CI today; publishing
+> lands with the next release. Until then, use the fallback below (or build them
+> yourself from `binaries/` — see that directory's README).
+
+**Fallback — first-use download.** Without the companion gem, the `msb` runtime
+and `libkrunfw` firmware are provisioned into `~/.microsandbox` automatically on
+first use (the first `Sandbox.create`/`start` downloads them if missing). To
+provision ahead of time — e.g. while baking a container image, or to avoid the
+first-call latency — call `install` explicitly:
 
 ```ruby
 Microsandbox.install unless Microsandbox.installed?
 ```
 
 Set `MICROSANDBOX_NO_AUTO_INSTALL` to disable the automatic first-use download
-(e.g. on air-gapped hosts that provision the runtime out of band).
+(e.g. on air-gapped hosts that provision the runtime out of band). None of this
+applies when the companion gem supplies the runtime: its binaries are already the
+matching version, so `ensure_runtime!` skips the installer entirely and nothing
+is written to `~/.microsandbox`.
 
 ## Quick start
 
@@ -428,8 +462,9 @@ end
 ## Runtime configuration
 
 The `msb` runtime path is resolved in this order: the `MSB_PATH` environment
-variable → an SDK-set override → the config file → `~/.microsandbox/bin/msb` →
-`msb` on `PATH`.
+variable → the `microsandbox-rb-binaries` gem (or another SDK-set override) →
+the config file → `~/.microsandbox/bin/msb` → `msb` on `PATH`.
+`Microsandbox.runtime_path` reports the winner.
 
 ```ruby
 Microsandbox.installed?            # => true/false
@@ -438,6 +473,16 @@ Microsandbox.runtime_path          # => "/Users/you/.microsandbox/bin/msb"
 Microsandbox.runtime_path = "/opt/microsandbox/bin/msb"  # override (set-once)
 Microsandbox.libkrunfw_path = "/opt/microsandbox/lib/libkrunfw.dylib"  # override (set-once)
 ```
+
+When [`microsandbox-rb-binaries`](#the-runtime-binaries) is installed,
+`require "microsandbox"` claims that SDK-set slot with the gem's vendored `msb`
+(the firmware is found alongside it), and `runtime_path` points into the gem.
+The two gems are versioned in lockstep and the companion gem must be the same
+version **and** built for the same upstream runtime — a mismatch of either is reported with a warning and
+skipped, and the SDK falls back to `~/.microsandbox` rather than driving a
+runtime it doesn't match. Because the slot is **set-once**,
+`Microsandbox.runtime_path=` is then a no-op: use the `MSB_PATH` environment
+variable, which outranks it, to point at a different runtime.
 
 ### Backend routing
 
@@ -480,6 +525,13 @@ of the embedded runtime version. To learn which runtime a build wraps, ask it:
 Microsandbox::VERSION          # => "0.13.0"  (the gem's own version)
 Microsandbox.runtime_version   # => "v0.6.9"  (the embedded upstream runtime tag)
 ```
+
+The companion [`microsandbox-rb-binaries`](#the-runtime-binaries) gem is
+versioned in **lockstep** with this gem (same number, released together) and
+pins the same upstream runtime — install both at the same version. The gem's
+`Microsandbox::Binaries::VERSION` and `::RUNTIME_VERSION` are asserted against
+this gem's constants by the test suite, so a companion gem can't silently go
+stale.
 
 | Gem version | Upstream runtime | Notes |
 |-------------|------------------|-------|
@@ -555,7 +607,11 @@ or credential setup is needed.
    the number to mirror the upstream tag. If the release also adopts a new upstream
    runtime, bump the `tag = "vX.Y.Z"` on **both** the `microsandbox` and
    `microsandbox-network` git deps, update `Microsandbox::RUNTIME_VERSION` to match,
-   and add a row to the Versioning table. Update `CHANGELOG.md`.
+   and add a row to the Versioning table. Also bump
+   `Microsandbox::Binaries::VERSION` (and, on a runtime adoption,
+   `::RUNTIME_VERSION`) in `binaries/lib/microsandbox/binaries.rb` — the
+   companion gem ships in lockstep and the specs assert both. Update
+   `CHANGELOG.md`.
 2. Push a `vX.Y.Z` tag. CI builds the **source gem** and pushes it to RubyGems
    via `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no
    `RUBYGEMS_API_KEY` secret required.
@@ -568,12 +624,24 @@ or credential setup is needed.
 > prove otherwise — so promotion is manual after validating the artifact on each
 > platform. A precompiled gem ships the compiled extension (with the guest
 > `agentd` baked in by *target* arch); the host-side `msb` + `libkrunfw` runtime
-> is fetched into `~/.microsandbox` on first use by `Microsandbox.ensure_runtime!`
-> (libkrunfw is `dlopen`'d by `msb` at runtime, never linked into the gem). The
+> is **not** in it — that comes from the companion `microsandbox-rb-binaries`
+> gem, or, when that isn't installed, is fetched into `~/.microsandbox` on first
+> use by `Microsandbox.ensure_runtime!` (libkrunfw is `dlopen`'d by `msb` at
+> runtime, never linked into the gem). The
 > real cross-compile work is linking the *target* native libraries — `libcap-ng`
 > on Linux (handled via Debian multiarch in the workflow) and the Hypervisor +
 > Security frameworks on macOS (via osxcross; the one platform left to confirm).
 > Until promoted, users install the source gem (which compiles via `rb_sys`).
+
+> **Runtime binaries gems** (`microsandbox-rb-binaries`, source in `binaries/`)
+> are a *separate* artifact from the precompiled extension gems above: they carry
+> no Ruby extension, only the upstream `msb` + `libkrunfw` for one platform,
+> verified against the release's published `checksums.sha256` when vendored. CI's
+> `binaries` job vendors and builds all three (`arm64-darwin`,
+> `x86_64-linux-gnu`, `aarch64-linux-gnu`) on every run and smoke-tests the host
+> one; publishing them to RubyGems is a follow-up and lands with the next
+> release. To build them by hand: `rake -C binaries vendor[<platform>]` then
+> `rake -C binaries build[<platform>]` (→ `binaries/pkg/*.gem`).
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
 section. The binding covers the official-SDK surface: sandbox

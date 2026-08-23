@@ -29,6 +29,32 @@ RSpec.describe Microsandbox do
     end
   end
 
+  # The companion binaries gem (binaries/) has no dependency edge to this gem,
+  # so its version constants are the only lockstep guard: `VERSION` must track
+  # this gem (released together, same number) and `RUNTIME_VERSION` must name
+  # the same upstream runtime — the SDK refuses the gem's msb otherwise.
+  describe "microsandbox-rb-binaries lockstep" do
+    let(:binaries_dir) { File.expand_path("../../binaries", __dir__) }
+
+    before { require File.join(binaries_dir, "lib/microsandbox/binaries") }
+
+    it "keeps Microsandbox::Binaries::VERSION equal to the gem version" do
+      expect(Microsandbox::Binaries::VERSION).to eq(Microsandbox::VERSION)
+    end
+
+    it "keeps Microsandbox::Binaries::RUNTIME_VERSION equal to the wrapped runtime" do
+      expect(Microsandbox::Binaries::RUNTIME_VERSION).to eq(Microsandbox::RUNTIME_VERSION)
+    end
+
+    it "has a gemspec that evaluates without a vendored runtime and carries the lockstep version" do
+      spec = Gem::Specification.load(File.join(binaries_dir, "microsandbox-rb-binaries.gemspec"))
+      expect(spec).not_to be_nil
+      expect(spec.name).to eq("microsandbox-rb-binaries")
+      expect(spec.version.to_s).to eq(Microsandbox::VERSION)
+      expect(spec.files).to include("lib/microsandbox/binaries.rb")
+    end
+  end
+
   describe "RUNTIME_VERSION" do
     it "is exposed via .runtime_version" do
       expect(Microsandbox.runtime_version).to eq(Microsandbox::RUNTIME_VERSION)
