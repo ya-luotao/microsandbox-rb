@@ -100,7 +100,11 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
 
 ## Release
 
-Push a `vX.Y.Z` tag → `.github/workflows/release.yml` builds the source gem and publishes to
-RubyGems via Trusted Publishing (OIDC — no API key). Precompiled platform gems are built only via
-manual `workflow_dispatch` and require per-platform validation before promotion; they do not
-auto-publish on tags.
+Push a `vX.Y.Z` tag → `.github/workflows/release.yml` builds the source gem AND the three
+`microsandbox-rb-binaries` platform gems (`binaries-gems` job: `rake -C binaries vendor:all`,
+version checked against the tag) and publishes all four to RubyGems via Trusted Publishing (OIDC —
+no API key; the binaries gem has its own trusted-publisher entry for its gem name, same repo +
+workflow). The SDK gem is pushed first and on its own, so a companion-gem push failure never
+blocks the SDK release — it fails the job afterwards, and a re-run finishes the set
+(idempotent). Precompiled *extension* platform gems are built only via manual `workflow_dispatch`
+and require per-platform validation before promotion; they do not auto-publish on tags.

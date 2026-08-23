@@ -106,9 +106,11 @@ local microVMs.** Cloud-only users (`MSB_BACKEND=cloud`) should skip it: it is a
 separate, optional gem precisely so nobody has to fetch ~50 MB of binaries they
 won't run. Neither gem depends on the other.
 
-> **Not on RubyGems yet.** The binaries gems are built in CI today; publishing
-> lands with the next release. Until then, use the fallback below (or build them
-> yourself from `binaries/` — see that directory's README).
+> **Availability.** The binaries gems are published on every release tag
+> alongside `microsandbox-rb` (first release to ship them: the one after
+> 0.13.0). On an older SDK version, or a platform without a bundle, use the
+> fallback below (or build them yourself from `binaries/` — see that
+> directory's README).
 
 **Fallback — first-use download.** Without the companion gem, the `msb` runtime
 and `libkrunfw` firmware are provisioned into `~/.microsandbox` automatically on
@@ -639,9 +641,12 @@ or credential setup is needed.
 > verified against the release's published `checksums.sha256` when vendored. CI's
 > `binaries` job vendors and builds all three (`arm64-darwin`,
 > `x86_64-linux-gnu`, `aarch64-linux-gnu`) on every run and smoke-tests the host
-> one; publishing them to RubyGems is a follow-up and lands with the next
-> release. To build them by hand: `rake -C binaries vendor[<platform>]` then
-> `rake -C binaries build[<platform>]` (→ `binaries/pkg/*.gem`).
+> one; `release.yml`'s `binaries-gems` job does the same on a tag and `publish`
+> pushes them right after the SDK gem (the SDK push is never blocked by them).
+> They use their own RubyGems trusted-publisher entry (same repo + workflow,
+> gem name `microsandbox-rb-binaries`). To build them by hand:
+> `rake -C binaries vendor[<platform>]` then `rake -C binaries build[<platform>]`
+> (→ `binaries/pkg/*.gem`).
 
 See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
 section. The binding covers the official-SDK surface: sandbox
