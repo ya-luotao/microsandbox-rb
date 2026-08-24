@@ -1,0 +1,7 @@
+# Local development override (gitignored). See .cargo/config.toml.example.
+# `paths` matches by package name; as of upstream v0.5.8 the core crate lives at
+# sdk/rust (was crates/microsandbox), microsandbox-network at crates/network.
+paths = [
+  "../microsandbox/sdk/rust",
+  "../microsandbox/crates/network",
+]
