@@ -15,5 +15,5 @@ module Microsandbox
   # ext/microsandbox/Cargo.toml. Exposed at runtime as
   # {Microsandbox.runtime_version}. spec/unit/version_spec.rb asserts it stays in
   # sync with the Cargo tag so it can't silently drift out of date.
-  RUNTIME_VERSION = "v0.6.11"
+  RUNTIME_VERSION = "v0.6.12"
 end
