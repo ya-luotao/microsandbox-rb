@@ -231,11 +231,17 @@ module Microsandbox
     # @param user [String] guest user to authenticate as (default "root")
     # @param term [String, nil] TERM value for the session
     # @param sftp [Boolean] enable the SFTP subsystem (default true)
+    # @param inactivity_timeout [Numeric, nil] per-session inactivity timeout in
+    #   seconds; `nil` inherits the global config (default 600s), `0` disables it
     # @yieldparam client [SshClient]
     # @return [SshClient, Object]
-    def open_client(user: "root", term: nil, sftp: true)
+    def open_client(user: "root", term: nil, sftp: true, inactivity_timeout: nil)
       opts = {"user" => user.to_s, "sftp" => sftp ? true : false}
       opts["term"] = term.to_s if term
+      unless inactivity_timeout.nil?
+        opts["inactivity_timeout"] =
+          Sandbox.send(:coerce_duration, inactivity_timeout, "inactivity_timeout")
+      end
       client = SshClient.new(@native.ssh_open_client(opts))
       return client unless block_given?
 
@@ -251,12 +257,19 @@ module Microsandbox
     # @param authorized_keys_path [String, nil] authorized_keys file path
     # @param user [String, nil] guest user connections run as
     # @param sftp [Boolean] enable the SFTP subsystem (default true)
+    # @param inactivity_timeout [Numeric, nil] per-session inactivity timeout in
+    #   seconds; `nil` inherits the global config (default 600s), `0` disables it
     # @return [SshServer]
-    def prepare_server(host_key_path: nil, authorized_keys_path: nil, user: nil, sftp: true)
+    def prepare_server(host_key_path: nil, authorized_keys_path: nil, user: nil, sftp: true,
+      inactivity_timeout: nil)
       opts = {"sftp" => sftp ? true : false}
       opts["host_key_path"] = host_key_path.to_s if host_key_path
       opts["authorized_keys_path"] = authorized_keys_path.to_s if authorized_keys_path
       opts["user"] = user.to_s if user
+      unless inactivity_timeout.nil?
+        opts["inactivity_timeout"] =
+          Sandbox.send(:coerce_duration, inactivity_timeout, "inactivity_timeout")
+      end
       SshServer.new(@native.ssh_prepare_server(opts))
     end
   end

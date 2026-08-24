@@ -118,6 +118,42 @@ RSpec.describe "ssh" do
         "sftp" => true, "host_key_path" => "/k", "user" => "app"
       )
     end
+
+    it "coerces open_client inactivity_timeout to float seconds (0 disables)" do
+      client_native = instance_double(Microsandbox::Native::SshClient)
+      allow(native).to receive(:ssh_open_client).and_return(client_native)
+      ops.open_client(inactivity_timeout: 30)
+      expect(native).to have_received(:ssh_open_client).with(
+        "user" => "root", "sftp" => true, "inactivity_timeout" => 30.0
+      )
+      ops.open_client(inactivity_timeout: 0)
+      expect(native).to have_received(:ssh_open_client).with(
+        "user" => "root", "sftp" => true, "inactivity_timeout" => 0.0
+      )
+    end
+
+    it "omits inactivity_timeout when nil (inherit the global config)" do
+      client_native = instance_double(Microsandbox::Native::SshClient)
+      allow(native).to receive(:ssh_open_client).and_return(client_native)
+      ops.open_client(inactivity_timeout: nil)
+      expect(native).to have_received(:ssh_open_client).with("user" => "root", "sftp" => true)
+    end
+
+    it "rejects a negative or non-finite inactivity_timeout" do
+      expect { ops.open_client(inactivity_timeout: -1) }.to raise_error(ArgumentError)
+      expect { ops.open_client(inactivity_timeout: Float::INFINITY) }.to raise_error(ArgumentError)
+      expect { ops.open_client(inactivity_timeout: Float::NAN) }.to raise_error(ArgumentError)
+      expect { ops.prepare_server(inactivity_timeout: -1) }.to raise_error(ArgumentError)
+    end
+
+    it "passes inactivity_timeout through prepare_server" do
+      server_native = instance_double(Microsandbox::Native::SshServer)
+      allow(native).to receive(:ssh_prepare_server).and_return(server_native)
+      ops.prepare_server(inactivity_timeout: 12.5)
+      expect(native).to have_received(:ssh_prepare_server).with(
+        "sftp" => true, "inactivity_timeout" => 12.5
+      )
+    end
   end
 
   describe "Sandbox#ssh" do

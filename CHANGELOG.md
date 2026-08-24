@@ -6,6 +6,38 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [0.15.0] - 2026-08-24
+
+Adopts upstream runtime **`v0.6.9` → `v0.6.14`**, stepping through every
+intermediate tag (v0.6.10, v0.6.11, v0.6.12, v0.6.13 each verified and
+committed individually).
+
+### Added
+
+- `ssh.open_client` and `ssh.prepare_server` accept `inactivity_timeout:` —
+  a per-session SSH inactivity timeout in seconds (upstream #1341, `v0.6.10`).
+  `nil` (the default) inherits the global config (600s out of the box), `0`
+  disables the timeout, and a negative or non-finite value raises
+  `ArgumentError`, matching the Python binding's `ValueError` semantics. The
+  SSH inactivity timeout stays separate from the sandbox lifecycle
+  `idle_timeout`.
+
+### Changed
+
+- Upstream runtime highlights carried without further Ruby surface:
+  - `v0.6.10` — bind-mount correctness (contained rootfs patches, parent-first
+    nested destinations, path formatting), guest bootstrap moved off the kernel
+    command line, DNS pins required for deferred domain allows, host-loopback
+    family fallback, configurable global ssh inactivity timeout.
+  - `v0.6.11` / `v0.6.12` — release-pipeline fixes (Linux glibc baseline
+    lowered to 2.28; bundled `msb` executable mode preserved), reflected in the
+    prebuilt bundles the companion binaries gem vendors.
+  - `v0.6.13` — legacy ext4 upper-disk resize support; temporary exec
+    sandboxes stopped on errors; `LocalBackendBuilder::try_build_lazy()` added
+    upstream (embedding-host API — not adopted here, matching the Python
+    binding; the ext stays on `LocalBackend::lazy()`).
+  - `v0.6.14` — `msb_krun` VMM stack bumped to 0.1.32.
+
 ## [0.14.0] - 2026-08-24
 
 Runtime tag unchanged — still upstream **`v0.6.9`**.

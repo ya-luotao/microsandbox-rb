@@ -866,11 +866,14 @@ impl Sandbox {
     //----------------------------------------------------------------------
 
     /// Open a native in-process SSH client to this sandbox. `opts`: user, term,
-    /// sftp (bool, default true).
+    /// sftp (bool, default true), inactivity_timeout (seconds, f64; 0 disables).
     fn ssh_open_client(&self, opts: RHash) -> Result<crate::ssh::SshClient, Error> {
         let user = conv::opt_string(opts, "user")?;
         let term = conv::opt_string(opts, "term")?;
         let sftp = conv::opt::<bool>(opts, "sftp")?.unwrap_or(true);
+        let inactivity_timeout = conv::opt_f64(opts, "inactivity_timeout")?
+            .map(secs_to_duration)
+            .transpose()?;
         let ssh = self.inner.ssh();
         let client = block_on(ssh.open_client_with(move |mut b| {
             if let Some(u) = user {
@@ -879,6 +882,9 @@ impl Sandbox {
             if let Some(t) = term {
                 b = b.term(t);
             }
+            if let Some(t) = inactivity_timeout {
+                b = b.inactivity_timeout(t);
+            }
             b.sftp(sftp)
         }))
         .map_err(error::to_ruby)?;
@@ -886,12 +892,16 @@ impl Sandbox {
     }
 
     /// Prepare a reusable SSH server endpoint. `opts`: host_key_path,
-    /// authorized_keys_path, user, sftp (bool, default true).
+    /// authorized_keys_path, user, sftp (bool, default true),
+    /// inactivity_timeout (seconds, f64; 0 disables).
     fn ssh_prepare_server(&self, opts: RHash) -> Result<crate::ssh::SshServer, Error> {
         let host_key_path = conv::opt_string(opts, "host_key_path")?;
         let authorized_keys_path = conv::opt_string(opts, "authorized_keys_path")?;
         let user = conv::opt_string(opts, "user")?;
         let sftp = conv::opt::<bool>(opts, "sftp")?.unwrap_or(true);
+        let inactivity_timeout = conv::opt_f64(opts, "inactivity_timeout")?
+            .map(secs_to_duration)
+            .transpose()?;
         let ssh = self.inner.ssh();
         let server = block_on(ssh.prepare_server_with(move |mut b| {
             if let Some(p) = host_key_path {
@@ -902,6 +912,9 @@ impl Sandbox {
             }
             if let Some(u) = user {
                 b = b.user(u);
+            }
+            if let Some(t) = inactivity_timeout {
+                b = b.inactivity_timeout(t);
             }
             b.sftp(sftp)
         }))

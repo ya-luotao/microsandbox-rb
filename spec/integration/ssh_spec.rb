@@ -25,6 +25,18 @@ RSpec.describe "ssh", :integration do
     end
   end
 
+  it "opens clients with a per-session inactivity timeout (set and disabled)" do
+    Microsandbox::Sandbox.create(unique_sandbox_name, image: image) do |sb|
+      sb.ssh.open_client(inactivity_timeout: 30) do |client|
+        expect(client.exec("echo with-timeout").stdout).to include("with-timeout")
+      end
+      # 0 disables the timeout entirely; the session must still work normally.
+      sb.ssh.open_client(inactivity_timeout: 0) do |client|
+        expect(client.exec("echo no-timeout").stdout).to include("no-timeout")
+      end
+    end
+  end
+
   it "round-trips a file and directory tree over SFTP" do
     Microsandbox::Sandbox.create(unique_sandbox_name, image: image) do |sb|
       sb.ssh.open_client do |client|
