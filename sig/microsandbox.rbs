@@ -653,8 +653,9 @@ module Microsandbox
 
   class SshOps
     def initialize: (untyped native) -> void
-    def open_client: (?user: String, ?term: String?, ?sftp: bool) ?{ (SshClient) -> untyped } -> untyped
+    def open_client: (?user: String, ?term: String?, ?sftp: bool,
+                      ?inactivity_timeout: Numeric?) ?{ (SshClient) -> untyped } -> untyped
     def prepare_server: (?host_key_path: String?, ?authorized_keys_path: String?,
-                         ?user: String?, ?sftp: bool) -> SshServer
+                         ?user: String?, ?sftp: bool, ?inactivity_timeout: Numeric?) -> SshServer
   end
 end
