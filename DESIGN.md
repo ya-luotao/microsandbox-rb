@@ -184,7 +184,7 @@ extension.
 
 `ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
 (`microsandbox` / `microsandbox-network`, pinned to the same tag as
-`Microsandbox::RUNTIME_VERSION` — currently `v0.6.14`), so the gem builds anywhere
+`Microsandbox::RUNTIME_VERSION` — currently `v0.6.16`), so the gem builds anywhere
 — CI, `rake-compiler-dock` release containers, and end-user source installs —
 without an adjacent checkout. For fast local development against a sibling
 microsandbox checkout, copy `.cargo/config.toml.example` to `.cargo/config.toml`

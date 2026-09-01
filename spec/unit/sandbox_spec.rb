@@ -543,6 +543,70 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /follow_root_symlinks: only applies to bind\/named/)
     end
 
+    it "forwards a bind/named mount owner as override_uid/override_gid (runtime v0.6.15)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        volumes: {
+          "/data" => {bind: "/host", uid: 1000, gid: 1000},
+          "/vol" => {named: "shared", uid: 0, gid: 0, stat_virtualization: :relaxed}
+        }
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("volumes" => [
+          {"guest" => "/data", "kind" => "bind", "source" => "/host",
+           "override_uid" => 1000, "override_gid" => 1000},
+          {"guest" => "/vol", "kind" => "named", "source" => "shared",
+           "stat_virtualization" => "relaxed", "override_uid" => 0, "override_gid" => 0}
+        ])
+      )
+    end
+
+    it "requires uid: and gid: to be set together" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", volumes: {"/data" => {bind: "/host", uid: 1000}})
+      end.to raise_error(ArgumentError, /uid: and gid: must be set together/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", volumes: {"/data" => {bind: "/host", gid: 1000}})
+      end.to raise_error(ArgumentError, /uid: and gid: must be set together/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "rejects non-Integer and out-of-u32-range mount owner IDs" do
+      [["1000", 1000], [1000.0, 1000], [true, false], [-1, 0], [0, 2**32]].each do |uid, gid|
+        expect do
+          Microsandbox::Sandbox.create(
+            "box", image: "x", volumes: {"/data" => {bind: "/host", uid: uid, gid: gid}}
+          )
+        end.to raise_error(ArgumentError, /must be an Integer between 0 and 4294967295/)
+      end
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "rejects a mount owner combined with stat_virtualization: :off" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x",
+          volumes: {"/data" => {bind: "/host", uid: 1000, gid: 1000, stat_virtualization: :off}}
+        )
+      end.to raise_error(ArgumentError, /cannot be combined with stat_virtualization: :off/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "rejects a mount owner on tmpfs/disk mounts" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", volumes: {"/scratch" => {tmpfs: true, uid: 1000, gid: 1000}}
+        )
+      end.to raise_error(ArgumentError, %r{uid:/gid: \(mount owner\) only applies to bind/named})
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", volumes: {"/disk" => {disk: "/img.raw", uid: 1000, gid: 1000}}
+        )
+      end.to raise_error(ArgumentError, %r{uid:/gid: \(mount owner\) only applies to bind/named})
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
     it "raises when both image: and from_snapshot: are given" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", from_snapshot: "snap")
@@ -697,6 +761,15 @@ RSpec.describe Microsandbox::Sandbox do
     it "exposes the live #status as a Symbol" do
       expect(sb.status).to eq(:running)
     end
+
+    # The binding routes the live #stop through the sandbox object itself (not a
+    # by-name handle refetch), so the core scopes it to this sandbox's identity
+    # and refuses a same-name replacement. The Ruby layer must let that surface,
+    # not swallow or rewrap it.
+    it "propagates SandboxReplacedError from a stop aimed at a replaced name" do
+      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxReplacedError, "replaced")
+      expect { sb.stop }.to raise_error(Microsandbox::SandboxReplacedError)
+    end
   end
 
   describe "duration validation" do
@@ -802,6 +875,210 @@ RSpec.describe Microsandbox::Sandbox do
       expect(result).to be_stopped
       expect(result.exit_code).to eq(0)
       expect(result.name).to eq("box")
+    end
+  end
+
+  # Convergent lifecycle APIs (runtime v0.6.16, upstream #1462). Stub-level:
+  # the real convergence behaviour is covered by spec/integration.
+  describe "convergent lifecycle (.connect_or_create / #id / #wait_for_status / #restart / #destroy)" do
+    before { allow(Microsandbox::Native::Sandbox).to receive(:connect_or_create).and_return(native) }
+
+    it "routes .connect_or_create through the shared create option builder" do
+      sb = Microsandbox::Sandbox.connect_or_create(
+        "box", image: "python", cpus: 2, volumes: {"/data" => "/host/data"}
+      )
+      expect(sb).to be_a(Microsandbox::Sandbox)
+      expect(Microsandbox::Native::Sandbox).to have_received(:connect_or_create).with(
+        "box",
+        hash_including(
+          "image" => "python", "cpus" => 2,
+          "volumes" => [{"guest" => "/data", "kind" => "bind", "source" => "/host/data"}]
+        )
+      )
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "validates .connect_or_create kwargs exactly like .create" do
+      expect do
+        Microsandbox::Sandbox.connect_or_create("box", image: "x", from_snapshot: "snap")
+      end.to raise_error(ArgumentError, /either image: or from_snapshot:/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:connect_or_create)
+    end
+
+    # The block form stops only what this call owns. `owns_lifecycle` is the
+    # core's "we hold the child process handle" predicate: true for an attached
+    # create, false both for a sandbox that was already running (connected to)
+    # and for one started detached.
+    it "stops the sandbox after the .connect_or_create block form when it owns the lifecycle" do
+      allow(native).to receive(:owns_lifecycle).and_return(true)
+      yielded = nil
+      Microsandbox::Sandbox.connect_or_create("box", image: "x") { |sb| yielded = sb }
+      expect(yielded).to be_a(Microsandbox::Sandbox)
+      expect(native).to have_received(:stop)
+    end
+
+    it "leaves a merely-connected sandbox running after the .connect_or_create block form" do
+      allow(native).to receive(:owns_lifecycle).and_return(false)
+      Microsandbox::Sandbox.connect_or_create("box", image: "x") { |sb| sb.name }
+      expect(native).not_to have_received(:stop)
+    end
+
+    it "leaves a detached sandbox running after the .connect_or_create block form" do
+      allow(native).to receive(:owns_lifecycle).and_return(false)
+      Microsandbox::Sandbox.connect_or_create("box", image: "x", detached: true) { |sb| sb.name }
+      expect(Microsandbox::Native::Sandbox).to have_received(:connect_or_create).with(
+        "box", hash_including("detached" => true)
+      )
+      expect(native).not_to have_received(:stop)
+    end
+
+    it "still returns the block's value and swallows a teardown stop failure" do
+      allow(native).to receive(:owns_lifecycle).and_return(true)
+      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxNotRunningError, "gone")
+      result = Microsandbox::Sandbox.connect_or_create("box", image: "x") { :block_value }
+      expect(result).to eq(:block_value)
+    end
+
+    # The live #stop is identity-scoped in the core (v0.6.16), so a name that was
+    # removed and recreated while the block ran makes the teardown raise instead
+    # of stopping the replacement. The ensure must swallow that like any other
+    # best-effort teardown failure — the block's value still comes back.
+    it "swallows SandboxReplacedError from the block-form teardown" do
+      allow(native).to receive(:owns_lifecycle).and_return(true)
+      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxReplacedError, "replaced")
+      result = Microsandbox::Sandbox.connect_or_create("box", image: "x") { :block_value }
+      expect(result).to eq(:block_value)
+      expect(native).to have_received(:stop)
+    end
+
+    it "exposes the sandbox identity as #id" do
+      allow(native).to receive(:id).and_return("local:42")
+      expect(Microsandbox::Sandbox.create("box", image: "x").id).to eq("local:42")
+    end
+
+    it "wraps #wait_for_status in a SandboxHandle and lowers the status name" do
+      native_handle = instance_double(Microsandbox::Native::SandboxHandle)
+      allow(native).to receive(:wait_for_status).and_return(native_handle)
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+
+      expect(sb.wait_for_status(:running)).to be_a(Microsandbox::SandboxHandle)
+      expect(sb.wait_for_status("stopped")).to be_a(Microsandbox::SandboxHandle)
+      expect(native).to have_received(:wait_for_status).with("running")
+      expect(native).to have_received(:wait_for_status).with("stopped")
+    end
+
+    it "rejects an unknown #wait_for_status target without a native call" do
+      allow(native).to receive(:wait_for_status)
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+      expect { sb.wait_for_status(:runnning) }
+        .to raise_error(ArgumentError, /unknown sandbox status :runnning.*created, starting, running/m)
+      expect { sb.wait_for_status(nil) }.to raise_error(ArgumentError, /unknown sandbox status/)
+      expect(native).not_to have_received(:wait_for_status)
+    end
+
+    it "ensures the runtime is provisioned before #restart boots a VM again" do
+      allow(native).to receive(:restart).and_return(
+        instance_double(Microsandbox::Native::Sandbox, name: "box")
+      )
+      # Wrap the native double directly rather than going through .create, whose
+      # own ensure_runtime! call would satisfy the expectation for us.
+      Microsandbox::Sandbox.new(native).restart
+      expect(Microsandbox).to have_received(:ensure_runtime!)
+    end
+
+    it "maps #restart options and returns a new live Sandbox" do
+      restarted = instance_double(Microsandbox::Native::Sandbox, name: "box")
+      allow(native).to receive(:restart).and_return(restarted)
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+
+      expect(sb.restart).to be_a(Microsandbox::Sandbox)
+      sb.restart(force: true, timeout: 3, detached: true)
+      expect(native).to have_received(:restart).with({})
+      expect(native).to have_received(:restart).with(
+        {"force" => true, "detached" => true, "timeout" => 3.0}
+      )
+    end
+
+    it "maps #destroy options and returns nil" do
+      allow(native).to receive(:destroy)
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+
+      expect(sb.destroy).to be_nil
+      sb.destroy(force: true, timeout: 1.5)
+      expect(native).to have_received(:destroy).with({})
+      expect(native).to have_received(:destroy).with({"force" => true, "timeout" => 1.5})
+    end
+
+    it "rejects a non-finite restart/destroy timeout before the native call" do
+      allow(native).to receive(:restart)
+      allow(native).to receive(:destroy)
+      sb = Microsandbox::Sandbox.create("box", image: "x")
+
+      expect { sb.restart(timeout: -1) }
+        .to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+      expect { sb.destroy(timeout: Float::NAN) }
+        .to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+      expect(native).not_to have_received(:restart)
+      expect(native).not_to have_received(:destroy)
+    end
+  end
+
+  describe "SandboxHandle convergent lifecycle (runtime v0.6.16)" do
+    let(:native_handle) { instance_double(Microsandbox::Native::SandboxHandle) }
+    subject(:handle) { Microsandbox::SandboxHandle.new(native_handle) }
+
+    it "exposes the bound sandbox identity as #id" do
+      allow(native_handle).to receive(:id).and_return("local:7")
+      expect(handle.id).to eq("local:7")
+    end
+
+    # Both of these can boot a microVM, so they must provision the runtime the
+    # way Sandbox.create/.start do — otherwise a machine with no runtime fails
+    # in the native layer instead of fetching one. (#destroy/#stop/#wait_* boot
+    # nothing and deliberately skip the check.)
+    it "ensures the runtime is provisioned before #connect_or_start" do
+      allow(native_handle).to receive(:connect_or_start).and_return(native)
+      handle.connect_or_start
+      expect(Microsandbox).to have_received(:ensure_runtime!)
+    end
+
+    it "ensures the runtime is provisioned before #restart" do
+      allow(native_handle).to receive(:restart).and_return(native)
+      handle.restart
+      expect(Microsandbox).to have_received(:ensure_runtime!)
+    end
+
+    it "does not provision the runtime for #destroy (it boots nothing)" do
+      allow(native_handle).to receive(:destroy)
+      handle.destroy
+      expect(Microsandbox).not_to have_received(:ensure_runtime!)
+    end
+
+    it "maps #connect_or_start's detached flag and returns a live Sandbox" do
+      allow(native_handle).to receive(:connect_or_start).and_return(native)
+      expect(handle.connect_or_start).to be_a(Microsandbox::Sandbox)
+      handle.connect_or_start(detached: true)
+      expect(native_handle).to have_received(:connect_or_start).with({})
+      expect(native_handle).to have_received(:connect_or_start).with({"detached" => true})
+    end
+
+    it "wraps #wait_for_status in a fresh SandboxHandle and validates the target" do
+      allow(native_handle).to receive(:wait_for_status).and_return(native_handle)
+      expect(handle.wait_for_status("paused")).to be_a(Microsandbox::SandboxHandle)
+      expect(native_handle).to have_received(:wait_for_status).with("paused")
+
+      expect { handle.wait_for_status(:gone) }
+        .to raise_error(ArgumentError, /unknown sandbox status :gone/)
+    end
+
+    it "maps #restart / #destroy options the same way the live Sandbox does" do
+      allow(native_handle).to receive(:restart).and_return(native)
+      allow(native_handle).to receive(:destroy)
+
+      expect(handle.restart(force: true, timeout: 2)).to be_a(Microsandbox::Sandbox)
+      expect(handle.destroy(timeout: 0)).to be_nil
+      expect(native_handle).to have_received(:restart).with({"force" => true, "timeout" => 2.0})
+      expect(native_handle).to have_received(:destroy).with({"timeout" => 0.0})
     end
   end
 

@@ -186,6 +186,39 @@ Microsandbox::Sandbox.start("box")    # restart a stopped sandbox
 Microsandbox::Sandbox.remove("box")   # remove a stopped sandbox
 ```
 
+**Convergent lifecycle** (runtime `v0.6.16`) — idempotent operations that take a
+name to the state you want, whatever state it is in now:
+
+```ruby
+# Create it, or connect to (and start) the one that is already there. The
+# keyword options are `create`'s and apply only when a create actually happens.
+sb = Microsandbox::Sandbox.connect_or_create("box", image: "public.ecr.aws/docker/library/alpine:latest")
+
+sb.id                     # opaque identity of the *persisted* sandbox — unlike
+                          # the reusable name, it changes on remove+recreate
+sb.wait_for_status(:running)  # => SandboxHandle (no built-in timeout)
+sb = sb.restart               # stop + start; => a new live Sandbox
+sb.destroy                    # stop + remove, in one step
+
+h = Microsandbox::Sandbox.get("box")
+h.connect_or_start        # connect if running, start if not => Sandbox
+h.restart(force: true, timeout: 5)
+h.destroy
+```
+
+Everything that acts on an *existing* receiver — `wait_for_status`, `restart`,
+`destroy`, `connect_or_start` — compares the identity it was bound to against
+the name's current owner first, raising `Microsandbox::SandboxReplacedError`
+rather than touching a sandbox someone else recreated under the same name.
+(`connect_or_create` is the entry point, so it has no prior identity to check:
+it simply converges on whichever sandbox now owns the name.)
+
+`connect_or_create`'s block form stops the sandbox only when the call owns its
+lifecycle — i.e. when it created it attached. A sandbox it merely connected to,
+or started with `detached: true`, is left running. And the stop it does issue is
+scoped to that sandbox's `id`, so a name removed and recreated while the block
+ran cannot be taken down by the teardown either.
+
 > **v0.5.8 lifecycle change.** Upstream split the lifecycle into the live
 > `Sandbox` and a controllable `SandboxHandle`, and the gem mirrors it. The live
 > `Sandbox#stop`/`#kill` no longer take a `timeout:`; `#request_stop`/
@@ -430,7 +463,9 @@ Microsandbox::Volume.remove("cache")
 ```
 
 `volumes:` accepts a host path String (bind mount) or `{ bind: "/host" }` /
-`{ named: "volume-name" }` per guest path. Boot from a snapshot with
+`{ named: "volume-name" }` per guest path. A bind or named mount may pin the
+fallback guest owner for host files with `uid:`/`gid:` (both required together,
+runtime `v0.6.15`). Boot from a snapshot with
 `Sandbox.create(name, from_snapshot: "snap-name-or-path")`.
 
 ### Error handling
@@ -524,8 +559,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.15.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.14" (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.16.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.6.16" (the embedded upstream runtime tag)
 ```
 
 The companion [`microsandbox-rb-binaries`](#the-runtime-binaries) gem is
@@ -558,6 +593,7 @@ stale.
 | `0.13.0` | `v0.6.9` | adopts upstream `v0.6.9` (**breaking**): a bare `MSB_API_KEY` no longer selects the cloud backend (explicit `MSB_BACKEND=cloud` or a cloud profile required; invalid cloud config fails closed with `InvalidConfigError`); snapshot payload integrity becomes opt-in (`record_integrity:`, `verify` can report `:not_recorded`). Parity: default-workload execution (`exec_default`/`exec_default_stream`/`attach_default`, `cmd:`), flat root disks (`RootDisk.flat`), `modify(root_disk_size:)`, `rate_limiter:`, `vsock:`, `default_backend_info`, `Volume.get_default` |
 | `0.14.0` | `v0.6.9` | two-gem split: SDK-only gem (no build-time runtime download) + companion `microsandbox-rb-binaries` platform gems |
 | `0.15.0` | `v0.6.14` | adopts upstream `v0.6.10`–`v0.6.14` step by step: bind-mount correctness, guest bootstrap off the kernel command line, DNS pins for deferred domain allows, Linux glibc 2.28 baseline for the prebuilt runtime, legacy ext4 upper-disk resize, `msb_krun` 0.1.32. Parity: `ssh.open_client`/`prepare_server` accept `inactivity_timeout:` (seconds; `0` disables, `nil` inherits the 600s global default) |
+| `0.16.0` | `v0.6.16` | adopts upstream `v0.6.15`+`v0.6.16` step by step: mount fallback ownership, readonly-mount write-probe fix, log retrieval rerouted through the SDK backends, config overlaid by field presence, network-slot recycling. Parity: per-mount `uid:`/`gid:`, and the convergent lifecycle — `Sandbox.connect_or_create`, `#id`, `#wait_for_status`, `#restart`, `#destroy`, `SandboxHandle#connect_or_start`, `SandboxReplacedError` |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:

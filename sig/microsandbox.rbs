@@ -39,6 +39,7 @@ module Microsandbox
   class SandboxNotRunningError < Error end
   class SandboxAlreadyExistsError < Error end
   class SandboxStillRunningError < Error end
+  class SandboxReplacedError < Error end
   class ExecTimeoutError < Error end
   class ExecFailedError < Error end
   class NoDefaultCommandError < Error end
@@ -163,6 +164,7 @@ module Microsandbox
 
   class SandboxHandle
     def name: () -> String
+    def id: () -> String
     def status: () -> Symbol
     def running?: () -> bool
     def stopped?: () -> bool
@@ -176,6 +178,10 @@ module Microsandbox
     def request_kill: () -> nil
     def request_drain: () -> nil
     def wait_until_stopped: () -> SandboxStopResult
+    def connect_or_start: (?detached: bool) -> Sandbox
+    def wait_for_status: (Symbol | String status) -> SandboxHandle
+    def restart: (?force: bool, ?timeout: Numeric?, ?detached: bool) -> Sandbox
+    def destroy: (?force: bool, ?timeout: Numeric?) -> nil
     def config_json: () -> String
     def config: () -> Hash[String, untyped]
     def snapshot: (String name) -> SnapshotInfo
@@ -243,6 +249,8 @@ module Microsandbox
   end
 
   class Sandbox
+    STATUSES: Array[Symbol]
+
     def self.create: (String name, ?image: String?, ?cpus: Integer?, ?max_cpus: Integer?,
                       ?memory: Integer?, ?max_memory: Integer?,
                       ?env: Hash[untyped, untyped]?, ?workdir: String?, ?shell: String?,
@@ -269,6 +277,10 @@ module Microsandbox
                       ?detached: bool,
                       ?replace: bool, ?replace_with_timeout: Numeric?)
                       ?{ (Sandbox) -> untyped } -> untyped
+    # Accepts the same keyword options as {create} (used only when a create is
+    # actually necessary); `replace:`/`replace_with_timeout:` are rejected by
+    # the core.
+    def self.connect_or_create: (String name, **untyped) ?{ (Sandbox) -> untyped } -> untyped
     # Accepts the same keyword options as {create}.
     def self.create_with_progress: (String name, **untyped) -> PullSession
     def self.start: (String name, ?detached: bool) -> Sandbox
@@ -278,6 +290,7 @@ module Microsandbox
     def self.remove: (String name) -> nil
 
     def name: () -> String
+    def id: () -> String
     def exec: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
                ?env: Hash[untyped, untyped]?, ?timeout: Numeric?, ?tty: bool, ?stdin: (String | :null)?,
                ?rlimits: Hash[untyped, untyped]?) -> ExecOutput
@@ -322,6 +335,9 @@ module Microsandbox
     def kill: () -> nil
     def drain: () -> nil
     def wait: () -> ExitStatus
+    def wait_for_status: (Symbol | String status) -> SandboxHandle
+    def restart: (?force: bool, ?timeout: Numeric?, ?detached: bool) -> Sandbox
+    def destroy: (?force: bool, ?timeout: Numeric?) -> nil
     def status: () -> Symbol
     def owns_lifecycle?: () -> bool
     def detach: () -> nil

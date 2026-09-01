@@ -17,6 +17,11 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         SandboxNotFound(_) => "SandboxNotFoundError",
         SandboxAlreadyExists(_) => "SandboxAlreadyExistsError",
         SandboxStillRunning(_) => "SandboxStillRunningError",
+        // v0.6.16 (#1462): the receiver's captured identity no longer owns the
+        // name — it was removed and recreated. Raised by the identity-checked
+        // convergent lifecycle APIs instead of acting on the replacement.
+        // Mirrors the Python `SandboxReplacedError`.
+        SandboxReplaced { .. } => "SandboxReplacedError",
         // v0.6.6 (#1099): the sandbox exists but isn't running. Raised by the
         // handle's exec/attach/ping/touch not-running guards and the fs
         // agent-endpoint lookup. The `SandboxNotRunningError` class already
