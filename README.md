@@ -186,6 +186,39 @@ Microsandbox::Sandbox.start("box")    # restart a stopped sandbox
 Microsandbox::Sandbox.remove("box")   # remove a stopped sandbox
 ```
 
+**Convergent lifecycle** (runtime `v0.6.16`) — idempotent operations that take a
+name to the state you want, whatever state it is in now:
+
+```ruby
+# Create it, or connect to (and start) the one that is already there. The
+# keyword options are `create`'s and apply only when a create actually happens.
+sb = Microsandbox::Sandbox.connect_or_create("box", image: "public.ecr.aws/docker/library/alpine:latest")
+
+sb.id                     # opaque identity of the *persisted* sandbox — unlike
+                          # the reusable name, it changes on remove+recreate
+sb.wait_for_status(:running)  # => SandboxHandle (no built-in timeout)
+sb = sb.restart               # stop + start; => a new live Sandbox
+sb.destroy                    # stop + remove, in one step
+
+h = Microsandbox::Sandbox.get("box")
+h.connect_or_start        # connect if running, start if not => Sandbox
+h.restart(force: true, timeout: 5)
+h.destroy
+```
+
+Everything that acts on an *existing* receiver — `wait_for_status`, `restart`,
+`destroy`, `connect_or_start` — compares the identity it was bound to against
+the name's current owner first, raising `Microsandbox::SandboxReplacedError`
+rather than touching a sandbox someone else recreated under the same name.
+(`connect_or_create` is the entry point, so it has no prior identity to check:
+it simply converges on whichever sandbox now owns the name.)
+
+`connect_or_create`'s block form stops the sandbox only when the call owns its
+lifecycle — i.e. when it created it attached. A sandbox it merely connected to,
+or started with `detached: true`, is left running. And the stop it does issue is
+scoped to that sandbox's `id`, so a name removed and recreated while the block
+ran cannot be taken down by the teardown either.
+
 > **v0.5.8 lifecycle change.** Upstream split the lifecycle into the live
 > `Sandbox` and a controllable `SandboxHandle`, and the gem mirrors it. The live
 > `Sandbox#stop`/`#kill` no longer take a `timeout:`; `#request_stop`/

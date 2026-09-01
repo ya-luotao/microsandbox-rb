@@ -24,7 +24,7 @@ module Microsandbox
 
     # The upstream microsandbox release the vendored binaries come from. Must
     # equal the SDK's `Microsandbox::RUNTIME_VERSION` for the SDK to use them.
-    RUNTIME_VERSION = "v0.6.15"
+    RUNTIME_VERSION = "v0.6.16"
 
     # Directory holding the vendored runtime (`bin/`, `lib/`, `manifest.json`).
     ROOT = File.expand_path("../../vendor", __dir__)

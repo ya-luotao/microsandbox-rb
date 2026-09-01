@@ -18,11 +18,11 @@ use microsandbox::logs::{
     LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
 use microsandbox::sandbox::{
-    AttachOptionsBuilder, DiskImageFormat, EnvVar, FlatClone, FsEntry, FsEntryKind, FsMetadata,
-    HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle, RlimitResource,
-    RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics, SandboxModificationBuilder,
-    SandboxModificationPatch, SandboxStatus, SandboxStopResult, SecretBuilder,
-    SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
+    AttachOptionsBuilder, DestroyOptions, DiskImageFormat, EnvVar, FlatClone, FsEntry, FsEntryKind,
+    FsMetadata, HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle,
+    RestartOptions, RlimitResource, RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics,
+    SandboxModificationBuilder, SandboxModificationPatch, SandboxStatus, SandboxStopResult,
+    SecretBuilder, SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
 };
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
@@ -521,6 +521,16 @@ impl Sandbox {
         Ok(PullSession::new(handle, join))
     }
 
+    /// Converge on a live sandbox with this name: connect to (or start) the
+    /// persisted one when it already exists, otherwise create it from `opts`.
+    /// Concurrent callers converge on the winning identity. The core rejects
+    /// the combination with `replace`.
+    fn connect_or_create(name: String, opts: RHash) -> Result<Sandbox, Error> {
+        let b = Self::build_builder(name, opts)?;
+        let inner = block_on(b.connect_or_create()).map_err(error::to_ruby)?;
+        Ok(Sandbox::from_inner(inner))
+    }
+
     /// Restart a previously-defined sandbox by name.
     fn start(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let detached = conv::opt_bool(opts, "detached")?;
@@ -592,6 +602,13 @@ impl Sandbox {
         self.inner.name().to_string()
     }
 
+    /// The opaque, backend-assigned identity of this persisted sandbox
+    /// (v0.6.16). Stable for the sandbox's lifetime, and different once the
+    /// same name is removed and recreated.
+    fn id(&self) -> String {
+        self.inner.id().to_string()
+    }
+
     /// Run a command (no shell). `args` is an Array of strings; `opts` is a
     /// string-keyed Hash (cwd, user, env, timeout, tty, stdin).
     fn exec(&self, cmd: String, args: Vec<String>, opts: RHash) -> Result<RHash, Error> {
@@ -656,17 +673,23 @@ impl Sandbox {
         Ok(ExecHandle::from_core(handle))
     }
 
-    /// Graceful stop. Mirrors the official SDKs: the live handle routes through
-    /// a freshly fetched `SandboxHandle::stop` (SIGTERM→SIGKILL escalation with
-    /// a 10s default). Fine-grained control — a custom timeout or fire-and-
-    /// return `request_*` — lives on `SandboxHandle`, obtained via `Sandbox.get`.
+    /// Graceful stop (SIGTERM→SIGKILL escalation with a 10s default), routed
+    /// straight through the live sandbox like every other lifecycle method here
+    /// and like both official bindings (`sdk/python/src/sandbox.rs`,
+    /// `sdk/ruby/ext/.../lib.rs`).
+    ///
+    /// This deliberately does NOT re-fetch a `SandboxHandle` by name first. It
+    /// used to, back when the core's live `stop` was not identity-scoped; as of
+    /// v0.6.16 the core routes `stop` → `request_stop` → `stop_identified(name,
+    /// self.identity())`, so going through `self.inner` is what makes the stop
+    /// refuse a same-name replacement (`SandboxReplacedError`) instead of
+    /// terminating whatever sandbox happens to own the name right now. The old
+    /// by-name refetch threw that identity away.
+    ///
+    /// Fine-grained control — a custom timeout or fire-and-return `request_*` —
+    /// lives on `SandboxHandle`, obtained via `Sandbox.get`.
     fn stop(&self) -> Result<(), Error> {
-        let name = self.inner.name().to_string();
-        block_on(async move {
-            let handle = microsandbox::sandbox::Sandbox::get(&name).await?;
-            handle.stop().await
-        })
-        .map_err(error::to_ruby)
+        block_on(self.inner.stop()).map_err(error::to_ruby)
     }
 
     /// Graceful stop, then wait for the process to exit. Returns an exit-status
@@ -690,6 +713,29 @@ impl Sandbox {
     fn wait(&self) -> Result<RHash, Error> {
         let status = block_on(self.inner.wait()).map_err(error::to_ruby)?;
         Ok(exit_status_to_hash(status))
+    }
+
+    /// Block until this exact sandbox reaches `status` (no built-in timeout),
+    /// returning a fresh handle. A same-name replacement raises
+    /// `SandboxReplacedError` instead of silently redirecting the wait.
+    fn wait_for_status(&self, status: String) -> Result<SbHandle, Error> {
+        let status = sandbox_status_from_str(&status)?;
+        let handle = block_on(self.inner.wait_for_status(status)).map_err(error::to_ruby)?;
+        Ok(SbHandle::from_inner(handle))
+    }
+
+    /// Stop and start this exact sandbox, returning the new live sandbox.
+    /// `opts` carries `force`/`timeout`/`detached`.
+    fn restart(&self, opts: RHash) -> Result<Sandbox, Error> {
+        let options = restart_options(opts)?;
+        let inner = block_on(self.inner.restart_with(options)).map_err(error::to_ruby)?;
+        Ok(Sandbox::from_inner(inner))
+    }
+
+    /// Stop and remove this exact sandbox. `opts` carries `force`/`timeout`.
+    fn destroy(&self, opts: RHash) -> Result<(), Error> {
+        let options = destroy_options(opts)?;
+        block_on(self.inner.destroy_with(options)).map_err(error::to_ruby)
     }
 
     /// Live status fetched from the backend (a round-trip per call).
@@ -2108,6 +2154,55 @@ fn sandbox_status_str(status: SandboxStatus) -> &'static str {
     }
 }
 
+/// Parse a Ruby-facing status name back into a core `SandboxStatus`. The Ruby
+/// layer already validates the seven names (raising `ArgumentError`, the repo's
+/// idiom for a bad argument value), so reaching the fallback here means the
+/// native layer was called directly; keep it exhaustive rather than silent.
+fn sandbox_status_from_str(status: &str) -> Result<SandboxStatus, Error> {
+    match status {
+        "created" => Ok(SandboxStatus::Created),
+        "starting" => Ok(SandboxStatus::Starting),
+        "running" => Ok(SandboxStatus::Running),
+        "draining" => Ok(SandboxStatus::Draining),
+        "paused" => Ok(SandboxStatus::Paused),
+        "stopped" => Ok(SandboxStatus::Stopped),
+        "crashed" => Ok(SandboxStatus::Crashed),
+        other => Err(error::base_error(format!(
+            "unknown sandbox status {other:?} (expected created/starting/running/draining/\
+             paused/stopped/crashed)"
+        ))),
+    }
+}
+
+/// Build the core's `RestartOptions` from a string-keyed Hash
+/// (`force`/`timeout`/`detached`). An absent `timeout` keeps the core's
+/// ten-second graceful-shutdown default.
+fn restart_options(opts: RHash) -> Result<RestartOptions, Error> {
+    let mut options = RestartOptions {
+        force: conv::opt_bool(opts, "force")?,
+        detached: conv::opt_bool(opts, "detached")?,
+        ..Default::default()
+    };
+    if let Some(secs) = conv::opt_f64(opts, "timeout")? {
+        options.timeout = secs_to_duration(secs)?;
+    }
+    Ok(options)
+}
+
+/// Build the core's `DestroyOptions` from a string-keyed Hash
+/// (`force`/`timeout`). An absent `timeout` keeps the core's ten-second
+/// graceful-shutdown default.
+fn destroy_options(opts: RHash) -> Result<DestroyOptions, Error> {
+    let mut options = DestroyOptions {
+        force: conv::opt_bool(opts, "force")?,
+        ..Default::default()
+    };
+    if let Some(secs) = conv::opt_f64(opts, "timeout")? {
+        options.timeout = secs_to_duration(secs)?;
+    }
+    Ok(options)
+}
+
 /// A `std::process::ExitStatus` as a Ruby Hash: `exit_code` (Integer or nil) and
 /// `success` (Boolean). Returned by the live `Sandbox#wait` / `#stop_and_wait`.
 fn exit_status_to_hash(status: std::process::ExitStatus) -> RHash {
@@ -2434,6 +2529,13 @@ impl SbHandle {
         self.inner.name().to_string()
     }
 
+    /// The opaque, backend-assigned identity of the persisted sandbox this
+    /// handle is bound to (v0.6.16). The lifecycle operations below refuse to
+    /// act on a same-name replacement by comparing against it.
+    fn id(&self) -> String {
+        self.inner.id().to_string()
+    }
+
     /// Status snapshot captured when the handle was fetched (synchronous).
     fn status(&self) -> String {
         sandbox_status_str(self.inner.status_snapshot()).to_string()
@@ -2480,6 +2582,45 @@ impl SbHandle {
     /// Send the drain request (SIGUSR1) and return without waiting.
     fn request_drain(&self) -> Result<(), Error> {
         block_on(self.inner.request_drain()).map_err(error::to_ruby)
+    }
+
+    /// Connect when this exact sandbox is running, wait while it is starting,
+    /// or start it when it is created/stopped/crashed. `opts` carries
+    /// `detached`, which applies only when a start is actually required.
+    fn connect_or_start(&self, opts: RHash) -> Result<Sandbox, Error> {
+        let detached = conv::opt_bool(opts, "detached")?;
+        let inner = block_on(async {
+            if detached {
+                self.inner.connect_or_start_detached().await
+            } else {
+                self.inner.connect_or_start().await
+            }
+        })
+        .map_err(error::to_ruby)?;
+        Ok(Sandbox::from_inner(inner))
+    }
+
+    /// Block until this exact sandbox reaches `status` (no built-in timeout),
+    /// returning a fresh handle. A same-name replacement raises
+    /// `SandboxReplacedError` instead of silently redirecting the wait.
+    fn wait_for_status(&self, status: String) -> Result<SbHandle, Error> {
+        let status = sandbox_status_from_str(&status)?;
+        let handle = block_on(self.inner.wait_for_status(status)).map_err(error::to_ruby)?;
+        Ok(SbHandle::from_inner(handle))
+    }
+
+    /// Stop and start this exact sandbox, returning the new live sandbox.
+    /// `opts` carries `force`/`timeout`/`detached`.
+    fn restart(&self, opts: RHash) -> Result<Sandbox, Error> {
+        let options = restart_options(opts)?;
+        let inner = block_on(self.inner.restart_with(options)).map_err(error::to_ruby)?;
+        Ok(Sandbox::from_inner(inner))
+    }
+
+    /// Stop and remove this exact sandbox. `opts` carries `force`/`timeout`.
+    fn destroy(&self, opts: RHash) -> Result<(), Error> {
+        let options = destroy_options(opts)?;
+        block_on(self.inner.destroy_with(options)).map_err(error::to_ruby)
     }
 
     /// Block until the sandbox reaches a terminal state; returns a stop-result
@@ -2619,6 +2760,10 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
         "create_with_progress",
         function!(Sandbox::create_with_progress, 2),
     )?;
+    class.define_singleton_method(
+        "connect_or_create",
+        function!(Sandbox::connect_or_create, 2),
+    )?;
     class.define_singleton_method("start", function!(Sandbox::start, 2))?;
     class.define_singleton_method("get", function!(Sandbox::get, 1))?;
     class.define_singleton_method("list", function!(Sandbox::list, 0))?;
@@ -2626,6 +2771,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_singleton_method("remove", function!(Sandbox::remove, 1))?;
 
     class.define_method("name", method!(Sandbox::name, 0))?;
+    class.define_method("id", method!(Sandbox::id, 0))?;
     class.define_method("exec", method!(Sandbox::exec, 3))?;
     class.define_method("shell", method!(Sandbox::shell, 2))?;
     class.define_method("exec_stream", method!(Sandbox::exec_stream, 3))?;
@@ -2640,6 +2786,9 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("kill", method!(Sandbox::kill, 0))?;
     class.define_method("drain", method!(Sandbox::drain, 0))?;
     class.define_method("wait", method!(Sandbox::wait, 0))?;
+    class.define_method("wait_for_status", method!(Sandbox::wait_for_status, 1))?;
+    class.define_method("restart", method!(Sandbox::restart, 1))?;
+    class.define_method("destroy", method!(Sandbox::destroy, 1))?;
     class.define_method("status", method!(Sandbox::status, 0))?;
     class.define_method("owns_lifecycle", method!(Sandbox::owns_lifecycle, 0))?;
     class.define_method("detach", method!(Sandbox::detach, 0))?;
@@ -2679,6 +2828,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
 
     let handle = native.define_class("SandboxHandle", ruby.class_object())?;
     handle.define_method("name", method!(SbHandle::name, 0))?;
+    handle.define_method("id", method!(SbHandle::id, 0))?;
     handle.define_method("status", method!(SbHandle::status, 0))?;
     handle.define_method("created_at_ms", method!(SbHandle::created_at_ms, 0))?;
     handle.define_method("updated_at_ms", method!(SbHandle::updated_at_ms, 0))?;
@@ -2686,6 +2836,10 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     handle.define_method("stop_with_timeout", method!(SbHandle::stop_with_timeout, 1))?;
     handle.define_method("kill", method!(SbHandle::kill, 0))?;
     handle.define_method("kill_with_timeout", method!(SbHandle::kill_with_timeout, 1))?;
+    handle.define_method("connect_or_start", method!(SbHandle::connect_or_start, 1))?;
+    handle.define_method("wait_for_status", method!(SbHandle::wait_for_status, 1))?;
+    handle.define_method("restart", method!(SbHandle::restart, 1))?;
+    handle.define_method("destroy", method!(SbHandle::destroy, 1))?;
     handle.define_method("request_stop", method!(SbHandle::request_stop, 0))?;
     handle.define_method("request_kill", method!(SbHandle::request_kill, 0))?;
     handle.define_method("request_drain", method!(SbHandle::request_drain, 0))?;

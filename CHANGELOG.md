@@ -8,7 +8,8 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
-Adopts upstream runtime **`v0.6.14` → `v0.6.15`**.
+Adopts upstream runtime **`v0.6.14` → `v0.6.16`**, stepping through the
+intermediate tag (`v0.6.15` verified and committed on its own).
 
 ### Added
 
@@ -25,12 +26,84 @@ Adopts upstream runtime **`v0.6.14` → `v0.6.15`**.
   "unsupported for disk-backed named volumes": a Ruby `{ named: "vol" }` spec
   only references an existing volume by name, so the volume's kind is known
   only to the core, which rejects that combination at create time.
+- **Convergent lifecycle APIs** (upstream #1462, `v0.6.16`) — idempotent
+  operations that take a name to the state you want, whatever state it is in
+  now:
+  - `Sandbox.connect_or_create(name, **kwargs)` — connect to (and start) the
+    persisted sandbox with this name, or create it when none exists; concurrent
+    callers converge on the winning identity instead of one losing to a name
+    clash. Takes exactly `create`'s keyword options — the same normalization
+    path, not a second copy of it — and they apply only when a create actually
+    happens. The block form yields the sandbox and then stops it **only when the
+    call owns its lifecycle** — a deliberate divergence from `create`, whose
+    block form always stops: `connect_or_create` can hand back a sandbox this
+    process did not start, and tearing down someone else's long-lived service on
+    the way out of a block is never what the caller meant. So a sandbox created
+    here is stopped as usual; one merely *connected* to, or started with
+    `detached: true`, is left running. `replace:` / `replace_with_timeout:` are
+    accepted for kwargs parity but rejected by the core with
+    `InvalidConfigError`: replacing a sandbox is the opposite of converging
+    on it.
+  - `Sandbox#id` and `SandboxHandle#id` — the opaque, backend-assigned identity
+    of the *persisted* sandbox. Names are reusable labels; this changes when a
+    name is removed and recreated.
+  - `Sandbox#wait_for_status(status)` and `SandboxHandle#wait_for_status(status)`
+    — block until this exact sandbox reaches one of `:created`, `:starting`,
+    `:running`, `:draining`, `:paused`, `:stopped`, `:crashed`, returning a fresh
+    `SandboxHandle` (from both receivers, mirroring the official SDKs). There is
+    no built-in timeout and the wait is uninterruptible from Ruby (the native
+    call releases the GVL with no unblock function), so an unknown status name
+    raises `ArgumentError` up front rather than blocking forever — and only
+    states the active backend can reach are worth waiting for (`:created` and
+    `:paused` are cloud-side). Impose a deadline by running the call on its own
+    Thread.
+  - `Sandbox#restart(force:, timeout:, detached:)` and
+    `SandboxHandle#restart(...)` — stop and start this exact sandbox, returning a
+    new live `Sandbox`.
+  - `Sandbox#destroy(force:, timeout:)` and `SandboxHandle#destroy(...)` — stop
+    and remove this exact sandbox in one step.
+  - `SandboxHandle#connect_or_start(detached:)` — connect when the sandbox is
+    running, wait while it is starting, start it when it is created/stopped/
+    crashed.
+- `Microsandbox::SandboxReplacedError` (code `"sandbox-replaced"`) — raised by
+  every one of the identity-checked operations above when the name now refers to
+  a different persisted sandbox, instead of quietly acting on the replacement.
+  Mirrors the Python SDK's `SandboxReplacedError`; wired into the native
+  error-code mapping like the other `sandbox-*` codes.
+
+### Fixed
+
+- **The live `Sandbox#stop` no longer stops a same-name replacement.** The
+  binding re-fetched a `SandboxHandle` *by name* and stopped that — a pattern
+  left over from before the core's live `stop` was identity-scoped. As of
+  runtime v0.6.16 the core routes `stop` → `request_stop` →
+  `stop_identified(name, self.identity())`, so the fix is to route through the
+  live sandbox (`self.inner.stop()`) the way `kill`/`drain`/`wait`/
+  `stop_and_wait` already did, and the way both official bindings do. A sandbox
+  removed and recreated under the same name now raises `SandboxReplacedError`
+  (or `SandboxNotFoundError` when nothing holds the name) instead of terminating
+  whoever answers to it. This also hardens `Sandbox.connect_or_create`'s block
+  form, whose teardown calls `#stop`.
+- **Operations that can boot a microVM now provision the runtime first.**
+  `SandboxHandle#connect_or_start`, `SandboxHandle#restart` and
+  `Sandbox#restart` were missing the `ensure_runtime!` call `Sandbox.create` and
+  `Sandbox.start` make, so on a machine with no runtime installed they failed in
+  the native layer instead of fetching it. (`Sandbox.connect_or_create` was
+  already covered — it shares `create`'s option builder.)
 
 ### Changed
 
 - Upstream runtime highlights carried without further Ruby surface:
   - `v0.6.15` — read-only mounts no longer fail a write probe at mount time,
     Windows DNS/NTFS handling, and the mount-ownership core work above.
+  - `v0.6.16` — log retrieval rerouted through the SDK backends (#1459; the
+    `logs`/`log_stream` bindings are unchanged and keep their behaviour — the
+    new `follow_logs`/`boot_error` core entry points are not bound, matching the
+    Python binding), sandbox config overlaid by field presence with
+    `LocalConfig` renamed to `GlobalConfig` (#1460; the gem touches neither —
+    the ext only calls `config::set_sdk_*_path` — and no Ruby config
+    round-trip or `modify` semantics changed), network-slot recycling and
+    migration, single-file mount isolation, empty `MSB_HOME` treated as unset.
 
 ## [0.15.0] - 2026-08-24
 

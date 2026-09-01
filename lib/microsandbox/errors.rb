@@ -35,6 +35,13 @@ module Microsandbox
   define_error(:SandboxNotRunningError, "sandbox-not-running")
   define_error(:SandboxAlreadyExistsError, "sandbox-already-exists")
   define_error(:SandboxStillRunningError, "sandbox-still-running")
+  # v0.6.16: a lifecycle operation was aimed at a sandbox identity that no
+  # longer owns the name — the name was removed and recreated behind the
+  # caller's back. Raised by the identity-checked convergent APIs
+  # (`wait_for_status`, `restart`, `destroy`, `connect_or_start`) rather than
+  # letting them act on the replacement. Mirrors the Python SDK's
+  # SandboxReplacedError.
+  define_error(:SandboxReplacedError, "sandbox-replaced")
 
   # Execution errors --------------------------------------------------------
   define_error(:ExecTimeoutError, "exec-timeout")

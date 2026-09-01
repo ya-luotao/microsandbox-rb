@@ -20,6 +20,14 @@ module Microsandbox
     # @return [String]
     def name = @native.name
 
+    # The opaque, backend-assigned identity of the persisted sandbox this handle
+    # is bound to (runtime v0.6.16). Unlike {#name} — a reusable label — it is
+    # stable for the sandbox's lifetime and changes once the same name is
+    # removed and recreated; the convergent operations below compare against it
+    # before acting.
+    # @return [String]
+    def id = @native.id
+
     # @return [Symbol] :created, :starting, :running, :draining, :paused,
     #   :stopped, or :crashed (a snapshot, captured when this handle was fetched)
     def status = @native.status.to_sym
@@ -92,6 +100,68 @@ module Microsandbox
     # @return [nil]
     def request_drain
       @native.request_drain
+      nil
+    end
+
+    # Converge on a live sandbox for this handle (runtime v0.6.16): connect
+    # when it is already running, wait while it is starting, or start it when it
+    # is created/stopped/crashed. A draining or paused sandbox is rejected
+    # rather than raced.
+    # @param detached [Boolean] applies only when a start is actually required
+    # @raise [SandboxReplacedError] if the name now refers to a different sandbox
+    # @return [Sandbox] the live sandbox
+    def connect_or_start(detached: false)
+      # May boot a microVM (the start arm), so it needs a provisioned runtime
+      # just like {Sandbox.create}/{Sandbox.start}. Memoized after the first
+      # call, so the extra check costs nothing on the connect arm.
+      Microsandbox.ensure_runtime!
+      opts = detached ? {"detached" => true} : {}
+      Sandbox.new(@native.connect_or_start(opts))
+    end
+
+    # Block until *this exact* sandbox reaches +status+ (runtime v0.6.16).
+    #
+    # The wait is uninterruptible from Ruby: the native call blocks with the GVL
+    # released and no unblock function, so Ctrl-C (and any other signal) only
+    # lands once it returns. There is no built-in timeout either — the core
+    # polls every 100ms forever, by design, leaving the deadline to the caller.
+    # So wait only for a state this *backend* can actually reach (`:created` and
+    # `:paused` are cloud-side states, unreachable locally), and if you need a
+    # deadline, run this on a Thread of its own and enforce the timeout there
+    # (`Timeout.timeout` around it would not fire).
+    # @param status [Symbol, String] :created, :starting, :running, :draining,
+    #   :paused, :stopped, or :crashed
+    # @raise [ArgumentError] on an unknown status name
+    # @raise [SandboxReplacedError] if the name now refers to a different sandbox
+    # @return [SandboxHandle] a fresh handle observed in that state
+    def wait_for_status(status)
+      SandboxHandle.new(@native.wait_for_status(Sandbox.send(:coerce_status, status)))
+    end
+
+    # Stop and start *this exact* sandbox, returning the new live sandbox
+    # (runtime v0.6.16). A created/stopped/crashed sandbox is started directly.
+    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
+    #   (the core's default is 10)
+    # @param detached [Boolean] start the replacement detached
+    # @raise [SandboxReplacedError] if the name now refers to a different sandbox
+    # @return [Sandbox]
+    def restart(force: false, timeout: nil, detached: false)
+      Microsandbox.ensure_runtime!
+      opts = Sandbox.send(:build_restart_opts, force: force, timeout: timeout, detached: detached)
+      Sandbox.new(@native.restart(opts))
+    end
+
+    # Stop and remove *this exact* sandbox (runtime v0.6.16) — {#stop} plus
+    # {Sandbox.remove} in one convergent step, with an identity check that
+    # refuses to remove a same-name replacement.
+    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
+    #   (the core's default is 10)
+    # @raise [SandboxReplacedError] if the name now refers to a different sandbox
+    # @return [nil]
+    def destroy(force: false, timeout: nil)
+      @native.destroy(Sandbox.send(:build_destroy_opts, force: force, timeout: timeout))
       nil
     end
 
@@ -265,6 +335,11 @@ module Microsandbox
     # to gate the `fstype:`-vs-OCI check; keep in sync on a runtime-tag bump.
     DISK_IMAGE_EXTENSIONS = %w[raw qcow2 vmdk].freeze
 
+    # The seven lifecycle states a sandbox can be observed in — the spelling
+    # {Sandbox#status} / {SandboxHandle#status} return, and the accepted
+    # arguments of {Sandbox#wait_for_status} / {SandboxHandle#wait_for_status}.
+    STATUSES = %i[created starting running draining paused stopped crashed].freeze
+
     class << self
       # Create and boot a sandbox.
       #
@@ -412,6 +487,62 @@ module Microsandbox
         ensure
           begin
             sandbox.stop
+          rescue Microsandbox::Error
+            # best-effort cleanup; ignore stop failures during teardown
+          end
+        end
+      end
+
+      # Converge on a live sandbox called +name+ (runtime v0.6.16, upstream
+      # #1462): connect to the persisted sandbox with that name — starting it
+      # when it is created/stopped/crashed, waiting when it is already starting
+      # — or create it when none exists. Concurrent callers converge on the
+      # winning identity instead of one of them losing to a name clash.
+      #
+      # The keyword options are exactly {create}'s and are used **only when a
+      # create actually happens**: an existing sandbox keeps its persisted
+      # configuration, so passing `memory:` here will not resize one that is
+      # already there. `replace:`/`replace_with_timeout:` are accepted for
+      # kwargs parity with {create} but are rejected by the core — replacing a
+      # sandbox is the opposite of converging on it — and raise
+      # {InvalidConfigError}.
+      #
+      # The block form yields the sandbox and then stops it **only when this
+      # call owns its lifecycle** ({Sandbox#owns_lifecycle?}). That is a
+      # deliberate divergence from {create}, whose block form always stops:
+      # `connect_or_create` may hand back a sandbox this process did not start,
+      # and tearing down someone else's long-lived service on the way out of a
+      # block is never what the caller meant. Concretely:
+      #
+      # - created here (the common case) — yielded, then stopped, exactly like
+      #   {create};
+      # - *connected* to a sandbox that was already running — left running;
+      # - created here with `detached: true` — left running, which is what
+      #   `detached:` asks for (this is where the divergence from {create} bites:
+      #   `create(..., detached: true) { }` still stops on block exit).
+      #
+      # Either way, stop it yourself with {Sandbox#stop}/{Sandbox#destroy} when
+      # you do want it gone.
+      #
+      # The teardown is safe against name reuse from either side: it skips the
+      # stop entirely for a sandbox this call did not start, and the stop it does
+      # issue is scoped to this sandbox's {Sandbox#id} (runtime v0.6.16), so a
+      # name removed and recreated while the block ran raises inside the ensure
+      # — swallowed as a best-effort teardown failure — rather than taking the
+      # replacement down.
+      # @param name [String]
+      # @yieldparam sandbox [Sandbox]
+      # @return [Sandbox, Object] the live sandbox, or the block's return value
+      def connect_or_create(name, **kwargs, &block)
+        opts = build_create_opts(**kwargs)
+        sandbox = new(Native::Sandbox.connect_or_create(name.to_s, opts))
+        return sandbox unless block_given?
+
+        begin
+          yield sandbox
+        ensure
+          begin
+            sandbox.stop if sandbox.owns_lifecycle?
           rescue Microsandbox::Error
             # best-effort cleanup; ignore stop failures during teardown
           end
@@ -592,6 +723,40 @@ module Microsandbox
             "#{label} must be a finite, non-negative number of seconds (got #{value.inspect})"
         end
         seconds
+      end
+
+      # Validate a `wait_for_status` target and lower it to the wire name.
+      # Accepts a Symbol or String in the {STATUSES} spelling; anything else is
+      # an ArgumentError (an unreachable typo would otherwise block forever —
+      # `wait_for_status` has no built-in timeout).
+      def coerce_status(status)
+        name = status.to_s
+        unless STATUSES.include?(name.to_sym)
+          raise ArgumentError,
+            "unknown sandbox status #{status.inspect} " \
+            "(expected one of: #{STATUSES.join(", ")})"
+        end
+        name
+      end
+
+      # Shared option builder for `restart`, on both {Sandbox} and
+      # {SandboxHandle}. An omitted `timeout:` keeps the core's ten-second
+      # graceful-shutdown default.
+      def build_restart_opts(force:, timeout:, detached:)
+        opts = {}
+        opts["force"] = true if force
+        opts["detached"] = true if detached
+        opts["timeout"] = coerce_duration(timeout, "timeout") if timeout
+        opts
+      end
+
+      # Shared option builder for `destroy`, on both {Sandbox} and
+      # {SandboxHandle}.
+      def build_destroy_opts(force:, timeout:)
+        opts = {}
+        opts["force"] = true if force
+        opts["timeout"] = coerce_duration(timeout, "timeout") if timeout
+        opts
       end
 
       def stringify(hash)
@@ -1260,6 +1425,16 @@ module Microsandbox
       @native.name
     end
 
+    # The opaque, backend-assigned identity of the persisted sandbox (runtime
+    # v0.6.16). Unlike {#name} — a reusable label — this is stable for the
+    # sandbox's lifetime and changes once the same name is removed and
+    # recreated, which is exactly what {#wait_for_status}/{#restart}/{#destroy}
+    # check before acting.
+    # @return [String]
+    def id
+      @native.id
+    end
+
     # Run a command (no shell interpretation) and collect its output.
     #
     # @param command [String] the executable
@@ -1547,6 +1722,13 @@ module Microsandbox
     # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default) and
     # wait for it to terminate. For a custom timeout or fire-and-return
     # `request_*` control, fetch a {SandboxHandle} via {Sandbox.get}.
+    #
+    # Scoped to *this exact* sandbox: as of runtime v0.6.16 the stop carries this
+    # object's {#id}, so if the name has since been removed and recreated the
+    # call raises {SandboxReplacedError} (or {SandboxNotFoundError} when nothing
+    # holds the name any more) instead of terminating whatever sandbox now
+    # answers to it. Same for {#kill}, {#drain} and {#stop_and_wait}.
+    # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [nil]
     def stop
       @native.stop
@@ -1577,6 +1759,59 @@ module Microsandbox
     # @return [ExitStatus]
     def wait
       ExitStatus.new(@native.wait)
+    end
+
+    # Block until *this exact* sandbox reaches +status+ (runtime v0.6.16). If
+    # the name has since been recreated as a different sandbox, this raises
+    # {SandboxReplacedError} rather than silently redirecting the wait to the
+    # replacement.
+    #
+    # The wait is uninterruptible from Ruby: the native call blocks with the GVL
+    # released and no unblock function, so Ctrl-C (and any other signal) only
+    # lands once it returns. There is no built-in timeout either — the core
+    # polls every 100ms forever, by design, leaving the deadline to the caller.
+    # So wait only for a state this *backend* can actually reach (`:created` and
+    # `:paused` are cloud-side states, unreachable locally), and if you need a
+    # deadline, run this on a Thread of its own and enforce the timeout there
+    # (`Timeout.timeout` around it would not fire).
+    # @param status [Symbol, String] :created, :starting, :running, :draining,
+    #   :paused, :stopped, or :crashed
+    # @raise [ArgumentError] on an unknown status name
+    # @return [SandboxHandle] a fresh handle observed in that state (mirrors the
+    #   official SDKs, which return a handle from both `Sandbox` and
+    #   `SandboxHandle`)
+    def wait_for_status(status)
+      SandboxHandle.new(@native.wait_for_status(self.class.send(:coerce_status, status)))
+    end
+
+    # Stop and start *this exact* sandbox, returning the new live sandbox
+    # (runtime v0.6.16). A created/stopped/crashed sandbox is started directly.
+    # This handle is spent afterwards — use the returned one.
+    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
+    #   (the core's default is 10)
+    # @param detached [Boolean] start the replacement detached
+    # @raise [SandboxReplacedError] if the name now refers to a different sandbox
+    # @return [Sandbox]
+    def restart(force: false, timeout: nil, detached: false)
+      # Boots a microVM again, so it needs a provisioned runtime — the sandbox
+      # this object came from may have been created in a different process.
+      Microsandbox.ensure_runtime!
+      opts = self.class.send(:build_restart_opts, force: force, timeout: timeout, detached: detached)
+      self.class.new(@native.restart(opts))
+    end
+
+    # Stop and remove *this exact* sandbox (runtime v0.6.16) — the convergent
+    # equivalent of {#stop} followed by {Sandbox.remove}, with an identity check
+    # that refuses to remove a same-name replacement.
+    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
+    #   (the core's default is 10)
+    # @raise [SandboxReplacedError] if the name now refers to a different sandbox
+    # @return [nil]
+    def destroy(force: false, timeout: nil)
+      @native.destroy(self.class.send(:build_destroy_opts, force: force, timeout: timeout))
+      nil
     end
 
     # The live status, fetched from the backend (a round-trip per call).

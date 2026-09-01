@@ -14,6 +14,7 @@ RSpec.describe "Microsandbox error hierarchy" do
     "SandboxNotRunningError" => "sandbox-not-running",
     "SandboxAlreadyExistsError" => "sandbox-already-exists",
     "SandboxStillRunningError" => "sandbox-still-running",
+    "SandboxReplacedError" => "sandbox-replaced",
     "ExecTimeoutError" => "exec-timeout",
     "ExecFailedError" => "exec-failed",
     "NoDefaultCommandError" => "no-default-command",
