@@ -559,8 +559,8 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.15.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.14" (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.16.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.6.16" (the embedded upstream runtime tag)
 ```
 
 The companion [`microsandbox-rb-binaries`](#the-runtime-binaries) gem is
@@ -593,6 +593,7 @@ stale.
 | `0.13.0` | `v0.6.9` | adopts upstream `v0.6.9` (**breaking**): a bare `MSB_API_KEY` no longer selects the cloud backend (explicit `MSB_BACKEND=cloud` or a cloud profile required; invalid cloud config fails closed with `InvalidConfigError`); snapshot payload integrity becomes opt-in (`record_integrity:`, `verify` can report `:not_recorded`). Parity: default-workload execution (`exec_default`/`exec_default_stream`/`attach_default`, `cmd:`), flat root disks (`RootDisk.flat`), `modify(root_disk_size:)`, `rate_limiter:`, `vsock:`, `default_backend_info`, `Volume.get_default` |
 | `0.14.0` | `v0.6.9` | two-gem split: SDK-only gem (no build-time runtime download) + companion `microsandbox-rb-binaries` platform gems |
 | `0.15.0` | `v0.6.14` | adopts upstream `v0.6.10`–`v0.6.14` step by step: bind-mount correctness, guest bootstrap off the kernel command line, DNS pins for deferred domain allows, Linux glibc 2.28 baseline for the prebuilt runtime, legacy ext4 upper-disk resize, `msb_krun` 0.1.32. Parity: `ssh.open_client`/`prepare_server` accept `inactivity_timeout:` (seconds; `0` disables, `nil` inherits the 600s global default) |
+| `0.16.0` | `v0.6.16` | adopts upstream `v0.6.15`+`v0.6.16` step by step: mount fallback ownership, readonly-mount write-probe fix, log retrieval rerouted through the SDK backends, config overlaid by field presence, network-slot recycling. Parity: per-mount `uid:`/`gid:`, and the convergent lifecycle — `Sandbox.connect_or_create`, `#id`, `#wait_for_status`, `#restart`, `#destroy`, `SandboxHandle#connect_or_start`, `SandboxReplacedError` |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:
