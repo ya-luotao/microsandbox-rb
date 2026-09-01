@@ -430,7 +430,9 @@ Microsandbox::Volume.remove("cache")
 ```
 
 `volumes:` accepts a host path String (bind mount) or `{ bind: "/host" }` /
-`{ named: "volume-name" }` per guest path. Boot from a snapshot with
+`{ named: "volume-name" }` per guest path. A bind or named mount may pin the
+fallback guest owner for host files with `uid:`/`gid:` (both required together,
+runtime `v0.6.15`). Boot from a snapshot with
 `Sandbox.create(name, from_snapshot: "snap-name-or-path")`.
 
 ### Error handling

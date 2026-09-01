@@ -309,7 +309,11 @@ module Microsandbox
       #   (4 GiB as of `v0.5.10`); the core rejects it on tmpfs/disk/named (for a
       #   named volume, set its quota via {Volume.create}). Bind/named mounts
       #   also accept `follow_root_symlinks: true` to opt out of the default-on
-      #   mount-root symlink protection (runtime v0.6.7).
+      #   mount-root symlink protection (runtime v0.6.7), and `uid:`/`gid:`
+      #   (runtime v0.6.15) to pin the guest owner presented for host files that
+      #   carry no per-file stat override — both must be given together, each an
+      #   Integer in 0..4294967295, and they conflict with
+      #   `stat_virtualization: :off`.
       # @param network [Array, String, Symbol, NetworkPolicy, Hash, nil] network
       #   policy. Composable profiles (`[:public]` (the default), `[:public,
       #   :private]`, `:host`, …), a terminal preset (:none, :allow_all), a
@@ -987,7 +991,8 @@ module Microsandbox
       #   { tmpfs: true, size_mib: 64 }                          # memory-backed
       #   { disk: "/img.raw", format: "raw", fstype: "ext4" }   # disk-image mount
       # Any mount may also carry stat_virtualization: (:strict/:relaxed/:off) and
-      # host_permissions: (:private/:mirror); a bind mount may carry quota_mib:.
+      # host_permissions: (:private/:mirror); a bind/named mount may carry
+      # uid:/gid: (the fallback guest owner); a bind mount may carry quota_mib:.
       # Coerce the `root_disk:` argument — an Integer (managed size in MiB), a
       # {RootDisk} factory Hash, or an equivalent hand-written Hash — into the
       # wire shape, validating kind/field combinations up front (mirrors the
@@ -1115,6 +1120,8 @@ module Microsandbox
       # `follow_root_symlinks:` opts out of the default-on mount-root symlink
       # protection (runtime v0.6.7; bind/named only — the core silently ignores
       # it on tmpfs/disk mounts, so reject those here instead).
+      # `uid:`/`gid:` pin the fallback guest owner (runtime v0.6.15) — see
+      # {apply_mount_owner}.
       def apply_mount_flags(mount, spec)
         mount["readonly"] = true if spec[:ro] || spec["ro"] || spec[:readonly] || spec["readonly"]
         mount["noexec"] = true if spec[:noexec] || spec["noexec"]
@@ -1134,6 +1141,58 @@ module Microsandbox
           end
           mount["follow_root_symlinks"] = !!follow
         end
+        apply_mount_owner(mount, spec)
+      end
+
+      # Apply a volume spec Hash's fallback mount ownership (runtime v0.6.15,
+      # upstream #1451). Host files carrying no per-file stat override surface in
+      # the guest as `uid:`/`gid:` instead of the runtime's fallback owner; the
+      # pair travels on the wire as `override_uid`/`override_gid` (the core's
+      # `MountBuilder#owner`), mirroring the Python SDK's concise `uid:`/`gid:`
+      # public names over the same wire fields.
+      #
+      # Validation mirrors the Python SDK exactly: the two must be given
+      # together, each must be a plain Integer in the u32 range, they need stat
+      # virtualization (so `stat_virtualization: :off` conflicts), and they only
+      # apply to bind/named mounts. The one Python rule with no Ruby counterpart
+      # is "not supported for disk-backed named volumes": Python knows the
+      # volume kind because its `Volume.named` carries it, while a Ruby
+      # `{ named: "vol" }` spec only references an existing volume by name — the
+      # core rejects that combination at create() instead.
+      def apply_mount_owner(mount, spec)
+        uid = spec.fetch(:uid, spec["uid"])
+        gid = spec.fetch(:gid, spec["gid"])
+        return if uid.nil? && gid.nil?
+
+        if uid.nil? || gid.nil?
+          raise ArgumentError, "mount uid: and gid: must be set together"
+        end
+        unless %w[bind named].include?(mount["kind"])
+          raise ArgumentError,
+            "uid:/gid: (mount owner) only applies to bind/named mounts " \
+            "(got a #{mount["kind"]} mount), like stat_virtualization:/host_permissions:"
+        end
+        if mount["stat_virtualization"] == "off"
+          raise ArgumentError,
+            "uid:/gid: (mount owner) cannot be combined with stat_virtualization: :off — " \
+            "`off` exposes literal host metadata, leaving no overlay to rewrite the owner in"
+        end
+        mount["override_uid"] = coerce_mount_owner_id(uid, "uid:")
+        mount["override_gid"] = coerce_mount_owner_id(gid, "gid:")
+      end
+
+      # Range-check one mount owner ID. Deliberately stricter than the repo's
+      # usual `Integer(value)` coercion: `Integer("1000")` and a truncating
+      # `Integer(1000.7)` would both silently accept input that never named a
+      # real owner. `is_a?(Integer)` also rejects `true`/`false`, matching the
+      # Python SDK's `_mount_owner_id` (`type(value) is not int`, which excludes
+      # `bool`).
+      def coerce_mount_owner_id(value, label)
+        unless value.is_a?(Integer) && value >= 0 && value <= 0xFFFF_FFFF
+          raise ArgumentError,
+            "#{label} must be an Integer between 0 and 4294967295 (got #{value.inspect})"
+        end
+        value
       end
 
       # Translate the pre-0.7.0 `options:` array form (e.g. options: %w[ro noexec])

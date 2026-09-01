@@ -6,6 +6,32 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [Unreleased]
+
+Adopts upstream runtime **`v0.6.14` → `v0.6.15`**.
+
+### Added
+
+- Per-mount fallback ownership: a bind or named mount in `volumes:` accepts
+  `uid:`/`gid:`, pinning the guest owner presented for host files that carry no
+  per-file stat override (upstream #1451, `v0.6.15`). They travel on the wire as
+  the core's `override_uid`/`override_gid` and mirror the Python SDK's public
+  `uid:`/`gid:` spelling. Validation matches the Python SDK: the pair must be
+  given together, each must be a plain `Integer` in `0..4294967295` (strings,
+  Floats and Booleans are rejected rather than coerced — a truncated or parsed
+  owner ID is never what the caller meant), and they conflict with both
+  `stat_virtualization: :off` (no overlay to rewrite the owner in) and
+  tmpfs/disk mounts. The one Python rule with no Ruby counterpart is
+  "unsupported for disk-backed named volumes": a Ruby `{ named: "vol" }` spec
+  only references an existing volume by name, so the volume's kind is known
+  only to the core, which rejects that combination at create time.
+
+### Changed
+
+- Upstream runtime highlights carried without further Ruby surface:
+  - `v0.6.15` — read-only mounts no longer fail a write probe at mount time,
+    Windows DNS/NTFS handling, and the mount-ownership core work above.
+
 ## [0.15.0] - 2026-08-24
 
 Adopts upstream runtime **`v0.6.9` → `v0.6.14`**, stepping through every

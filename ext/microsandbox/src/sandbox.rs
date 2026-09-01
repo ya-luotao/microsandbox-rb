@@ -167,7 +167,8 @@ impl Sandbox {
         // Hash — guest (req), kind ("bind"/"named"/"tmpfs"/"disk"), source
         // (bind/named/disk), size_mib (tmpfs/disk), format + fstype (disk),
         // readonly/noexec/nosuid/nodev (bool), stat_virtualization,
-        // host_permissions. Enum-valued options are validated up front (the
+        // host_permissions, override_uid/override_gid (u32 pair).
+        // Enum-valued options are validated up front (the
         // volume closure can't return an error); the core validates the rest
         // (e.g. rejecting stat_virtualization on tmpfs/disk) at create().
         for m in conv::opt_hash_vec(opts, "volumes")? {
@@ -195,6 +196,14 @@ impl Sandbox {
             let host_perms = conv::opt_string(m, "host_permissions")?
                 .map(|s| host_permissions_from_str(&s))
                 .transpose()?;
+            // v0.6.15: the fallback guest owner presented for host files that
+            // carry no per-file stat override. The Ruby layer validates the pair
+            // (both-or-neither, u32 range, bind/named only, not with
+            // stat_virtualization=off); whether a *named* volume is directory-
+            // or disk-backed is known only to the core, which rejects the
+            // disk-backed case at build().
+            let override_uid = conv::opt_u32(m, "override_uid")?;
+            let override_gid = conv::opt_u32(m, "override_gid")?;
             // v0.6.7: mount-root symlink protection is on by default; this is
             // the per-mount opt-out. Valid for bind/named-directory mounts —
             // the core rejects it elsewhere at build().
@@ -250,6 +259,9 @@ impl Sandbox {
                 }
                 if let Some(hp) = host_perms {
                     mb = mb.host_permissions(hp);
+                }
+                if let (Some(uid), Some(gid)) = (override_uid, override_gid) {
+                    mb = mb.owner(uid, gid);
                 }
                 if let Some(follow) = follow_root_symlinks {
                     mb = mb.follow_root_symlinks(follow);

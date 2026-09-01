@@ -6,7 +6,7 @@ name = "microsandbox_rb"
 description = "Ruby SDK native extension for microsandbox — secure, fast microVM-based sandboxing."
 # Must equal Microsandbox::VERSION (lib/microsandbox/version.rb) — Native.version
 # returns this via env!("CARGO_PKG_VERSION") and version_spec.rb asserts equality.
-# The core-crate dependency below stays pinned at its own tag (v0.6.14).
+# The core-crate dependency below stays pinned at its own tag (v0.6.15).
 version = "0.15.0"
 authors = ["Super Rad Company <development@superrad.company>"]
 repository = "https://github.com/superradcompany/microsandbox"
@@ -42,8 +42,8 @@ rb-sys = "0.9"
 # first-use download into ~/.microsandbox (`setup::install`, which is not
 # gated on "prebuilt"). "net"/"ssh"/"keyring" are the features the official
 # SDKs ship with.
-microsandbox = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.6.14", default-features = false, features = ["keyring", "net", "ssh"] }
-microsandbox-network = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.6.14" }
+microsandbox = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.6.15", default-features = false, features = ["keyring", "net", "ssh"] }
+microsandbox-network = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.6.15" }
 # The *guest* agent (`agentd`, PID 1 inside every microVM) is embedded into the
 # extension by microsandbox-filesystem's build.rs, which without its "prebuilt"
 # feature demands a locally built `build/agentd` (workspace-only, `just
@@ -52,7 +52,7 @@ microsandbox-network = { git = "https://github.com/superradcompany/microsandbox"
 # prebuilt agentd for the target arch is fetched (same behaviour as before)
 # while the SDK-level msb download above stays off. Feature unification means
 # this adds no new crates; keep it on the same tag as the deps above.
-microsandbox-runtime = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.6.14", default-features = false, features = ["prebuilt"] }
+microsandbox-runtime = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.6.15", default-features = false, features = ["prebuilt"] }
 
 # Async core bridged to Ruby's synchronous API via a blocking tokio runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

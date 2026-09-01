@@ -543,6 +543,70 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /follow_root_symlinks: only applies to bind\/named/)
     end
 
+    it "forwards a bind/named mount owner as override_uid/override_gid (runtime v0.6.15)" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        volumes: {
+          "/data" => {bind: "/host", uid: 1000, gid: 1000},
+          "/vol" => {named: "shared", uid: 0, gid: 0, stat_virtualization: :relaxed}
+        }
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("volumes" => [
+          {"guest" => "/data", "kind" => "bind", "source" => "/host",
+           "override_uid" => 1000, "override_gid" => 1000},
+          {"guest" => "/vol", "kind" => "named", "source" => "shared",
+           "stat_virtualization" => "relaxed", "override_uid" => 0, "override_gid" => 0}
+        ])
+      )
+    end
+
+    it "requires uid: and gid: to be set together" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", volumes: {"/data" => {bind: "/host", uid: 1000}})
+      end.to raise_error(ArgumentError, /uid: and gid: must be set together/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", volumes: {"/data" => {bind: "/host", gid: 1000}})
+      end.to raise_error(ArgumentError, /uid: and gid: must be set together/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "rejects non-Integer and out-of-u32-range mount owner IDs" do
+      [["1000", 1000], [1000.0, 1000], [true, false], [-1, 0], [0, 2**32]].each do |uid, gid|
+        expect do
+          Microsandbox::Sandbox.create(
+            "box", image: "x", volumes: {"/data" => {bind: "/host", uid: uid, gid: gid}}
+          )
+        end.to raise_error(ArgumentError, /must be an Integer between 0 and 4294967295/)
+      end
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "rejects a mount owner combined with stat_virtualization: :off" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x",
+          volumes: {"/data" => {bind: "/host", uid: 1000, gid: 1000, stat_virtualization: :off}}
+        )
+      end.to raise_error(ArgumentError, /cannot be combined with stat_virtualization: :off/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
+    it "rejects a mount owner on tmpfs/disk mounts" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", volumes: {"/scratch" => {tmpfs: true, uid: 1000, gid: 1000}}
+        )
+      end.to raise_error(ArgumentError, %r{uid:/gid: \(mount owner\) only applies to bind/named})
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x", volumes: {"/disk" => {disk: "/img.raw", uid: 1000, gid: 1000}}
+        )
+      end.to raise_error(ArgumentError, %r{uid:/gid: \(mount owner\) only applies to bind/named})
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+    end
+
     it "raises when both image: and from_snapshot: are given" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", from_snapshot: "snap")
