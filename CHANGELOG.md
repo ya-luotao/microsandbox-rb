@@ -8,9 +8,24 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
-Adopts upstream runtime **`v0.6.16` → `v0.6.17`**.
+Adopts upstream runtime **`v0.6.16` → `v0.6.18`**, stepping through the
+intermediate tag (`v0.6.17` verified and committed on its own).
 
 ### Added
+
+- **Strict hostname policy** — `strict:` (Boolean, default `false`) on
+  `Sandbox.create` / `connect_or_create` / `create_with_progress` (upstream
+  `v0.6.18`, from the security fork-merge below). In strict mode a flow that the
+  egress policy allows *only* through a hostname rule must be backed by an
+  inspectable request authority — the plain-HTTP `Host` header, or SNI /
+  `:authority` under TLS interception. Without that visibility (bypassed or
+  non-intercepted HTTPS) the runtime fails closed *before* dialing upstream
+  instead of trusting opaque hostname evidence. Mirrors the Python SDK's
+  `Network(strict=...)`. An explicit `false` is sent as-is (not dropped), like
+  `trust_host_cas:`. Create-only: the core's `NetworkSpecPatch` has no `strict`
+  field at `v0.6.18` (nor does the Python modify surface), so `modify` cannot
+  change it. Accepted by the cloud create contract (it is a plain `NetworkSpec`
+  field), so there is no `UnsupportedError` path.
 
 - **Outbound SOCKS proxies** — `proxy:` on `Sandbox.create` /
   `connect_or_create` / `create_with_progress` (upstream #1234 SOCKS4/SOCKS5
@@ -36,9 +51,34 @@ Adopts upstream runtime **`v0.6.16` → `v0.6.17`**.
     (`ArgumentError`): `user_id` only for SOCKS4, credentials only for SOCKS5,
     username and password together or neither, a non-empty String address.
     `IP:port` parsing is left to the core, which reports an unparseable address
-    as `NetworkPolicyError` (its `NetworkBuilder` error class) at create time,
-    before any boot. The cloud backend rejects the option with
+    (or an invalid SOCKS4 user ID) at create time, before any boot; the binding
+    surfaces that as `InvalidConfigError` — a malformed proxy is a configuration
+    mistake, not a policy one — while every other network-builder error keeps
+    its `NetworkPolicyError` class. The cloud backend rejects the option with
     `UnsupportedError` (`sandbox.create`, hint naming `network.outbound_proxy`).
+
+### Changed
+
+- **Plain-HTTP requests are now checked against the egress policy by their
+  `Host` / `:authority`, whenever the policy has any domain rule — in
+  non-strict mode too** (upstream `v0.6.18` hardening, `crates/network/lib/
+  tcp/proxy.rs`: `enforce_http_authority = network_policy.has_domain_rules()`).
+  Previously a plain-HTTP connection admitted by an IP/CIDR/group rule could
+  name any host in its `Host` header; now, if the policy carries `Domain` /
+  `DomainSuffix` rules (including `deny_domains:` / `deny_domain_suffixes:`,
+  which are domain rules), a request whose authority names a host the policy
+  does not allow is denied. Policies with no domain rules are unaffected, and so
+  is HTTPS without interception. If a workload relied on reaching a host by IP
+  while sending an unrelated `Host` header under a domain-rule policy, it will
+  now be blocked — allow the hostname it actually sends.
+
+### Security
+
+- Runtime `v0.6.18` carries the upstream security fork-merge (`439a88a5`, no
+  public advisory identifier at the time of writing): aligns HTTP `Host` policy
+  checks with the rest of the egress enforcement (the Changed note above) and
+  adds the fail-closed pre-connect strict hostname mode (`strict:` above). No
+  gem-side change was needed beyond exposing `strict:`.
 
 ### Fixed
 

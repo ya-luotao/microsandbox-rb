@@ -209,7 +209,7 @@ module Microsandbox
       end
       # Same rules as the Python SDK's OutboundProxy.__post_init__; the address
       # itself is parsed by the core (which reports e.g. "invalid SOCKS5 proxy
-      # address" as a NetworkPolicyError).
+      # address" as an InvalidConfigError at create time).
       if protocol != "socks4" && !user_id.nil?
         raise ArgumentError, "user_id is only supported for SOCKS4 proxies"
       end

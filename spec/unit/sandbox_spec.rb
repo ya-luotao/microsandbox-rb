@@ -512,6 +512,41 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /rate_limiter: must be a Hash/)
     end
 
+    it "sends strict: true and an explicit strict: false, and omits it when nil (v0.6.18)" do
+      Microsandbox::Sandbox.create("box", image: "x", strict: true)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("strict" => true)
+      )
+
+      # An explicit false must still travel (set_bool probes presence, not
+      # truthiness) so a caller can pin the default off against a config overlay.
+      Microsandbox::Sandbox.create("box2", image: "x", strict: false)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box2", hash_including("strict" => false)
+      )
+
+      Microsandbox::Sandbox.create("box3", image: "x")
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box3", hash_not_including("strict")
+      )
+    end
+
+    # strict: is applied inside the ext's advanced-network block, which is only
+    # entered when at least one of its options is set. Pin the case where strict
+    # is the ONLY such option so a guard that forgot `strict.is_some()` would at
+    # least be visible at the normalization layer: no sibling network key rides
+    # along to open that block.
+    it "sends strict: on its own, with no other advanced network option" do
+      Microsandbox::Sandbox.create("box", image: "x", strict: true)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        satisfy { |opts|
+          opts["strict"] == true &&
+            (opts.keys & %w[dns tls ipv4_pool ipv6_pool max_connections trust_host_cas]).empty?
+        }
+      )
+    end
+
     it "normalizes proxy: (v0.6.17) from a value object or a Hash, and omits it when nil" do
       Microsandbox::Sandbox.create(
         "box", image: "x",

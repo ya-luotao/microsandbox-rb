@@ -261,7 +261,7 @@ module Microsandbox
                       ?volumes: Hash[untyped, untyped]?, ?network: untyped?,
                       ?dns: Hash[untyped, untyped]?, ?tls: Hash[untyped, untyped]?,
                       ?ipv4_pool: String?, ?ipv6_pool: String?,
-                      ?max_connections: Integer?, ?trust_host_cas: bool?,
+                      ?max_connections: Integer?, ?trust_host_cas: bool?, ?strict: bool?,
                       ?rate_limiter: Hash[untyped, untyped]?,
                       ?proxy: (OutboundProxy | Hash[untyped, untyped])?,
                       ?vsock: (Hash[untyped, untyped] | Array[Hash[untyped, untyped]])?,

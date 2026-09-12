@@ -408,6 +408,12 @@ module Microsandbox
       # @param ipv6_pool [String, nil] guest IPv6 address pool CIDR
       # @param max_connections [Integer, nil] cap on concurrent proxied connections
       # @param trust_host_cas [Boolean, nil] trust the host's CA bundle for upstream TLS
+      # @param strict [Boolean, nil] strict hostname-policy mode (runtime
+      #   v0.6.18, default false): a hostname-rule allow must be backed by an
+      #   inspectable request authority — plain-HTTP `Host`, or SNI/authority
+      #   under TLS interception. Without that visibility (e.g. bypassed or
+      #   non-intercepted HTTPS) a flow allowed only by a hostname rule is
+      #   denied before the upstream dial. Create-only; `modify` cannot change it.
       # @param rate_limiter [Hash, nil] per-sandbox egress/ingress token-bucket
       #   limits (runtime v0.6.9, local backend):
       #   `{ egress: { bandwidth: { size: 1_048_576, refill_time_ms: 1000,
@@ -421,7 +427,9 @@ module Microsandbox
       #   — or the equivalent Hash `{ protocol: :socks5, address: "IP:port",
       #   credentials: { username:, password: { env: "VAR" } } }`. The address is
       #   dialed from the host; only the password's env var *name* is sent. The
-      #   cloud backend rejects it with {UnsupportedError}.
+      #   cloud backend rejects it with {UnsupportedError}. An unparseable
+      #   address is rejected by the core at create time with
+      #   {InvalidConfigError}, before any boot.
       # @param vsock [Hash, Array, nil] host sockets exposed on guest-to-host
       #   vsock ports (runtime v0.6.9): `{ "/host/api.sock" => 5000 }` (stream
       #   sockets), or an Array of
@@ -584,7 +592,8 @@ module Microsandbox
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
         entrypoint: nil, cmd: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
-        max_connections: nil, trust_host_cas: nil, rate_limiter: nil, proxy: nil, vsock: nil,
+        max_connections: nil, trust_host_cas: nil, strict: nil, rate_limiter: nil, proxy: nil,
+        vsock: nil,
         patches: nil,
         from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
         log_level: nil, quiet_logs: false, security: nil,
@@ -645,6 +654,7 @@ module Microsandbox
         opts["ipv6_pool"] = ipv6_pool.to_s if ipv6_pool
         opts["max_connections"] = Integer(max_connections) if max_connections
         set_bool(opts, "trust_host_cas", trust_host_cas)
+        set_bool(opts, "strict", strict)
         opts["rate_limiter"] = normalize_rate_limiter(rate_limiter) if rate_limiter
         opts["proxy"] = OutboundProxy.coerce(proxy) unless proxy.nil?
         opts["vsock"] = normalize_vsock(vsock) if vsock

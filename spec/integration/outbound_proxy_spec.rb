@@ -176,12 +176,16 @@ RSpec.describe "outbound proxy", :integration do
     end
   end
 
+  # The core reports this as a NetworkBuilder(InvalidOutboundProxy) error; the
+  # ext routes that variant to InvalidConfigError (a malformed address is a
+  # config mistake, not a policy one) while other builder errors stay
+  # NetworkPolicyError.
   it "rejects an unparseable proxy address at create time without booting" do
     expect do
       Microsandbox::Sandbox.create(
         unique_sandbox_name, image: image,
         proxy: Microsandbox::OutboundProxy.socks5("not-an-ip-port")
       )
-    end.to raise_error(Microsandbox::NetworkPolicyError, /proxy address/)
+    end.to raise_error(Microsandbox::InvalidConfigError, /invalid SOCKS5 proxy address/)
   end
 end

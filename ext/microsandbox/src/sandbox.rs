@@ -390,12 +390,20 @@ impl Sandbox {
             .transpose()?;
         let max_connections = conv::opt::<usize>(opts, "max_connections")?;
         let trust_host_cas = conv::opt::<bool>(opts, "trust_host_cas")?;
+        // strict: fail-closed hostname-policy enforcement (v0.6.18). A
+        // hostname-rule allow must be backed by an inspectable request
+        // authority (plain-HTTP Host, or SNI/authority under TLS interception);
+        // otherwise the flow is denied before the upstream dial. Mirrors the
+        // Python SDK's `Network(strict=...)`. Create-only: NetworkSpecPatch has
+        // no `strict` field at v0.6.18, so `modify` cannot flip it.
+        let strict = conv::opt::<bool>(opts, "strict")?;
         if dns.is_some()
             || tls.is_some()
             || ipv4_pool.is_some()
             || ipv6_pool.is_some()
             || max_connections.is_some()
             || trust_host_cas.is_some()
+            || strict.is_some()
         {
             b = b.network(move |mut n| {
                 if let Some(dns) = dns {
@@ -450,6 +458,9 @@ impl Sandbox {
                 if let Some(t) = trust_host_cas {
                     n = n.trust_host_cas(t);
                 }
+                if let Some(s) = strict {
+                    n = n.strict(s);
+                }
                 n
             });
         }
@@ -482,8 +493,8 @@ impl Sandbox {
         // credentials?: {username:, password: {kind: "env", var:}}}. Only the
         // password's env var NAME travels; the core resolves it host-side.
         // Applied exactly as sdk/python/src/helpers.rs does; the address is
-        // parsed by the core's proxy builder (an invalid one surfaces as a
-        // NetworkBuilder error → NetworkPolicyError).
+        // parsed by the core's proxy builder (an invalid one surfaces as
+        // NetworkBuilder(InvalidOutboundProxy) → InvalidConfigError, see error.rs).
         if let Some(proxy) = conv::opt::<RHash>(opts, "proxy")? {
             b = apply_outbound_proxy(b, proxy)?;
         }

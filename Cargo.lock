@@ -1743,7 +1743,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1922,7 +1922,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2870,7 +2870,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
 dependencies = [
  "io-lifetimes 3.0.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3376,8 +3376,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "anyhow",
  "astral-tokio-tar",
@@ -3438,8 +3438,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-agent-client"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "ciborium",
  "microsandbox-protocol",
@@ -3451,8 +3451,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-db"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "async-trait",
  "sea-orm",
@@ -3463,8 +3463,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-filesystem"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "libc",
  "microsandbox-utils",
@@ -3477,8 +3477,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-image"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -3504,8 +3504,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-metrics"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "chrono",
  "libc",
@@ -3516,8 +3516,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-migration"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "sea-orm-migration",
  "serde_json",
@@ -3525,8 +3525,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-network"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3570,8 +3570,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-protocol"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "chrono",
  "ciborium",
@@ -3585,8 +3585,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-runtime"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "bytes",
  "chrono",
@@ -3620,8 +3620,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-types"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "chrono",
  "ipnetwork",
@@ -3636,8 +3636,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-types-macros"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3646,8 +3646,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-utils"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "dirs",
  "libc",
@@ -3659,8 +3659,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-vsock"
-version = "0.6.17"
-source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.17#5eca4de8bf233e57f114140f8c076ea8c96f21ab"
+version = "0.6.18"
+source = "git+https://github.com/superradcompany/microsandbox?tag=v0.6.18#fa3e43902e9bc49e1d85cc0a7298e13fe2374026"
 dependencies = [
  "libc",
  "msb_krun",
@@ -4733,7 +4733,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5271,7 +5271,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5340,7 +5340,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6414,7 +6414,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7211,7 +7211,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
