@@ -6,6 +6,49 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [Unreleased]
+
+Adopts upstream runtime **`v0.6.16` → `v0.6.17`**.
+
+### Added
+
+- **Outbound SOCKS proxies** — `proxy:` on `Sandbox.create` /
+  `connect_or_create` / `create_with_progress` (upstream #1234 SOCKS4/SOCKS5
+  and #1507 SOCKS5 UDP + credentials, `v0.6.17`). The runtime's host-side
+  network stack dials the proxy for the sandbox's egress — SOCKS4 for TCP,
+  SOCKS5 for TCP and non-DNS UDP — uniformly for TLS-intercepted and
+  bypassed/plain TCP, while the egress policy (`network:`) still decides which
+  destinations may be reached. The address is resolved from the **host**
+  (`127.0.0.1` is the host's loopback). Spelled like the Python SDK's
+  `proxy=`, as a top-level create option rather than inside `network:`:
+  - `Microsandbox::OutboundProxy.socks4(address, user_id: nil)` and
+    `Microsandbox::OutboundProxy.socks5(address)`, the latter chaining
+    `#credentials(username, password)` which returns a **new** proxy (the
+    objects are immutable, like Python's frozen dataclass).
+  - `Microsandbox::SecretSource.env("VAR")` — the only password source: the
+    host environment variable's *name* is what reaches the runtime, which reads
+    the value host-side. No password value ever travels through the binding or
+    appears in `inspect`/error output.
+  - The equivalent plain Hash is accepted too: `{ protocol: :socks5,
+    address: "IP:port", credentials: { username:, password: { env: "VAR" } } }`
+    or `{ protocol: :socks4, address:, user_id: }`.
+  - Validation mirrors the Python SDK's `OutboundProxy.__post_init__`
+    (`ArgumentError`): `user_id` only for SOCKS4, credentials only for SOCKS5,
+    username and password together or neither, a non-empty String address.
+    `IP:port` parsing is left to the core, which reports an unparseable address
+    as `NetworkPolicyError` (its `NetworkBuilder` error class) at create time,
+    before any boot. The cloud backend rejects the option with
+    `UnsupportedError` (`sandbox.create`, hint naming `network.outbound_proxy`).
+
+### Fixed
+
+- Runtime `v0.6.17` restores the released database-migration order (upstream
+  #1517, fixing #1502): a local `~/.microsandbox` database last opened by an
+  upstream **`v0.6.15`** binary — typically the `msb` CLI, since this gem never
+  shipped `v0.6.15` on its own — failed to open under `v0.6.16` with "database
+  schema is newer than this msb binary". Any such database now migrates
+  forward cleanly on the next `require "microsandbox"` + first operation.
+
 ## [0.16.0] - 2026-09-01
 
 Adopts upstream runtime **`v0.6.14` → `v0.6.16`**, stepping through the

@@ -512,6 +512,51 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /rate_limiter: must be a Hash/)
     end
 
+    it "normalizes proxy: (v0.6.17) from a value object or a Hash, and omits it when nil" do
+      Microsandbox::Sandbox.create(
+        "box", image: "x",
+        proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080")
+          .credentials("sandbox", Microsandbox::SecretSource.env("PROXY_PASSWORD"))
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("proxy" => {
+          "protocol" => "socks5", "address" => "127.0.0.1:1080",
+          "credentials" => {
+            "username" => "sandbox",
+            "password" => {"kind" => "env", "var" => "PROXY_PASSWORD"}
+          }
+        })
+      )
+
+      Microsandbox::Sandbox.create(
+        "box2", image: "x", proxy: {protocol: :socks4, address: "127.0.0.1:1080", user_id: "ci"}
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box2",
+        hash_including("proxy" => {"protocol" => "socks4", "address" => "127.0.0.1:1080", "user_id" => "ci"})
+      )
+
+      Microsandbox::Sandbox.create("box3", image: "x", proxy: nil)
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box3", hash_not_including("proxy")
+      )
+
+      expect do
+        Microsandbox::Sandbox.create("box4", image: "x", proxy: "socks5://127.0.0.1:1080")
+      end.to raise_error(ArgumentError, /proxy: expects a Microsandbox::OutboundProxy/)
+    end
+
+    it "passes proxy: through connect_or_create (same kwargs path as create)" do
+      allow(Microsandbox::Native::Sandbox).to receive(:connect_or_create).and_return(native)
+      Microsandbox::Sandbox.connect_or_create(
+        "box", image: "x", proxy: Microsandbox::OutboundProxy.socks4("127.0.0.1:1080")
+      )
+      expect(Microsandbox::Native::Sandbox).to have_received(:connect_or_create).with(
+        "box", hash_including("proxy" => {"protocol" => "socks4", "address" => "127.0.0.1:1080"})
+      )
+    end
+
     it "rejects out-of-u32-range root_disk sizes with a clear error" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", root_disk: -1)

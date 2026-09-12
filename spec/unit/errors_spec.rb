@@ -108,6 +108,25 @@ RSpec.describe "Microsandbox error hierarchy" do
     end
   end
 
+  # v0.6.17: the cloud backend refuses an outbound proxy while building the
+  # create request body — before any HTTP call — so this is offline too. Pins
+  # the error class plus the field-naming hint the core attaches.
+  it "surfaces proxy: on the cloud backend as UnsupportedError naming network.outbound_proxy" do
+    Microsandbox.with_backend(:cloud, url: "https://cloud.invalid", api_key: "test-key") do
+      expect do
+        Microsandbox::Sandbox.create("proxied", image: "python",
+          proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"))
+      end.to raise_error(Microsandbox::UnsupportedError) { |e|
+        expect(e.operation).to eq("sandbox.create")
+        expect(e.hint).to eq("the network.outbound_proxy option is not accepted here")
+        expect(e.message).to eq(
+          "sandbox.create is not supported by this backend: " \
+          "the network.outbound_proxy option is not accepted here"
+        )
+      }
+    end
+  end
+
   it "names shim-only entry points in UnsupportedError (runtime_path)" do
     Microsandbox.with_backend(:cloud, url: "https://cloud.invalid", api_key: "test-key") do
       expect { Microsandbox.runtime_path }

@@ -245,6 +245,31 @@ Microsandbox::Sandbox.create(
 end
 ```
 
+**Outbound proxy** (runtime `v0.6.17`) — route the sandbox's egress through a
+SOCKS4 (TCP) or SOCKS5 (TCP + non-DNS UDP) proxy with `proxy:`. The proxy is
+dialed by the runtime's host-side network stack, so its address is resolved
+from the host (`127.0.0.1` is the host's loopback), and the egress policy
+(`network:`) still governs which destinations may be reached. A SOCKS5 password
+comes from a host environment variable via `SecretSource.env` — only the
+variable's *name* is handed to the runtime. Local backend only.
+
+```ruby
+Microsandbox::Sandbox.create("worker", image: "python",
+  proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"))
+
+Microsandbox::Sandbox.create("worker", image: "python",
+  proxy: Microsandbox::OutboundProxy.socks5("10.0.0.5:1080")
+    .credentials("sandbox", Microsandbox::SecretSource.env("PROXY_PASSWORD")))
+
+Microsandbox::Sandbox.create("worker", image: "python",
+  proxy: Microsandbox::OutboundProxy.socks4("127.0.0.1:1080", user_id: "ci"))
+
+# The equivalent plain Hash works too:
+Microsandbox::Sandbox.create("worker", image: "python",
+  proxy: { protocol: :socks5, address: "10.0.0.5:1080",
+           credentials: { username: "sandbox", password: { env: "PROXY_PASSWORD" } } })
+```
+
 ### Executing commands
 
 ```ruby
@@ -560,7 +585,7 @@ of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
 Microsandbox::VERSION          # => "0.16.0"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.16" (the embedded upstream runtime tag)
+Microsandbox.runtime_version   # => "v0.6.17" (the embedded upstream runtime tag)
 ```
 
 The companion [`microsandbox-rb-binaries`](#the-runtime-binaries) gem is
@@ -594,6 +619,7 @@ stale.
 | `0.14.0` | `v0.6.9` | two-gem split: SDK-only gem (no build-time runtime download) + companion `microsandbox-rb-binaries` platform gems |
 | `0.15.0` | `v0.6.14` | adopts upstream `v0.6.10`–`v0.6.14` step by step: bind-mount correctness, guest bootstrap off the kernel command line, DNS pins for deferred domain allows, Linux glibc 2.28 baseline for the prebuilt runtime, legacy ext4 upper-disk resize, `msb_krun` 0.1.32. Parity: `ssh.open_client`/`prepare_server` accept `inactivity_timeout:` (seconds; `0` disables, `nil` inherits the 600s global default) |
 | `0.16.0` | `v0.6.16` | adopts upstream `v0.6.15`+`v0.6.16` step by step: mount fallback ownership, readonly-mount write-probe fix, log retrieval rerouted through the SDK backends, config overlaid by field presence, network-slot recycling. Parity: per-mount `uid:`/`gid:`, and the convergent lifecycle — `Sandbox.connect_or_create`, `#id`, `#wait_for_status`, `#restart`, `#destroy`, `SandboxHandle#connect_or_start`, `SandboxReplacedError` |
+| `0.17.0` | `v0.6.17` | adopts upstream `v0.6.17`: outbound SOCKS4/SOCKS5 proxies, SOCKS5 UDP + credentials, migration-order fix for databases last opened by a `v0.6.15` `msb`. Parity: `proxy:` (`Microsandbox::OutboundProxy` / `SecretSource`) |
 
 **Going forward** — the gem version moves on its own semver track and no longer
 mirrors the upstream tag:
@@ -708,7 +734,8 @@ image-pull progress (`Sandbox.create_with_progress` → `PullSession`),
 (`root_disk:` managed/tmpfs/disk via `Microsandbox::RootDisk`), **network
 configuration** (composable profiles, custom per-rule
 `Microsandbox::NetworkPolicy`/`Rule`/`Destination`, plus DNS, TLS interception,
-IPv4/IPv6 pools, `max_connections`, `trust_host_cas`), **secrets** (multi-host /
+IPv4/IPv6 pools, `max_connections`, `trust_host_cas`, outbound SOCKS4/SOCKS5
+`proxy:`), **secrets** (multi-host /
 wildcard allow-lists, injection toggles, per-secret + sandbox-level violation
 policy), **SSH** (`Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`), and the
 **raw agent client** (`Microsandbox::AgentClient`). Create options span

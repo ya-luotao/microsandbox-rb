@@ -414,6 +414,14 @@ module Microsandbox
       #   one_time_burst: 0 }, ops: { size: 1000, refill_time_ms: 1000 } },
       #   ingress: { ... } }`. `bandwidth` buckets meter bytes, `ops` buckets
       #   meter network frames; an omitted bucket or direction is unlimited.
+      # @param proxy [OutboundProxy, Hash, nil] outbound SOCKS proxy for the
+      #   sandbox's egress traffic (runtime v0.6.17, local backend):
+      #   {OutboundProxy.socks4}(address, user_id:) or {OutboundProxy.socks5}
+      #   (address), optionally `.credentials(username, SecretSource.env("VAR"))`
+      #   — or the equivalent Hash `{ protocol: :socks5, address: "IP:port",
+      #   credentials: { username:, password: { env: "VAR" } } }`. The address is
+      #   dialed from the host; only the password's env var *name* is sent. The
+      #   cloud backend rejects it with {UnsupportedError}.
       # @param vsock [Hash, Array, nil] host sockets exposed on guest-to-host
       #   vsock ports (runtime v0.6.9): `{ "/host/api.sock" => 5000 }` (stream
       #   sockets), or an Array of
@@ -576,7 +584,7 @@ module Microsandbox
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
         entrypoint: nil, cmd: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
-        max_connections: nil, trust_host_cas: nil, rate_limiter: nil, vsock: nil,
+        max_connections: nil, trust_host_cas: nil, rate_limiter: nil, proxy: nil, vsock: nil,
         patches: nil,
         from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
         log_level: nil, quiet_logs: false, security: nil,
@@ -638,6 +646,7 @@ module Microsandbox
         opts["max_connections"] = Integer(max_connections) if max_connections
         set_bool(opts, "trust_host_cas", trust_host_cas)
         opts["rate_limiter"] = normalize_rate_limiter(rate_limiter) if rate_limiter
+        opts["proxy"] = OutboundProxy.coerce(proxy) unless proxy.nil?
         opts["vsock"] = normalize_vsock(vsock) if vsock
         opts["log_level"] = log_level.to_s if log_level
         opts["quiet_logs"] = true if quiet_logs

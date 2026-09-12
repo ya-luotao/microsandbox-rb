@@ -263,6 +263,7 @@ module Microsandbox
                       ?ipv4_pool: String?, ?ipv6_pool: String?,
                       ?max_connections: Integer?, ?trust_host_cas: bool?,
                       ?rate_limiter: Hash[untyped, untyped]?,
+                      ?proxy: (OutboundProxy | Hash[untyped, untyped])?,
                       ?vsock: (Hash[untyped, untyped] | Array[Hash[untyped, untyped]])?,
                       ?patches: Array[Hash[untyped, untyped]]?, ?from_snapshot: String?,
                       ?fstype: String?, ?init: (String | Symbol | Hash[untyped, untyped])?, ?ephemeral: bool,
@@ -574,6 +575,44 @@ module Microsandbox
     def profile: () -> String?
     def local?: () -> bool
     def cloud?: () -> bool
+  end
+
+  # Host-side secret source (runtime v0.6.17): only `env` exists.
+  class SecretSource
+    KINDS: Array[String]
+    attr_reader kind: String
+    attr_reader var: String
+    def self.env: ((String | Symbol) variable) -> SecretSource
+    def self.coerce: (untyped value, ?String context) -> SecretSource
+    def initialize: ((String | Symbol) kind, (String | Symbol) var) -> void
+    def to_h: () -> Hash[String, String]
+    def ==: (untyped other) -> bool
+    def eql?: (untyped other) -> bool
+    def hash: () -> Integer
+  end
+
+  # Outbound SOCKS4/SOCKS5 proxy for the `proxy:` create option (runtime
+  # v0.6.17). Immutable: `credentials` returns a new proxy.
+  class OutboundProxy
+    PROTOCOLS: Array[String]
+    attr_reader protocol: String
+    attr_reader address: String
+    attr_reader user_id: String?
+    attr_reader username: String?
+    attr_reader password: SecretSource?
+    def self.socks4: (String address, ?user_id: String?) -> OutboundProxy
+    def self.socks5: (String address) -> OutboundProxy
+    def self.coerce: (untyped value) -> Hash[String, untyped]
+    def self.from_hash: (Hash[untyped, untyped] hash) -> OutboundProxy
+    def initialize: (protocol: (String | Symbol), address: String, ?user_id: String?,
+                     ?username: String?, ?password: SecretSource?) -> void
+    def credentials: (String username, (SecretSource | Hash[untyped, untyped]) password) -> OutboundProxy
+    def socks4?: () -> bool
+    def socks5?: () -> bool
+    def to_h: () -> Hash[String, untyped]
+    def ==: (untyped other) -> bool
+    def eql?: (untyped other) -> bool
+    def hash: () -> Integer
   end
 
   class NetworkPolicy

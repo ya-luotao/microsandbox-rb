@@ -475,6 +475,18 @@ impl Sandbox {
                 })
             });
         }
+        // proxy: outbound SOCKS4/SOCKS5 proxy for egress traffic (v0.6.17,
+        // upstream #1234/#1507). The Ruby layer (`OutboundProxy.coerce`) has
+        // already validated the shape and normalized it to the Python SDK's
+        // `_to_dict()` wire form: {protocol:, address:, user_id?:,
+        // credentials?: {username:, password: {kind: "env", var:}}}. Only the
+        // password's env var NAME travels; the core resolves it host-side.
+        // Applied exactly as sdk/python/src/helpers.rs does; the address is
+        // parsed by the core's proxy builder (an invalid one surfaces as a
+        // NetworkBuilder error → NetworkPolicyError).
+        if let Some(proxy) = conv::opt::<RHash>(opts, "proxy")? {
+            b = apply_outbound_proxy(b, proxy)?;
+        }
         // init: hand guest PID 1 to an init system. The Ruby layer normalizes
         // `init:` to a Hash { cmd:, args?:, env?: }. `init_with` with empty
         // args/env builds the same HandoffInit as the plain `init(cmd)`, so route
@@ -1418,6 +1430,63 @@ fn parse_dns(d: RHash) -> Result<DnsSpec, Error> {
         rebind_protection: conv::opt::<bool>(d, "rebind_protection")?,
         query_timeout_ms: conv::opt::<u64>(d, "query_timeout_ms")?,
     })
+}
+
+/// Apply the normalized `proxy` create option (v0.6.17) to the builder.
+/// Mirrors `sdk/python/src/helpers.rs`: `socks4` takes an optional `user_id`,
+/// `socks5` optional `credentials` whose password is an env-backed
+/// [`SecretSource`] (the only kind). Unknown protocols and non-env password
+/// sources are rejected here (the Ruby layer already does, so these are
+/// belt-and-braces for callers of the native API).
+fn apply_outbound_proxy(b: SandboxBuilder, proxy: RHash) -> Result<SandboxBuilder, Error> {
+    let protocol = conv::opt_string(proxy, "protocol")?
+        .ok_or_else(|| error::base_error("proxy requires protocol:"))?;
+    let address = conv::opt_string(proxy, "address")?
+        .ok_or_else(|| error::base_error("proxy requires address:"))?;
+    match protocol.as_str() {
+        "socks4" => {
+            let user_id = conv::opt_string(proxy, "user_id")?;
+            Ok(b.proxy(move |p| {
+                let p = p.socks4(address);
+                match user_id {
+                    Some(user_id) => p.user_id(user_id),
+                    None => p,
+                }
+            }))
+        }
+        "socks5" => {
+            let credentials = match conv::opt::<RHash>(proxy, "credentials")? {
+                None => None,
+                Some(c) => {
+                    let username = conv::opt_string(c, "username")?
+                        .ok_or_else(|| error::base_error("SOCKS5 credentials require username:"))?;
+                    let password = conv::opt::<RHash>(c, "password")?
+                        .ok_or_else(|| error::base_error("SOCKS5 credentials require password:"))?;
+                    let kind = conv::opt_string(password, "kind")?.ok_or_else(|| {
+                        error::base_error("SOCKS5 password source requires kind:")
+                    })?;
+                    if kind != "env" {
+                        return Err(error::base_error(format!(
+                            "unsupported SOCKS5 password source {kind:?}; only env is supported"
+                        )));
+                    }
+                    let var = conv::opt_string(password, "var")?
+                        .ok_or_else(|| error::base_error("SOCKS5 password source requires var:"))?;
+                    Some((username, SecretSource::env(var)))
+                }
+            };
+            Ok(b.proxy(move |p| {
+                let p = p.socks5(address);
+                match credentials {
+                    Some((username, password)) => p.credentials(username, password),
+                    None => p,
+                }
+            }))
+        }
+        other => Err(error::base_error(format!(
+            "unsupported outbound proxy protocol {other:?}; expected socks4 or socks5"
+        ))),
+    }
 }
 
 /// One token bucket of the `rate_limiter` create option (v0.6.9):
