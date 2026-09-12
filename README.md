@@ -600,7 +600,7 @@ change diverged the two numbers — the gem version is **not** a reliable indica
 of the embedded runtime version. To learn which runtime a build wraps, ask it:
 
 ```ruby
-Microsandbox::VERSION          # => "0.16.0"  (the gem's own version)
+Microsandbox::VERSION          # => "0.17.0"  (the gem's own version)
 Microsandbox.runtime_version   # => "v0.6.18" (the embedded upstream runtime tag)
 ```
 
