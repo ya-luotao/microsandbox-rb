@@ -119,11 +119,118 @@ RSpec.describe Microsandbox::OutboundProxy do
       include_examples "a redacted rejection", "{ kind: {...}, var: {...} }"
     end
 
+    # An unsupported kind that is itself a String/Symbol (a password mis-keyed
+    # into kind:) must be reported by class only — with a valid var and with a
+    # malformed one, through both entry points.
+    [
+      ["a String kind, valid var", {kind: "SYNTHETIC-SECRET-b7c1e0-do-not-log", var: "PW"}],
+      ["a Symbol kind, valid var", {kind: :"SYNTHETIC-SECRET-b7c1e0-do-not-log", var: "PW"}],
+      ["a String kind, malformed var", {kind: "SYNTHETIC-SECRET-b7c1e0-do-not-log", var: {value: "x"}}],
+      ["a Symbol kind, malformed var", {kind: :"SYNTHETIC-SECRET-b7c1e0-do-not-log", var: {value: "SYNTHETIC-SECRET-b7c1e0-do-not-log"}}]
+    ].each do |label, bad|
+      context "with #{label}" do
+        let(:bad_password) { bad }
+        include_examples "a redacted rejection", label
+
+        it "names only the allowed kind and the input class" do
+          expect { base.credentials("u", bad_password) }
+            .to raise_error(ArgumentError, /secret source kind must be "env".*got an unsupported (String|Symbol)\)/)
+        end
+      end
+    end
+
     it "does not render a non-String address or protocol either" do
       expect { described_class.new(protocol: {value: secret}, address: "a:1") }
         .to raise_error(ArgumentError) { |e| expect(e.message).not_to include(secret) }
       expect { described_class.new(protocol: :socks5, address: {value: secret}) }
         .to raise_error(ArgumentError) { |e| expect(e.message).not_to include(secret) }
+    end
+
+    it "does not render an unsupported String/Symbol protocol value" do
+      expect { described_class.new(protocol: secret, address: "a:1") }
+        .to raise_error(ArgumentError, /unsupported outbound proxy protocol \(expected/) { |e|
+          expect(e.message).not_to include(secret)
+        }
+      expect { described_class.coerce(protocol: secret.to_sym, address: "a:1") }
+        .to raise_error(ArgumentError) { |e| expect(e.message).not_to include(secret) }
+    end
+  end
+
+  # user_id / username are documented Strings. A misplaced container — say a
+  # credentials Hash handed to `username:` — must be rejected by class, not
+  # stringified into the wire hash or #inspect (where its contents would show).
+  describe "non-String identifiers are rejected without rendering them" do
+    let(:secret) { "SYNTHETIC-SECRET-b7c1e0-do-not-log" }
+    let(:env_pw) { Microsandbox::SecretSource.env("PW") }
+
+    shared_examples "a rejected identifier" do |label|
+      it "via the factory / #credentials (#{label})" do
+        expect(&factory).to raise_error(ArgumentError, /must be a String \(got (Hash|Array)\)/) { |e|
+          expect(e.message).not_to include(secret)
+          expect(e.message).not_to include("SYNTHETIC")
+        }
+      end
+
+      it "via the Hash form of proxy: (#{label})" do
+        expect(&hash_form).to raise_error(ArgumentError, /must be a String \(got (Hash|Array)\)/) { |e|
+          expect(e.message).not_to include(secret)
+          expect(e.message).not_to include("SYNTHETIC")
+        }
+      end
+    end
+
+    context "SOCKS5 username as a Hash" do
+      let(:factory) { -> { described_class.socks5("a:1").credentials({password: secret}, env_pw) } }
+      let(:hash_form) do
+        -> {
+          described_class.coerce(protocol: :socks5, address: "a:1",
+            credentials: {username: {password: secret}, password: {env: "PW"}})
+        }
+      end
+      include_examples "a rejected identifier", "Hash username"
+    end
+
+    context "SOCKS5 username as an Array" do
+      let(:factory) { -> { described_class.socks5("a:1").credentials([secret], env_pw) } }
+      let(:hash_form) do
+        -> {
+          described_class.coerce(protocol: :socks5, address: "a:1",
+            credentials: {username: [secret], password: {env: "PW"}})
+        }
+      end
+      include_examples "a rejected identifier", "Array username"
+    end
+
+    context "SOCKS4 user_id as a Hash" do
+      let(:factory) { -> { described_class.socks4("a:1", user_id: {password: secret}) } }
+      let(:hash_form) { -> { described_class.coerce(protocol: :socks4, address: "a:1", user_id: {password: secret}) } }
+      include_examples "a rejected identifier", "Hash user_id"
+    end
+
+    context "SOCKS4 user_id as an Array" do
+      let(:factory) { -> { described_class.socks4("a:1", user_id: [secret]) } }
+      let(:hash_form) { -> { described_class.coerce(protocol: :socks4, address: "a:1", user_id: [secret]) } }
+      include_examples "a rejected identifier", "Array user_id"
+    end
+
+    it "still accepts Symbol identifiers, normalized to frozen Strings" do
+      expect(described_class.socks4("a:1", user_id: :ci).to_h["user_id"]).to eq("ci")
+      authed = described_class.socks5("a:1").credentials(:sandbox, env_pw)
+      expect(authed.username).to eq("sandbox")
+      expect(authed.username).to be_frozen
+    end
+
+    # Belt and braces for the rendering surfaces themselves: nothing that gets
+    # constructed can carry the sentinel, so neither #inspect nor #to_h can.
+    it "keeps the sentinel out of #inspect and #to_h of every object that CAN be built" do
+      built = [
+        described_class.socks4("a:1", user_id: "ci"),
+        described_class.socks5("a:1").credentials("u", Microsandbox::SecretSource.env("PW"))
+      ]
+      built.each do |p|
+        expect(p.inspect).not_to include("SYNTHETIC")
+        expect(p.to_h.inspect).not_to include("SYNTHETIC")
+      end
     end
   end
 
@@ -226,9 +333,9 @@ RSpec.describe Microsandbox::OutboundProxy do
       end.to raise_error(ArgumentError, /username and password must be provided together/)
     end
 
-    it "rejects an unknown protocol" do
+    it "rejects an unknown protocol (without echoing the value)" do
       expect { described_class.new(protocol: :http, address: "127.0.0.1:3128") }
-        .to raise_error(ArgumentError, /unsupported outbound proxy protocol "http"/)
+        .to raise_error(ArgumentError, /unsupported outbound proxy protocol \(expected :socks4 or :socks5\)/)
     end
 
     it "requires a non-empty String address (IP:port parsing is left to the core)" do

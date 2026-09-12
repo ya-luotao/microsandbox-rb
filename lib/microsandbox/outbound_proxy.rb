@@ -78,11 +78,14 @@ module Microsandbox
         raise ArgumentError,
           "secret source kind must be \"env\" (got #{kind.class})"
       end
-      kind = kind.to_s
-      unless KINDS.include?(kind)
+      # An unsupported kind is reported by class only, never by value: a
+      # caller who mis-keys a password into `kind:` must not see it echoed.
+      unless KINDS.include?(kind.to_s)
         raise ArgumentError,
-          "only environment-backed secret sources are supported (got kind #{kind.inspect})"
+          "secret source kind must be \"env\" (only environment-backed secret sources " \
+          "are supported; got an unsupported #{kind.class})"
       end
+      kind = kind.to_s
       unless var.is_a?(String) || var.is_a?(Symbol)
         raise ArgumentError,
           "secret source environment variable must be a String name (got #{var.class})"
@@ -234,7 +237,7 @@ module Microsandbox
       protocol = protocol.to_s.downcase
       unless PROTOCOLS.include?(protocol)
         raise ArgumentError,
-          "unsupported outbound proxy protocol #{protocol.inspect} (expected :socks4 or :socks5)"
+          "unsupported outbound proxy protocol (expected :socks4 or :socks5)"
       end
       unless address.is_a?(String)
         raise ArgumentError,
@@ -246,6 +249,15 @@ module Microsandbox
       # Same rules as the Python SDK's OutboundProxy.__post_init__; the address
       # itself is parsed by the core (which reports e.g. "invalid SOCKS5 proxy
       # address" as an InvalidConfigError at create time).
+      # Identifiers are documented as Strings (RBS: String?). A misplaced
+      # container (a credentials Hash, an Array) must not be stringified into
+      # the wire hash / #inspect; reject it by class, never rendering it.
+      unless user_id.nil? || user_id.is_a?(String) || user_id.is_a?(Symbol)
+        raise ArgumentError, "SOCKS4 user_id must be a String (got #{user_id.class})"
+      end
+      unless username.nil? || username.is_a?(String) || username.is_a?(Symbol)
+        raise ArgumentError, "SOCKS5 username must be a String (got #{username.class})"
+      end
       if protocol != "socks4" && !user_id.nil?
         raise ArgumentError, "user_id is only supported for SOCKS4 proxies"
       end
