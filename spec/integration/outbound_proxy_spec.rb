@@ -32,6 +32,8 @@ module OutboundProxySpec
       @credentials = credentials
       @server = TCPServer.new("127.0.0.1", 0)
       @port = @server.addr[1]
+      @conn = nil
+      @closed = false
       @thread = Thread.new { serve }
     end
 
@@ -39,26 +41,44 @@ module OutboundProxySpec
 
     # Wait for the single proxied session to finish; raises the server-side
     # failure (if any) so a protocol mismatch surfaces as its own message.
+    # Always releases the listener and the serving thread, even on timeout.
     def join(timeout = 30)
-      unless @thread.join(timeout)
-        @thread.kill
-        raise "SOCKS#{@version} fixture saw no complete session within #{timeout}s"
-      end
+      finished = @thread.join(timeout)
+      close
+      raise "SOCKS#{@version} fixture saw no complete session within #{timeout}s" unless finished
       raise error if error
-    ensure
-      @server.close unless @server.closed?
+    end
+
+    # Bounded, idempotent teardown for `ensure` blocks: closes the listener
+    # (which unblocks a pending `accept`) and any accepted connection, then
+    # gives the serving thread a short grace period before killing it. Never
+    # raises — a cleanup failure must not mask the example's own failure.
+    def close(grace = 2)
+      return if @closed
+      @closed = true
+      [@server, @conn].each do |io|
+        io.close if io && !io.closed?
+      rescue IOError, SystemCallError
+        # already closed / torn down by the peer
+      end
+      @thread.kill unless @thread.join(grace)
+      nil
     end
 
     private
 
     def serve
-      sock = @server.accept
-      (@version == 5) ? socks5(sock) : socks4(sock)
-      http(sock)
+      @conn = @server.accept
+      (@version == 5) ? socks5(@conn) : socks4(@conn)
+      http(@conn)
     rescue => e
       @error = e
     ensure
-      sock&.close
+      begin
+        @conn&.close
+      rescue IOError, SystemCallError
+        # closed concurrently by #close
+      end
     end
 
     # RFC 1928 greeting/method selection (+ RFC 1929 username/password), CONNECT.
@@ -138,41 +158,64 @@ RSpec.describe "outbound proxy", :integration do
     expect(server.target).to eq([target_ip, target_port])
   end
 
+  # Run an example body with a fixture whose teardown is guaranteed: the
+  # listener and its thread are released whether the sandbox failed to create
+  # (including a relay-timeout retry), the guest fetch failed, or everything
+  # passed. `close` never raises, so the example's own failure is preserved.
+  def with_socks_server(**opts)
+    server = OutboundProxySpec::FakeSocksServer.new(**opts)
+    yield server
+  ensure
+    server&.close
+  end
+
+  # Set a host env var for the duration of the block, restoring whatever value
+  # (or absence) it had before rather than unconditionally deleting it.
+  def with_env(name, value)
+    had = ENV.key?(name)
+    previous = ENV[name]
+    ENV[name] = value
+    yield
+  ensure
+    had ? ENV[name] = previous : ENV.delete(name)
+  end
+
   it "routes guest TCP egress through an unauthenticated SOCKS5 proxy" do
-    server = OutboundProxySpec::FakeSocksServer.new(version: 5)
-    Microsandbox::Sandbox.create(
-      unique_sandbox_name, image: image,
-      proxy: Microsandbox::OutboundProxy.socks5(server.address)
-    ) do |sb|
-      assert_proxied(sb, server)
-      expect(server.username).to be_nil
+    with_socks_server(version: 5) do |server|
+      Microsandbox::Sandbox.create(
+        unique_sandbox_name, image: image,
+        proxy: Microsandbox::OutboundProxy.socks5(server.address)
+      ) do |sb|
+        assert_proxied(sb, server)
+        expect(server.username).to be_nil
+      end
     end
   end
 
   it "authenticates to a SOCKS5 proxy with a username and an env-backed password" do
-    server = OutboundProxySpec::FakeSocksServer.new(version: 5, credentials: ["sandbox", "proxy-password"])
-    ENV[OutboundProxySpec::FakeSocksServer::PASSWORD_ENV] = "proxy-password"
-    begin
-      proxy = Microsandbox::OutboundProxy.socks5(server.address)
-        .credentials("sandbox", Microsandbox::SecretSource.env(OutboundProxySpec::FakeSocksServer::PASSWORD_ENV))
-      Microsandbox::Sandbox.create(unique_sandbox_name, image: image, proxy: proxy) do |sb|
-        assert_proxied(sb, server)
-        expect(server.username).to eq("sandbox")
-        expect(server.password).to eq("proxy-password")
+    password_env = OutboundProxySpec::FakeSocksServer::PASSWORD_ENV
+    with_socks_server(version: 5, credentials: ["sandbox", "proxy-password"]) do |server|
+      with_env(password_env, "proxy-password") do
+        proxy = Microsandbox::OutboundProxy.socks5(server.address)
+          .credentials("sandbox", Microsandbox::SecretSource.env(password_env))
+        Microsandbox::Sandbox.create(unique_sandbox_name, image: image, proxy: proxy) do |sb|
+          assert_proxied(sb, server)
+          expect(server.username).to eq("sandbox")
+          expect(server.password).to eq("proxy-password")
+        end
       end
-    ensure
-      ENV.delete(OutboundProxySpec::FakeSocksServer::PASSWORD_ENV)
     end
   end
 
   it "routes guest TCP egress through a SOCKS4 proxy, sending the user_id (Hash form)" do
-    server = OutboundProxySpec::FakeSocksServer.new(version: 4)
-    Microsandbox::Sandbox.create(
-      unique_sandbox_name, image: image,
-      proxy: {protocol: :socks4, address: server.address, user_id: "rb-spec"}
-    ) do |sb|
-      assert_proxied(sb, server)
-      expect(server.user_id).to eq("rb-spec")
+    with_socks_server(version: 4) do |server|
+      Microsandbox::Sandbox.create(
+        unique_sandbox_name, image: image,
+        proxy: {protocol: :socks4, address: server.address, user_id: "rb-spec"}
+      ) do |sb|
+        assert_proxied(sb, server)
+        expect(server.user_id).to eq("rb-spec")
+      end
     end
   end
 

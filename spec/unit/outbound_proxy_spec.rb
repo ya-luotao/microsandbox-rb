@@ -67,6 +67,144 @@ RSpec.describe Microsandbox::OutboundProxy do
     end
   end
 
+  # A caller who reaches for `{ value: }` / `{ store: }` / a bare String by
+  # analogy with other secret APIs has just handed us a real password. The
+  # rejection must describe the expected shape only — the secret must not
+  # resurface in the exception (which ends up in logs and bug reports).
+  describe "rejected password values never leak into error messages" do
+    let(:secret) { "SYNTHETIC-SECRET-b7c1e0-do-not-log" }
+    let(:base) { described_class.socks5("10.0.0.5:1080") }
+
+    shared_examples "a redacted rejection" do |label|
+      it "for #{label}" do
+        expect { base.credentials("u", bad_password) }.to raise_error(ArgumentError) { |e|
+          expect(e.message).not_to include(secret)
+          expect(e.message).not_to include("SYNTHETIC")
+        }
+      end
+
+      it "for #{label} via the Hash form of proxy:" do
+        expect do
+          described_class.coerce(protocol: :socks5, address: "10.0.0.5:1080",
+            credentials: {username: "u", password: bad_password})
+        end.to raise_error(ArgumentError) { |e|
+          expect(e.message).not_to include(secret)
+          expect(e.message).not_to include("SYNTHETIC")
+        }
+      end
+    end
+
+    context "with { value: } (plaintext by analogy with secrets:)" do
+      let(:bad_password) { {value: secret} }
+      include_examples "a redacted rejection", "{ value: }"
+    end
+
+    context "with { store: } (an unsupported source kind)" do
+      let(:bad_password) { {store: secret} }
+      include_examples "a redacted rejection", "{ store: }"
+    end
+
+    context "with a plain String" do
+      let(:bad_password) { secret }
+      include_examples "a redacted rejection", "a plain String"
+    end
+
+    context "with a malformed nested Hash inside env:" do
+      let(:bad_password) { {env: {value: secret}} }
+      include_examples "a redacted rejection", "{ env: { value: } }"
+    end
+
+    context "with a malformed nested Hash inside kind:/var:" do
+      let(:bad_password) { {kind: {value: secret}, var: {value: secret}} }
+      include_examples "a redacted rejection", "{ kind: {...}, var: {...} }"
+    end
+
+    it "does not render a non-String address or protocol either" do
+      expect { described_class.new(protocol: {value: secret}, address: "a:1") }
+        .to raise_error(ArgumentError) { |e| expect(e.message).not_to include(secret) }
+      expect { described_class.new(protocol: :socks5, address: {value: secret}) }
+        .to raise_error(ArgumentError) { |e| expect(e.message).not_to include(secret) }
+    end
+  end
+
+  # "Immutable" has to mean more than the outer object's frozen bit: the value
+  # object must not alias the caller's Strings (which the caller may go on to
+  # reuse and mutate), and Strings handed out by readers / #to_h must not be a
+  # back door into stored state.
+  describe "deep immutability" do
+    let(:addr) { +"127.0.0.1:1080" }
+    let(:var) { +"ORIGINAL_PASSWORD_VAR" }
+    let(:user) { +"original-user" }
+    let(:uid) { +"original-uid" }
+    let(:proto) { +"socks5" }
+    let(:source) { Microsandbox::SecretSource.env(var) }
+    let(:proxy) { described_class.new(protocol: proto, address: addr).credentials(user, source) }
+
+    it "does not freeze the caller's own Strings" do
+      proxy
+      expect([addr, var, user, proto]).to all(satisfy { |s| !s.frozen? })
+    end
+
+    it "is unaffected by the caller mutating its input Strings after construction" do
+      before = proxy.to_h
+      addr.replace("192.0.2.50:9999")
+      var.replace("OTHER_PASSWORD_VAR")
+      user.replace("other-user")
+      proto.replace("socks4")
+      expect(proxy.to_h).to eq(before)
+      expect(described_class.coerce(proxy)).to eq(
+        "protocol" => "socks5", "address" => "127.0.0.1:1080",
+        "credentials" => {"username" => "original-user",
+                          "password" => {"kind" => "env", "var" => "ORIGINAL_PASSWORD_VAR"}}
+      )
+      expect(source.var).to eq("ORIGINAL_PASSWORD_VAR")
+    end
+
+    it "keeps SOCKS4 user_id and SecretSource var private copies too" do
+      socks4 = described_class.socks4(addr, user_id: uid)
+      uid.replace("other-uid")
+      addr.replace("192.0.2.50:9999")
+      expect(socks4.to_h).to eq("protocol" => "socks4", "address" => "127.0.0.1:1080", "user_id" => "original-uid")
+    end
+
+    it "hands out frozen Strings from every reader" do
+      expect(proxy.protocol).to be_frozen
+      expect(proxy.address).to be_frozen
+      expect(proxy.username).to be_frozen
+      expect(proxy.password.var).to be_frozen
+      expect(proxy.password.kind).to be_frozen
+      expect(described_class.socks4("a:1", user_id: "x").user_id).to be_frozen
+      expect { proxy.protocol.replace("socks4") }.to raise_error(FrozenError)
+      expect { proxy.address << ":evil" }.to raise_error(FrozenError)
+      expect { proxy.password.var.replace("OTHER") }.to raise_error(FrozenError)
+    end
+
+    it "hands out frozen Strings through #to_h, so the wire hash cannot mutate stored state" do
+      wire = proxy.to_h
+      expect { wire["protocol"].replace("socks4") }.to raise_error(FrozenError)
+      expect { wire["address"] << ":evil" }.to raise_error(FrozenError)
+      expect { wire["credentials"]["username"].replace("x") }.to raise_error(FrozenError)
+      expect { wire["credentials"]["password"]["var"].replace("VIA_RETURNED_HASH") }
+        .to raise_error(FrozenError)
+      # The Hash containers themselves are fresh per call — replacing a slot
+      # in one does not reach the object.
+      wire["protocol"] = "socks4"
+      expect(proxy.protocol).to eq("socks5")
+      expect(proxy.to_h["protocol"]).to eq("socks5")
+    end
+
+    it "keeps value-based equality and hash stable after the caller mutates inputs" do
+      other = described_class.socks5("127.0.0.1:1080")
+        .credentials("original-user", Microsandbox::SecretSource.env("ORIGINAL_PASSWORD_VAR"))
+      set = {proxy => true}
+      addr.replace("192.0.2.50:9999")
+      user.replace("other-user")
+      expect(proxy).to eq(other)
+      expect(proxy.hash).to eq(other.hash)
+      expect(set[other]).to be(true)
+    end
+  end
+
   describe "validation (mirrors Python OutboundProxy.__post_init__)" do
     it "rejects user_id on SOCKS5" do
       expect { described_class.new(protocol: :socks5, address: "127.0.0.1:1080", user_id: "x") }
@@ -202,6 +340,24 @@ RSpec.describe Microsandbox::SecretSource do
   it "rejects any kind other than env" do
     expect { described_class.new("file", "/x") }
       .to raise_error(ArgumentError, /only environment-backed secret sources are supported/)
+  end
+
+  it "rejects a non-String variable name by class, without rendering it" do
+    expect { described_class.env({value: "SYNTHETIC-SECRET"}) }
+      .to raise_error(ArgumentError) { |e|
+        expect(e.message).to match(/must be a String name \(got Hash\)/)
+        expect(e.message).not_to include("SYNTHETIC")
+      }
+  end
+
+  it "does not alias or freeze the caller's variable-name String" do
+    name = +"TOKEN"
+    src = described_class.env(name)
+    name.replace("OTHER")
+    expect(name).not_to be_frozen
+    expect(src.var).to eq("TOKEN")
+    expect(src.var).to be_frozen
+    expect { src.to_h["var"] << "X" }.to raise_error(FrozenError)
   end
 
   it "compares by value" do

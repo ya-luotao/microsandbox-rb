@@ -29,6 +29,12 @@ module Microsandbox
     # Coerce a user-facing value into a {SecretSource}: an instance passes
     # through, a Hash must be `{ env: "VAR" }` or the wire form
     # `{ kind: "env", var: "VAR" }`.
+    #
+    # A rejected value is NEVER rendered into the error: a caller who reaches
+    # for `{ value: "hunter2" }` or `{ store: ... }` by analogy with other
+    # secret APIs has just handed us a real password, and the exception
+    # message is the one place it must not resurface (logs, bug reports).
+    # Errors describe the expected shape and, at most, the offending class.
     # @api private
     def self.coerce(value, context = "password")
       case value
@@ -40,13 +46,16 @@ module Microsandbox
         kind = fetch_key(value, :kind)
         var = fetch_key(value, :var)
         if kind.nil? && var.nil?
-          raise ArgumentError, "#{context}: expects { env: \"VAR\" } (got #{value.inspect})"
+          raise ArgumentError,
+            "#{context}: expects { env: \"VAR\" } naming a host environment variable " \
+            "(got a Hash without env:; plaintext password values are not accepted)"
         end
         new(kind, var)
       else
         raise ArgumentError,
           "#{context}: expects a Microsandbox::SecretSource (SecretSource.env(\"VAR\")) " \
-          "or a Hash { env: \"VAR\" } (got #{value.class})"
+          "or a Hash { env: \"VAR\" } (got #{value.class}; plaintext password values " \
+          "are not accepted)"
       end
     end
 
@@ -57,16 +66,31 @@ module Microsandbox
     private_class_method :fetch_key
 
     # @api private — use {.env}.
+    #
+    # Retained Strings are private frozen copies: the caller's originals are
+    # neither frozen nor aliased, so mutating them later (or a String obtained
+    # from {#var}/{#to_h}) cannot change this object's state. Only a
+    # String/Symbol kind or var is described in an error, and only by the
+    # allowed-shape wording — a nested Hash/other object is named by class so
+    # a misplaced secret is never rendered.
     def initialize(kind, var)
+      unless kind.is_a?(String) || kind.is_a?(Symbol)
+        raise ArgumentError,
+          "secret source kind must be \"env\" (got #{kind.class})"
+      end
       kind = kind.to_s
       unless KINDS.include?(kind)
         raise ArgumentError,
           "only environment-backed secret sources are supported (got kind #{kind.inspect})"
       end
+      unless var.is_a?(String) || var.is_a?(Symbol)
+        raise ArgumentError,
+          "secret source environment variable must be a String name (got #{var.class})"
+      end
       var = var.to_s
       raise ArgumentError, "secret source environment variable must not be empty" if var.empty?
-      @kind = kind
-      @var = var
+      @kind = kind.dup.freeze
+      @var = var.dup.freeze
       freeze
     end
 
@@ -155,6 +179,11 @@ module Microsandbox
     # @return [Hash{String => untyped}]
     def self.coerce(value)
       case value
+      # No re-validation for an existing instance, and none is needed: the
+      # constructor is the only writer, the object is frozen (no ivar can be
+      # reassigned), and every retained String is a private frozen copy, so
+      # {#to_h} is a pure function of already-validated state. Re-running the
+      # checks would only re-examine data the constructor itself produced.
       when OutboundProxy then value.to_h
       when Hash then from_hash(value).to_h
       else
@@ -198,14 +227,21 @@ module Microsandbox
 
     # @api private — use {.socks4} / {.socks5}.
     def initialize(protocol:, address:, user_id: nil, username: nil, password: nil)
+      unless protocol.is_a?(String) || protocol.is_a?(Symbol)
+        raise ArgumentError,
+          "unsupported outbound proxy protocol (got #{protocol.class}; expected :socks4 or :socks5)"
+      end
       protocol = protocol.to_s.downcase
       unless PROTOCOLS.include?(protocol)
         raise ArgumentError,
           "unsupported outbound proxy protocol #{protocol.inspect} (expected :socks4 or :socks5)"
       end
-      unless address.is_a?(String) && !address.empty?
+      unless address.is_a?(String)
         raise ArgumentError,
-          "proxy address must be a non-empty \"IP:port\" String (got #{address.inspect})"
+          "proxy address must be a non-empty \"IP:port\" String (got #{address.class})"
+      end
+      if address.empty?
+        raise ArgumentError, "proxy address must be a non-empty \"IP:port\" String (got \"\")"
       end
       # Same rules as the Python SDK's OutboundProxy.__post_init__; the address
       # itself is parsed by the core (which reports e.g. "invalid SOCKS5 proxy
@@ -224,10 +260,13 @@ module Microsandbox
           "SOCKS5 password must be a Microsandbox::SecretSource (SecretSource.env(\"VAR\")), " \
           "got #{password.class}"
       end
-      @protocol = protocol
-      @address = address
-      @user_id = user_id&.to_s
-      @username = username&.to_s
+      # Private frozen copies (see SecretSource#initialize): the caller keeps
+      # its own, unfrozen Strings; readers and {#to_h} hand out these frozen
+      # ones, so neither side can mutate stored state after construction.
+      @protocol = protocol.dup.freeze
+      @address = address.dup.freeze
+      @user_id = user_id&.to_s&.dup&.freeze
+      @username = username&.to_s&.dup&.freeze
       @password = password
       freeze
     end
