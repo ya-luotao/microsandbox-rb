@@ -390,12 +390,22 @@ impl Sandbox {
             .transpose()?;
         let max_connections = conv::opt::<usize>(opts, "max_connections")?;
         let trust_host_cas = conv::opt::<bool>(opts, "trust_host_cas")?;
+        // strict: fail-closed hostname-policy enforcement (v0.6.18). A
+        // hostname-rule allow must be backed by an inspectable request
+        // authority (plain-HTTP Host, or SNI/authority under TLS interception);
+        // otherwise the flow is denied before the upstream dial. Mirrors the
+        // Python SDK's `Network(strict=...)`. Create-only here to match the
+        // Python SDK's `modify` surface, which does not expose `strict`; the
+        // core's generated network config patch (ConfigPatch derive) does
+        // carry a `strict` field, so this is SDK parity, not a core limit.
+        let strict = conv::opt::<bool>(opts, "strict")?;
         if dns.is_some()
             || tls.is_some()
             || ipv4_pool.is_some()
             || ipv6_pool.is_some()
             || max_connections.is_some()
             || trust_host_cas.is_some()
+            || strict.is_some()
         {
             b = b.network(move |mut n| {
                 if let Some(dns) = dns {
@@ -450,6 +460,9 @@ impl Sandbox {
                 if let Some(t) = trust_host_cas {
                     n = n.trust_host_cas(t);
                 }
+                if let Some(s) = strict {
+                    n = n.strict(s);
+                }
                 n
             });
         }
@@ -474,6 +487,18 @@ impl Sandbox {
                     r
                 })
             });
+        }
+        // proxy: outbound SOCKS4/SOCKS5 proxy for egress traffic (v0.6.17,
+        // upstream #1234/#1507). The Ruby layer (`OutboundProxy.coerce`) has
+        // already validated the shape and normalized it to the Python SDK's
+        // `_to_dict()` wire form: {protocol:, address:, user_id?:,
+        // credentials?: {username:, password: {kind: "env", var:}}}. Only the
+        // password's env var NAME travels; the core resolves it host-side.
+        // Applied exactly as sdk/python/src/helpers.rs does; the address is
+        // parsed by the core's proxy builder (an invalid one surfaces as
+        // NetworkBuilder(InvalidOutboundProxy) → InvalidConfigError, see error.rs).
+        if let Some(proxy) = conv::opt::<RHash>(opts, "proxy")? {
+            b = apply_outbound_proxy(b, proxy)?;
         }
         // init: hand guest PID 1 to an init system. The Ruby layer normalizes
         // `init:` to a Hash { cmd:, args?:, env?: }. `init_with` with empty
@@ -1418,6 +1443,63 @@ fn parse_dns(d: RHash) -> Result<DnsSpec, Error> {
         rebind_protection: conv::opt::<bool>(d, "rebind_protection")?,
         query_timeout_ms: conv::opt::<u64>(d, "query_timeout_ms")?,
     })
+}
+
+/// Apply the normalized `proxy` create option (v0.6.17) to the builder.
+/// Mirrors `sdk/python/src/helpers.rs`: `socks4` takes an optional `user_id`,
+/// `socks5` optional `credentials` whose password is an env-backed
+/// [`SecretSource`] (the only kind). Unknown protocols and non-env password
+/// sources are rejected here (the Ruby layer already does, so these are
+/// belt-and-braces for callers of the native API).
+fn apply_outbound_proxy(b: SandboxBuilder, proxy: RHash) -> Result<SandboxBuilder, Error> {
+    let protocol = conv::opt_string(proxy, "protocol")?
+        .ok_or_else(|| error::base_error("proxy requires protocol:"))?;
+    let address = conv::opt_string(proxy, "address")?
+        .ok_or_else(|| error::base_error("proxy requires address:"))?;
+    match protocol.as_str() {
+        "socks4" => {
+            let user_id = conv::opt_string(proxy, "user_id")?;
+            Ok(b.proxy(move |p| {
+                let p = p.socks4(address);
+                match user_id {
+                    Some(user_id) => p.user_id(user_id),
+                    None => p,
+                }
+            }))
+        }
+        "socks5" => {
+            let credentials = match conv::opt::<RHash>(proxy, "credentials")? {
+                None => None,
+                Some(c) => {
+                    let username = conv::opt_string(c, "username")?
+                        .ok_or_else(|| error::base_error("SOCKS5 credentials require username:"))?;
+                    let password = conv::opt::<RHash>(c, "password")?
+                        .ok_or_else(|| error::base_error("SOCKS5 credentials require password:"))?;
+                    let kind = conv::opt_string(password, "kind")?.ok_or_else(|| {
+                        error::base_error("SOCKS5 password source requires kind:")
+                    })?;
+                    if kind != "env" {
+                        return Err(error::base_error(format!(
+                            "unsupported SOCKS5 password source {kind:?}; only env is supported"
+                        )));
+                    }
+                    let var = conv::opt_string(password, "var")?
+                        .ok_or_else(|| error::base_error("SOCKS5 password source requires var:"))?;
+                    Some((username, SecretSource::env(var)))
+                }
+            };
+            Ok(b.proxy(move |p| {
+                let p = p.socks5(address);
+                match credentials {
+                    Some((username, password)) => p.credentials(username, password),
+                    None => p,
+                }
+            }))
+        }
+        other => Err(error::base_error(format!(
+            "unsupported outbound proxy protocol {other:?}; expected socks4 or socks5"
+        ))),
+    }
 }
 
 /// One token bucket of the `rate_limiter` create option (v0.6.9):

@@ -62,11 +62,13 @@ RSpec.describe Microsandbox do
 
     # Guards against the constant silently drifting from the pinned git tag — the
     # exact failure mode (a stale "currently vX.Y.Z" note) that motivated adding
-    # the constant. Also asserts both git deps share one tag.
+    # the constant. Also asserts all THREE upstream git deps (`microsandbox`,
+    # `microsandbox-network`, `microsandbox-runtime`) share one tag: a bump that
+    # misses one would otherwise compile two runtime versions into the ext.
     it "stays in sync with the upstream tag pinned in ext/microsandbox/Cargo.toml" do
       cargo = File.read(File.expand_path("../../ext/microsandbox/Cargo.toml", __dir__))
-      tags = cargo.scan(/^microsandbox(?:-network)?\s*=\s*\{[^}]*\btag\s*=\s*"([^"]+)"/).flatten
-      expect(tags).not_to be_empty
+      tags = cargo.scan(/^microsandbox(?:-network|-runtime)?\s*=\s*\{[^}]*\btag\s*=\s*"([^"]+)"/).flatten
+      expect(tags.size).to eq(3)
       expect(tags.uniq).to eq([Microsandbox::RUNTIME_VERSION])
     end
   end

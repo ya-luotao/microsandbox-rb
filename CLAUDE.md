@@ -56,19 +56,20 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
    revisions (and a bundled breaking change) diverged the two numbers. While 0.x, a breaking API
    change bumps the minor and a fix bumps the patch. See the Versioning section of `README.md` for
    the gem→runtime map.
-2. **Upstream runtime tag** — the `microsandbox` and `microsandbox-network` git deps in
-   `ext/microsandbox/Cargo.toml` are pinned to a `tag` (see `Microsandbox::RUNTIME_VERSION` for
-   the current pin — the hardcoded value here kept going stale). This tracks the
-   upstream runtime, NOT the gem version. Bump it only when adopting a new upstream release, keep
-   both deps on the same tag, AND update `Microsandbox::RUNTIME_VERSION` in
-   `lib/microsandbox/version.rb` to match — `spec/unit/version_spec.rb` asserts the constant equals
-   the Cargo tag, so it can't silently go stale.
+2. **Upstream runtime tag** — the THREE upstream git deps in `ext/microsandbox/Cargo.toml` —
+   `microsandbox`, `microsandbox-network`, and `microsandbox-runtime` (the last one exists only to
+   turn on the prebuilt-agentd feature) — are pinned to a `tag` (see
+   `Microsandbox::RUNTIME_VERSION` for the current pin — the hardcoded value here kept going
+   stale). This tracks the upstream runtime, NOT the gem version. Bump it only when adopting a new
+   upstream release, keep all three deps on the same tag, AND update `Microsandbox::RUNTIME_VERSION`
+   in `lib/microsandbox/version.rb` to match — `spec/unit/version_spec.rb` asserts the constant
+   equals the tag on all three deps, so none can silently go stale.
 3. **Companion binaries gem** — `Microsandbox::Binaries::VERSION`
    (`binaries/lib/microsandbox/binaries.rb`) MUST equal `Microsandbox::VERSION`, and
    `Microsandbox::Binaries::RUNTIME_VERSION` MUST equal `Microsandbox::RUNTIME_VERSION`.
    `spec/unit/version_spec.rb` asserts both. So a release bumps the gem version in three places
-   (version.rb, Cargo.toml, binaries.rb), and a runtime adoption bumps the tag in three places
-   (both Cargo git deps, `RUNTIME_VERSION`, `Binaries::RUNTIME_VERSION`), commits the new
+   (version.rb, Cargo.toml, binaries.rb), and a runtime adoption bumps the tag in five places
+   (all three Cargo git deps, `RUNTIME_VERSION`, `Binaries::RUNTIME_VERSION`), commits the new
    release's `checksums.sha256` as `binaries/checksums/<tag>.sha256` (vendoring fails closed
    without it, and refuses if the live release file disagrees with the committed one) — then
    re-vendor the binaries for the new runtime. A mismatched companion gem isn't fatal at runtime: the SDK warns

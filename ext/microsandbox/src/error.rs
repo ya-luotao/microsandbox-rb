@@ -7,6 +7,7 @@
 
 use magnus::{value::ReprValue, Error, ExceptionClass, Module, RClass, RModule, Ruby};
 use microsandbox::{AgentClientError, MicrosandboxError, Operation, UnsupportedReason};
+use microsandbox_network::policy::BuildError;
 
 /// The Ruby class (relative to the `Microsandbox` module) for a core error.
 /// `"Error"` is the base class; anything else is a named subclass.
@@ -60,6 +61,12 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         // migration (run at backend connect / artifact open) failed and needs
         // repair. Mirrors the Python `SnapshotMigrationError`.
         SnapshotMigration { .. } => "SnapshotMigrationError",
+        // v0.6.17: a malformed `proxy:` (unparseable `IP:port`, invalid SOCKS4
+        // user ID, ...) also arrives as a `NetworkBuilder` error, but it is a
+        // *configuration* mistake, not a policy one — route it to
+        // `InvalidConfigError` like every other bad create option. Matched on
+        // the variant, never on the message text.
+        NetworkBuilder(BuildError::InvalidOutboundProxy { .. }) => "InvalidConfigError",
         // Give the already-defined-but-orphaned `NetworkPolicyError` a mapping:
         // a builder parse/validation error from `network(|n| ...)`. The gem
         // unconditionally enables the core's `net` feature (default-features),
