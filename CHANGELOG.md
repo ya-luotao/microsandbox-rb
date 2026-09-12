@@ -70,8 +70,13 @@ intermediate tag (`v0.6.17` verified and committed on its own).
   `DomainSuffix` rules (including `deny_domains:` / `deny_domain_suffixes:`,
   which are domain rules), the request's authority is evaluated against the
   **ordered** egress policy (rules first, then `default_egress`) together with
-  the real destination IP/port, and the request is denied only when that
-  evaluation denies it. Existing IP/CIDR/group allows and a permissive
+  the real destination IP/port, and — for a request carrying valid authority
+  metadata — the request is denied only when that evaluation denies it.
+  Separately, a plain-HTTP request with a *missing*, *duplicate* or
+  *unparsable* `Host` / `:authority` is now rejected outright whenever domain
+  rules are present (the upstream validator requires exactly one well-formed
+  authority before any policy evaluation), so an HTTP/1.0 request without a
+  `Host` header no longer passes on such a policy. Existing IP/CIDR/group allows and a permissive
   `default_egress` still count: a plain-HTTP request to an allowed IP that
   sends an unrelated `Host` is still allowed unless a rule (or the default)
   denies that hostname. Policies with no domain rules are unaffected, and so is

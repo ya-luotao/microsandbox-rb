@@ -11,11 +11,24 @@ require "json"
 # Ruby hash; this proves the ext applied it to the core's builder (a missing
 # native guard/setter leaves the field at its default and fails here).
 #
-# Hermetic: 127.0.0.1:0, bounded reads, the server is closed in `ensure`.
+# Hermetic: 127.0.0.1:0, bounded reads, the server is closed in `ensure`, and
+# the ambient proxy environment is neutralized around the call — reqwest
+# auto-detects the system proxy (HTTP_PROXY / ALL_PROXY, honouring NO_PROXY)
+# when the cloud client is built inside `with_backend`, so without that an
+# `HTTP_PROXY` in the developer's or CI's environment would route the loopback
+# request through the proxy (fixture sees nothing; a remote proxy would even
+# receive the synthetic body). `with_proxy_env_cleared` clears every proxy
+# variable, sets NO_PROXY/no_proxy to loopback, and restores each variable's
+# exact prior presence/value afterwards.
 # The cloud backend accepts http:// URLs (upstream tests use
 # http://127.0.0.1:8080), and its first network activity is the create POST,
 # so the captured body is the same one a real API would receive.
 module CloudRequestSpec
+  # Every variable reqwest's system-proxy detection consults (both spellings).
+  PROXY_ENV_VARS = %w[
+    HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy
+  ].freeze
+
   class FakeCloudApi
     READ_TIMEOUT = 5
 
@@ -89,12 +102,29 @@ module CloudRequestSpec
 end
 
 RSpec.describe "create request as serialized by the native layer" do
+  # Run the block with no ambient HTTP proxy and loopback excluded from
+  # proxying, restoring every variable to exactly its prior state (present with
+  # the same value, or absent) in `ensure`. The client is constructed inside the
+  # block (`with_backend`), which is when reqwest reads these.
+  def with_proxy_env_cleared
+    saved = CloudRequestSpec::PROXY_ENV_VARS.to_h { |name| [name, [ENV.key?(name), ENV[name]]] }
+    CloudRequestSpec::PROXY_ENV_VARS.each { |name| ENV.delete(name) }
+    ENV["NO_PROXY"] = ENV["no_proxy"] = "127.0.0.1,localhost"
+    yield
+  ensure
+    saved&.each do |name, (present, value)|
+      present ? ENV[name] = value : ENV.delete(name)
+    end
+  end
+
   # Capture the create body for the given create kwargs against the fake API.
   def capture_create(**kwargs)
     api = CloudRequestSpec::FakeCloudApi.new
-    Microsandbox.with_backend(:cloud, url: api.url, api_key: "test-key") do
-      expect { Microsandbox::Sandbox.create("wire-probe", image: "python", **kwargs) }
-        .to raise_error(Microsandbox::CloudHttpError, /cloud HTTP 500: POST \/v1\/sandboxes/)
+    with_proxy_env_cleared do
+      Microsandbox.with_backend(:cloud, url: api.url, api_key: "test-key") do
+        expect { Microsandbox::Sandbox.create("wire-probe", image: "python", **kwargs) }
+          .to raise_error(Microsandbox::CloudHttpError, /cloud HTTP 500: POST \/v1\/sandboxes/)
+      end
     end
     body = api.captured_json
     expect(body).not_to be_nil, "the fake cloud API captured no create request"
