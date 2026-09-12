@@ -394,8 +394,10 @@ impl Sandbox {
         // hostname-rule allow must be backed by an inspectable request
         // authority (plain-HTTP Host, or SNI/authority under TLS interception);
         // otherwise the flow is denied before the upstream dial. Mirrors the
-        // Python SDK's `Network(strict=...)`. Create-only: NetworkSpecPatch has
-        // no `strict` field at v0.6.18, so `modify` cannot flip it.
+        // Python SDK's `Network(strict=...)`. Create-only here to match the
+        // Python SDK's `modify` surface, which does not expose `strict`; the
+        // core's generated network config patch (ConfigPatch derive) does
+        // carry a `strict` field, so this is SDK parity, not a core limit.
         let strict = conv::opt::<bool>(opts, "strict")?;
         if dns.is_some()
             || tls.is_some()

@@ -22,10 +22,12 @@ intermediate tag (`v0.6.17` verified and committed on its own).
   non-intercepted HTTPS) the runtime fails closed *before* dialing upstream
   instead of trusting opaque hostname evidence. Mirrors the Python SDK's
   `Network(strict=...)`. An explicit `false` is sent as-is (not dropped), like
-  `trust_host_cas:`. Create-only: the core's `NetworkSpecPatch` has no `strict`
-  field at `v0.6.18` (nor does the Python modify surface), so `modify` cannot
-  change it. Accepted by the cloud create contract (it is a plain `NetworkSpec`
-  field), so there is no `UnsupportedError` path.
+  `trust_host_cas:`. Create-only in Ruby, matching the Python SDK's `modify`
+  surface (which does not expose `strict`); the core itself does carry a
+  generated `strict` field on its network config patch (`ConfigPatch` derive),
+  so this is an SDK-parity choice, not a core limitation. Accepted by the cloud
+  create contract (`CloudNetworkSpec.strict`), so there is no `UnsupportedError`
+  path.
 
 - **Outbound SOCKS proxies** — `proxy:` on `Sandbox.create` /
   `connect_or_create` / `create_with_progress` (upstream #1234 SOCKS4/SOCKS5
@@ -66,11 +68,19 @@ intermediate tag (`v0.6.17` verified and committed on its own).
   Previously a plain-HTTP connection admitted by an IP/CIDR/group rule could
   name any host in its `Host` header; now, if the policy carries `Domain` /
   `DomainSuffix` rules (including `deny_domains:` / `deny_domain_suffixes:`,
-  which are domain rules), a request whose authority names a host the policy
-  does not allow is denied. Policies with no domain rules are unaffected, and so
-  is HTTPS without interception. If a workload relied on reaching a host by IP
-  while sending an unrelated `Host` header under a domain-rule policy, it will
-  now be blocked — allow the hostname it actually sends.
+  which are domain rules), the request's authority is evaluated against the
+  **ordered** egress policy (rules first, then `default_egress`) together with
+  the real destination IP/port, and the request is denied only when that
+  evaluation denies it. Existing IP/CIDR/group allows and a permissive
+  `default_egress` still count: a plain-HTTP request to an allowed IP that
+  sends an unrelated `Host` is still allowed unless a rule (or the default)
+  denies that hostname. Policies with no domain rules are unaffected, and so is
+  HTTPS without interception. What changes in practice: an IP-based request
+  whose `Host` names a host the ordered policy *denies* (a `deny_domains:`
+  entry, or a domain not matched by any allow under `default_egress: :deny`)
+  now fails even in non-strict mode — allow the hostname it actually sends.
+  `strict:` is not a substitute for a restrictive policy; it only tightens
+  hostname-rule allows that lack an inspectable authority.
 
 ### Security
 
