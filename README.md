@@ -1,132 +1,60 @@
 # microsandbox-rb
 
-Lightweight microVM sandboxes for Ruby — run AI agents and untrusted code with hardware-level isolation.
+[![Gem Version](https://img.shields.io/gem/v/microsandbox-rb)](https://rubygems.org/gems/microsandbox-rb)
+[![CI](https://github.com/ya-luotao/microsandbox-rb/actions/workflows/ci.yml/badge.svg)](https://github.com/ya-luotao/microsandbox-rb/actions/workflows/ci.yml)
+[![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.1-CC342D)](https://www.ruby-lang.org/)
+[![Docs](https://img.shields.io/badge/docs-rubydoc.info-blue)](https://rubydoc.info/gems/microsandbox-rb)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
-The `microsandbox-rb` gem provides native bindings to the [microsandbox](https://github.com/superradcompany/microsandbox) runtime via a Rust extension (magnus). It spins up real microVMs (not containers) in under 100 ms, runs standard OCI (Docker) images, and gives you full control over command execution, the guest filesystem, networking, and metrics — all from an idiomatic, **synchronous** Ruby API. There is no daemon to install and no server to connect to: the runtime is embedded directly in your process.
+Lightweight microVM sandboxes for Ruby. Run AI agents and untrusted code with hardware-level isolation from an idiomatic, **synchronous** Ruby API. The gem embeds the [microsandbox](https://github.com/superradcompany/microsandbox) runtime through a Rust (magnus) native extension: it boots real microVMs, not containers, in under 100 ms, runs standard OCI images, and needs no daemon or server.
 
-This is an **unofficial, community-maintained** Ruby implementation — not part of the official SDK family — though it wraps the same core engine.
+> **Unofficial and community-maintained.** This gem is an independent project, not built, endorsed, or supported by [Super Rad Company](https://github.com/superradcompany) or the microsandbox team. All the hard parts (the microVM engine, the guest `agentd`, the networking stack) are theirs; this gem is a Ruby skin over them, tracked release by release. Please open issues [here](https://github.com/ya-luotao/microsandbox-rb/issues), not upstream. Upstream links: [website](https://microsandbox.dev) · [docs](https://docs.microsandbox.dev) · [official SDKs](https://github.com/superradcompany/microsandbox/tree/main/sdk) · [Agent Skills](https://github.com/superradcompany/skills) · [MCP server](https://github.com/superradcompany/microsandbox-mcp) · [Discord](https://discord.gg/T95Y3XnEAK).
 
-## Upstream & acknowledgements
+## Highlights
 
-`microsandbox-rb` exists only because of the excellent work by the [Super Rad
-Company](https://github.com/superradcompany) team on the upstream
-**microsandbox** runtime. All the hard parts — the microVM engine, the guest
-`agentd`, the networking stack — are theirs; this gem is a thin Ruby skin over
-them. Our deepest thanks to the maintainers and community. 🙏
-
-- **Website & docs** — <https://microsandbox.dev> · [documentation](https://docs.microsandbox.dev)
-- **Official repository** — [superradcompany/microsandbox](https://github.com/superradcompany/microsandbox)
-- **Official SDKs** —
-  [Rust](https://github.com/superradcompany/microsandbox/tree/main/sdk) ·
-  [Python](https://github.com/superradcompany/microsandbox/tree/main/sdk/python) ·
-  [TypeScript / Node](https://github.com/superradcompany/microsandbox/tree/main/sdk/node-ts) ·
-  [Go](https://github.com/superradcompany/microsandbox/tree/main/sdk/go) ·
-  [Ruby](https://github.com/superradcompany/microsandbox/tree/main/sdk/ruby)
-  (since upstream `v0.6.9` there is an **official** `microsandbox` gem — a
-  compact veneer over the same Rust SDK. This gem predates it and covers a
-  larger surface (snapshots, SSH, streaming, volumes fs, network policy DSL,
-  RBS types); both define the `Microsandbox` module, so use one or the other,
-  not both, in a single process.)
-- **Agents** — [Agent Skills](https://github.com/superradcompany/skills) · [MCP server](https://github.com/superradcompany/microsandbox-mcp)
-- **Community** — [Discord](https://discord.gg/T95Y3XnEAK)
-
-> **Not affiliated.** This gem is an independent, community-maintained project.
-> It is **not** built, endorsed, or supported by Super Rad Company or the
-> microsandbox team. Please don't direct questions about this gem to the
-> upstream project — open an issue here instead. **Contributions are very
-> welcome — PRs welcome!** See [Contributing](#contributing).
-
-## Features
-
-- **Hardware isolation** — each sandbox is a real VM with its own Linux kernel
-- **Sub-100 ms boot** — no daemon, no server setup, embedded directly in your app
-- **OCI image support** — pull and run images from Docker Hub, GHCR, ECR, or any OCI registry
-- **Command execution** — run commands or shell scripts and collect output
-- **Guest filesystem access** — read, write, list, copy, stat files inside a running sandbox
-- **Metrics & logs** — CPU, memory, disk and network I/O; captured stdout/stderr/system logs
-- **Rootfs patches** — inject files, dirs, and symlinks into the image before boot (`Microsandbox::Patch`)
-- **Fine-grained networking** — composable profiles (`:public`/`:private`/`:host`) *and* custom CIDR/domain/group allow-deny rules (`Microsandbox::NetworkPolicy`)
-- **SSH & SFTP** — native in-process SSH client/server and file transfer (`Sandbox#ssh`)
-- **Raw agent client** — byte-level access to the guest `agentd` protocol (`Microsandbox::AgentClient`)
-- **Idiomatic Ruby** — keyword arguments, block-scoped lifecycle, a typed error hierarchy
-- **Thread-friendly** — the GVL is released during sandbox calls, so _other_ Ruby threads keep running. The _calling_ thread blocks uninterruptibly until the call returns (`Timeout::timeout`/`Thread#kill`/Ctrl-C can't interrupt a blocked native call), so bound long-running work with a real deadline where one exists: `exec(timeout:)` / `shell(timeout:)` kill the guest command after N seconds, and `AgentClient.connect_sandbox`/`connect_path` take a `timeout:` that bounds only the connect handshake. The streaming paths and `AgentClient#request`/`#stream` have no timeout knob and can block indefinitely if the guest wedges — see DESIGN.md
-
-## Requirements
-
-- **Ruby** >= 3.1
-- **Linux** with KVM enabled, or **macOS** on Apple Silicon (M-series)
-- A **Rust** toolchain (stable >= 1.91) — needed only when installing the source
-  gem (it compiles the native extension on install). Precompiled per-platform
-  gems, where available, require no Rust toolchain; see [Releasing](#releasing)
-- The **`msb` runtime + `libkrunfw` firmware** — shipped by the optional
-  companion gem `microsandbox-rb-binaries`, or downloaded into `~/.microsandbox`
-  on first use; see [The runtime binaries](#the-runtime-binaries). Cloud-only
-  users (`MSB_BACKEND=cloud`) need no local runtime at all
+- **Real VMs, not containers.** Every sandbox has its own Linux kernel under KVM (Linux) or the Hypervisor framework (Apple Silicon). Sub-100 ms boot; the runtime lives in your process.
+- **Synchronous, idiomatic Ruby.** Keyword arguments, block-scoped lifecycle, a flat typed error hierarchy with stable `#code`s, and hand-maintained RBS signatures. The GVL is released during native calls, so other threads keep running.
+- **The whole core surface.** Collected *and* streaming exec, logs, metrics, and filesystem handles; live `modify` with dry-run plans; snapshots; named volumes with host-side access; image cache management; interactive `attach`; in-process SSH/SFTP; a raw `agentd` client.
+- **Network policy as data.** Composable profiles plus per-rule CIDR/domain allow-deny policies, TLS interception, outbound SOCKS4/SOCKS5 proxies, fail-closed strict hostname mode, and secrets injection with host allow-lists.
+- **Convergent lifecycle.** `connect_or_create`, `restart`, `destroy`, and `wait_for_status` take a name to the state you want and refuse to touch a sandbox someone recreated under the same name.
+- **Hermetic runtime.** The optional `microsandbox-rb-binaries` companion gem vendors a checksum-verified `msb` + `libkrunfw` in lockstep with the SDK, so production never downloads on first use. Without it, the runtime is provisioned into `~/.microsandbox` on demand.
+- **Local or cloud.** The same API runs against the local libkrun backend or the microsandbox cloud, selected per process or per block.
 
 ## Installation
 
-The gem is published as **`microsandbox-rb`**, but you still `require "microsandbox"`
-(the `microsandbox` package name was already taken on RubyGems):
+The gem is published as **`microsandbox-rb`** but is required as `microsandbox`
+(the `microsandbox` name was already taken on RubyGems):
 
 ```ruby
 # Gemfile
 gem "microsandbox-rb", require: "microsandbox"
+gem "microsandbox-rb-binaries"   # optional: vendored msb runtime + libkrunfw firmware
 ```
 
-```bash
-bundle install
-# or
-gem install microsandbox-rb
-```
+Then `bundle install`, or `gem install microsandbox-rb`. Installing the source
+gem compiles the Rust extension, so the first install takes a few minutes.
 
-Installing the **source gem** compiles the Rust extension, so the first install
-takes a few minutes and needs a Rust toolchain (`rustc >= 1.91`) on `PATH`. When
-a **precompiled platform gem** is available for your OS/architecture, RubyGems
-picks it automatically and no Rust toolchain is required.
+**Prerequisites**
 
-### The runtime binaries
-
-`microsandbox-rb` is **SDK-only** — it wraps the microVM runtime, it doesn't
-carry it. The host-side `msb` runtime and the `libkrunfw` firmware come from an
-optional companion gem, **`microsandbox-rb-binaries`**, published as one gem per
-platform (`arm64-darwin`, `x86_64-linux-gnu`, `aarch64-linux-gnu`) and
-versioned in lockstep with this gem:
-
-```ruby
-# Gemfile — install both gems at the same version
-gem "microsandbox-rb", require: "microsandbox"
-gem "microsandbox-rb-binaries"
-```
-
-That's all the wiring there is: `require "microsandbox"` finds the companion
-gem, checks it is the same version and built for the same upstream runtime, and points the resolver
-at its vendored `msb` — so your bundle carries the runtime and nothing is
-downloaded at install time or on first call. **Recommended whenever you boot
-local microVMs.** Cloud-only users (`MSB_BACKEND=cloud`) should skip it: it is a
-separate, optional gem precisely so nobody has to fetch ~50 MB of binaries they
-won't run. Neither gem depends on the other.
-
-> **Availability.** The binaries gems are published on every release tag
-> alongside `microsandbox-rb` (first release to ship them: the one after
-> 0.13.0). On an older SDK version, or a platform without a bundle, use the
-> fallback below (or build them yourself from `binaries/` — see that
-> directory's README).
-
-**Fallback — first-use download.** Without the companion gem, the `msb` runtime
-and `libkrunfw` firmware are provisioned into `~/.microsandbox` automatically on
-first use (the first `Sandbox.create`/`start` downloads them if missing). To
-provision ahead of time — e.g. while baking a container image, or to avoid the
-first-call latency — call `install` explicitly:
+- Ruby 3.1 or newer.
+- Linux with KVM enabled, or macOS on Apple Silicon. Cloud-only users
+  (`MSB_BACKEND=cloud`) need neither.
+- A stable Rust toolchain (1.91 or newer) on `PATH` to compile the source gem.
+  Precompiled extension gems require no Rust but are not yet auto-published; see
+  [docs/releasing.md](docs/releasing.md).
+- The `msb` runtime and `libkrunfw` firmware, from the companion gem above or
+  downloaded on first use. Provision ahead of time (a Docker layer, an
+  air-gapped host) with:
 
 ```ruby
 Microsandbox.install unless Microsandbox.installed?
 ```
 
-Set `MICROSANDBOX_NO_AUTO_INSTALL` to disable the automatic first-use download
-(e.g. on air-gapped hosts that provision the runtime out of band). None of this
-applies when the companion gem supplies the runtime: its binaries are already the
-matching version, so `ensure_runtime!` skips the installer entirely and nothing
-is written to `~/.microsandbox`.
+The companion gem ships one platform gem each for `arm64-darwin`,
+`x86_64-linux-gnu`, and `aarch64-linux-gnu`, must match the SDK version, and is
+found automatically at `require "microsandbox"`. See
+[docs/runtime.md](docs/runtime.md) for the resolution order, `MSB_PATH`, and
+disabling the first-use download.
 
 ## Quick start
 
@@ -141,475 +69,145 @@ end
 # the sandbox is stopped automatically when the block returns
 ```
 
-> **Why `public.ecr.aws/docker/library/...`?** The examples pull from AWS's
-> public mirror of the Docker Library because anonymous **Docker Hub** pulls are
-> rate-limited and often fail with `registry error: Not authorized`. Plain short
-> names like `image: "python"` work too if you aren't rate-limited. For private
-> or authenticated registries (including authenticated Docker Hub), pass
-> `registry_auth:` — see [Private & authenticated registries](#private--authenticated-registries).
-
-## Usage
+The examples pull from AWS's public Docker Library mirror because anonymous
+Docker Hub pulls are rate-limited; `image: "python"` works too when you aren't.
+See [docs/images.md](docs/images.md) for authenticated and private registries.
 
 ### Lifecycle
 
 ```ruby
-# Block form — recommended; stops the sandbox automatically (even on error)
-Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
-  # ...
-end
-
-# Manual form — you are responsible for stopping it
-sb = Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/alpine:latest")
-begin
-  # ...
-ensure
-  sb.stop          # graceful (SIGTERM→SIGKILL escalation, 10s default)
-  # sb.stop_and_wait # graceful, then wait → ExitStatus(#exit_code, #success?)
-  # sb.kill          # force (SIGKILL); sb.drain for a graceful drain
-end
-
-# Inspect / manage existing sandboxes. `get` returns a controllable
-# SandboxHandle (the live `stop`/`kill`/`drain`/`wait` live on the object from
-# `create`/`start`; fine-grained control lives on the handle). `list` returns a
-# cursor-paginated, Enumerable SandboxPage of handles (runtime v0.6.8).
-Microsandbox::Sandbox.list            # => Microsandbox::SandboxPage (first page)
-Microsandbox::Sandbox.list.map(&:name)  # enumerate the page's handles
-# next page: Sandbox.list_with(cursor: page.next_cursor, limit: 50)
-h = Microsandbox::Sandbox.get("box")  # => Microsandbox::SandboxHandle
-h.status                              # :running, :stopped, :created, ...
-h.stop_with_timeout(5)                # custom escalation timeout
-h.request_stop                        # fire-and-return; pair with #wait_until_stopped
-h.request_kill
-h.request_drain
-h.wait_until_stopped                  # => Microsandbox::SandboxStopResult
-Microsandbox::Sandbox.start("box")    # restart a stopped sandbox
-Microsandbox::Sandbox.remove("box")   # remove a stopped sandbox
-```
-
-**Convergent lifecycle** (runtime `v0.6.16`) — idempotent operations that take a
-name to the state you want, whatever state it is in now:
-
-```ruby
-# Create it, or connect to (and start) the one that is already there. The
-# keyword options are `create`'s and apply only when a create actually happens.
+# Create it, or connect to (and start) the one that already exists.
 sb = Microsandbox::Sandbox.connect_or_create("box", image: "public.ecr.aws/docker/library/alpine:latest")
+sb.status                                  # => :running
+sb = sb.restart                            # stop + start
+sb.destroy                                 # stop + remove
 
-sb.id                     # opaque identity of the *persisted* sandbox — unlike
-                          # the reusable name, it changes on remove+recreate
-sb.wait_for_status(:running)  # => SandboxHandle (no built-in timeout)
-sb = sb.restart               # stop + start; => a new live Sandbox
-sb.destroy                    # stop + remove, in one step
-
-h = Microsandbox::Sandbox.get("box")
-h.connect_or_start        # connect if running, start if not => Sandbox
-h.restart(force: true, timeout: 5)
-h.destroy
+# Handles for existing sandboxes (cursor-paginated list, fine-grained control)
+Microsandbox::Sandbox.list.map(&:name)
+h = Microsandbox::Sandbox.get("box")       # => Microsandbox::SandboxHandle
+h.request_stop
+h.wait_until_stopped                       # => Microsandbox::SandboxStopResult
 ```
 
-Everything that acts on an *existing* receiver — `wait_for_status`, `restart`,
-`destroy`, `connect_or_start` — compares the identity it was bound to against
-the name's current owner first, raising `Microsandbox::SandboxReplacedError`
-rather than touching a sandbox someone else recreated under the same name.
-(`connect_or_create` is the entry point, so it has no prior identity to check:
-it simply converges on whichever sandbox now owns the name.)
+See [docs/lifecycle.md](docs/lifecycle.md) for the live `Sandbox` /
+`SandboxHandle` split, `detach`, and the identity checks behind
+`SandboxReplacedError`.
 
-`connect_or_create`'s block form stops the sandbox only when the call owns its
-lifecycle — i.e. when it created it attached. A sandbox it merely connected to,
-or started with `detached: true`, is left running. And the stop it does issue is
-scoped to that sandbox's `id`, so a name removed and recreated while the block
-ran cannot be taken down by the teardown either.
-
-> **v0.5.8 lifecycle change.** Upstream split the lifecycle into the live
-> `Sandbox` and a controllable `SandboxHandle`, and the gem mirrors it. The live
-> `Sandbox#stop`/`#kill` no longer take a `timeout:`; `#request_stop`/
-> `#request_kill`/`#request_drain`/`#wait_until_stopped` and a custom stop timeout
-> now live on the `SandboxHandle` from `Sandbox.get`. `Sandbox.get`/`.list` return
-> a `SandboxHandle` (was a read-only `SandboxInfo`, kept as a deprecated alias).
-
-### Configuration
+### Running commands
 
 ```ruby
-Microsandbox::Sandbox.create(
-  "configured",
-  image:    "public.ecr.aws/docker/library/python:3-slim",
-  cpus:     2,
-  memory:   1024,                      # MiB
-  env:      { "API_BASE" => "https://example.com" },
-  workdir:  "/app",
-  labels:   { "team" => "research" },
-  ports:    { 8080 => 80 },            # host => guest (TCP)
-  network:  [:public],                 # composable profiles; :none for airgapped
-  replace:  true                       # replace an existing sandbox of the same name
-) do |sb|
-  # ...
+Microsandbox::Sandbox.create("work", image: "public.ecr.aws/docker/library/python:3-slim") do |sb|
+  out = sb.exec("ls", ["-la", "/etc"], cwd: "/", timeout: 30)
+  out.exit_code                              # non-zero exit is data, not an exception
+  sb.shell("cat /etc/os-release | grep VERSION").stdout
+
+  # Stream events as they arrive; ExecHandle is a single-pass Enumerable
+  sb.exec_stream("python", ["-u", "-c", "for i in range(3): print(i)"]).each do |event|
+    print event.text if event.stdout?
+  end
+
+  sb.fs.write("/tmp/data.txt", "hello")
+  sb.fs.read_text("/tmp/data.txt")           # => "hello"
+  sb.fs.copy_to_host("/tmp/data.txt", "./data.txt")
 end
 ```
 
-**Outbound proxy** (runtime `v0.6.17`) — route the sandbox's egress through a
-SOCKS4 (TCP) or SOCKS5 (TCP + non-DNS UDP) proxy with `proxy:`. The proxy is
-dialed by the runtime's host-side network stack, so its address is resolved
-from the host (`127.0.0.1` is the host's loopback), and the egress policy
-(`network:`) still governs which destinations may be reached. A SOCKS5 password
-comes from a host environment variable via `SecretSource.env` — only the
-variable's *name* is handed to the runtime. Local backend only.
+See [docs/execution.md](docs/execution.md) for stdin pipes, signals, the
+image's default command, SSH, and the threading and timeout caveats, and
+[docs/filesystem.md](docs/filesystem.md) for the guest filesystem API.
+
+### Networking and secrets
 
 ```ruby
-Microsandbox::Sandbox.create("worker", image: "python",
-  proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"))
-
-Microsandbox::Sandbox.create("worker", image: "python",
-  proxy: Microsandbox::OutboundProxy.socks5("10.0.0.5:1080")
-    .credentials("sandbox", Microsandbox::SecretSource.env("PROXY_PASSWORD")))
-
-Microsandbox::Sandbox.create("worker", image: "python",
-  proxy: Microsandbox::OutboundProxy.socks4("127.0.0.1:1080", user_id: "ci"))
-
-# The equivalent plain Hash works too:
-Microsandbox::Sandbox.create("worker", image: "python",
-  proxy: { protocol: :socks5, address: "10.0.0.5:1080",
-           credentials: { username: "sandbox", password: { env: "PROXY_PASSWORD" } } })
-```
-
-**Strict hostname policy** (runtime `v0.6.18`) — `strict: true` makes a
-hostname-rule allow fail closed unless the runtime can actually see the request
-authority (plain-HTTP `Host`, or SNI/`:authority` under TLS interception); a
-bypassed or non-intercepted HTTPS flow allowed only by a hostname rule is then
-denied before the upstream dial. Default `false`; create-only. Independently of
-`strict:`, any policy with domain rules now checks plain-HTTP `Host` headers
-against it.
-
-```ruby
-Microsandbox::Sandbox.create("worker", image: "python",
+Microsandbox::Sandbox.create("agent", image: "public.ecr.aws/docker/library/python:3-slim",
   network: Microsandbox::NetworkPolicy.custom(default_egress: :deny,
     rules: [{ action: :allow, direction: :egress, protocol: :tcp, port: 443,
               destination: Microsandbox::Destination.domain("api.example.com") }]),
-  strict: true)
-```
-
-### Executing commands
-
-```ruby
-Microsandbox::Sandbox.create("exec-demo", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
-  # Direct command (no shell)
-  out = sb.exec("ls", ["-la", "/etc"], cwd: "/", timeout: 30)
-  out.exit_code   # => 0
-  out.success?    # => true
-  out.stdout      # => "..." (UTF-8)
-  out.stderr_bytes # => raw ASCII-8BIT bytes
-
-  # Shell script (pipes, redirects, &&)
-  sb.shell("cat /etc/os-release | grep VERSION").stdout
-
-  # Environment, stdin, working directory
-  sb.exec("cat", [], stdin: "piped data")
-  sb.exec("sh", ["-c", "echo $GREETING"], env: { "GREETING" => "hi" })
-end
-```
-
-A non-zero exit is **not** an error — inspect `exit_code`/`success?`. Spawn-time
-failures (e.g. command not found) and timeouts raise typed errors (see below).
-
-**Default workload** (runtime `v0.6.9`): `create` is strictly boot-only — it
-never runs the image's `ENTRYPOINT`/`CMD`. Execute the image's own command
-explicitly:
-
-```ruby
-Microsandbox::Sandbox.create("worker", image: "example/worker:latest",
-  cmd: ["worker.py", "--once"]) do |sb|   # cmd: overrides the durable image CMD
-  out = sb.exec_default(timeout: 300)     # buffered; exec-style options
-  handle = sb.exec_default_stream         # or streaming (returns an ExecHandle)
-  sb.attach_default                       # or interactive (host TTY)
-end
-```
-
-An image whose entrypoint and CMD resolve to no executable command raises
-`Microsandbox::NoDefaultCommandError`.
-
-### Guest filesystem
-
-```ruby
-Microsandbox::Sandbox.create("fs-demo", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
-  sb.fs.write("/tmp/data.txt", "hello")
-  sb.fs.read_text("/tmp/data.txt")     # => "hello"  (UTF-8)
-  sb.fs.read("/tmp/data.txt")          # => raw bytes (ASCII-8BIT)
-  sb.fs.exists?("/tmp/data.txt")       # => true
-
-  sb.fs.mkdir("/tmp/sub")
-  sb.fs.copy("/tmp/data.txt", "/tmp/sub/copy.txt")
-  sb.fs.rename("/tmp/sub/copy.txt", "/tmp/sub/renamed.txt")
-  sb.fs.list("/tmp/sub")               # => [Microsandbox::FsEntry, ...]
-  sb.fs.stat("/tmp/data.txt")          # => Microsandbox::FsMetadata
-
-  # Host <-> guest copies
-  sb.fs.copy_from_host("./local.txt", "/tmp/local.txt")
-  sb.fs.copy_to_host("/tmp/out.txt", "./out.txt")
-end
-```
-
-### Metrics & logs
-
-```ruby
-Microsandbox::Sandbox.create("obs", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
-  # On v0.6.x runtimes the metrics slot goes live a beat after create returns,
-  # so `metrics` can briefly raise "no live metrics slot" right after boot —
-  # retry for a few hundred ms rather than treating the first failure as fatal.
-  m = sb.metrics                       # => Microsandbox::Metrics
-  m.cpu_percent
-  m.memory_bytes
-  m.uptime_secs
-
-  sb.logs(tail: 100, sources: ["stdout", "stderr"]).each do |entry|
-    puts "[#{entry.source}] #{entry.text}"
-  end
-end
-```
-
-### Live modification & health
-
-Resize, reconfigure, or rotate secrets on a sandbox **without recreating it**,
-and probe the guest agent's liveness. To leave headroom for a live CPU/memory
-resize, reserve a ceiling at create time with `max_cpus:`/`max_memory:`:
-
-```ruby
-Microsandbox::Sandbox.create("live", image: "public.ecr.aws/docker/library/alpine:latest",
-  cpus: 1, max_cpus: 4, memory: 512, max_memory: 2048) do |sb|
-  # Health check — does NOT refresh the idle timer:
-  ping = sb.ping                       # => Microsandbox::PingResult
-  ping.latency_ms                      # round-trip latency
-
-  # Explicitly refresh the idle-activity timer (resets any idle_timeout:):
-  sb.touch.activity_seq                # => Microsandbox::TouchResult
-
-  # Preview a change without applying it:
-  plan = sb.modify(cpus: 2, memory: 1024, dry_run: true)
-  plan.applied?                        # => false
-  plan.changes                         # => [{ kind: "config", field: "cpus", ... }, ...]
-
-  # Live resize — applies to the running VM under the default :no_restart policy:
-  sb.modify(cpus: 2, memory: 1024)
-
-  # Grow the root disk (managed upper or flat, MiB — runtime v0.6.9). Applied
-  # while stopped; growth-only:
-  sb.modify(root_disk_size: 8192, policy: :next_start)
-
-  # env/labels/workdir changes on a *running* sandbox require a restart, so the
-  # default :no_restart policy rejects the whole apply (it raises rather than
-  # partially applying). Persist them for the next start — or restart now —
-  # by saying so explicitly:
-  sb.modify(env: { "TIER" => "prod" }, remove_env: ["DEBUG"],
-    labels: { "role" => "worker" }, policy: :next_start)  # or policy: :restart
-
-  # Rotating/removing an *existing* secret (or updating its allowed hosts) is
-  # live; *adding* a new secret is restart-required, like env. Specs are keyed
-  # by name; env:/store:/value: are mutually exclusive:
-  sb.modify(
-    secrets: { "API_KEY" => { env: "HOST_API_KEY", allowed_hosts: ["api.example.com"] } },
-    remove_secrets: ["OLD_TOKEN"],
-  )
-end
-```
-
-The apply is **all-or-nothing**: under a given `policy:` every planned change
-must be applicable, or the whole `modify` raises — nothing is partially
-applied. Use `dry_run: true` to inspect each change's `disposition` (`"live"`,
-`"next start"`, `"requires restart"`) before committing.
-
-`SandboxHandle` (from `Sandbox.get`/`list`) carries the same `#ping`/`#touch`/
-`#modify`; on a stopped sandbox `#ping`/`#touch` raise `SandboxNotRunningError`.
-
-### Streaming output
-
-For long-running commands, stream events as they arrive instead of waiting:
-
-```ruby
-Microsandbox::Sandbox.create("stream", image: "public.ecr.aws/docker/library/python:3-slim") do |sb|
-  handle = sb.exec_stream("python", ["-u", "-c", "import time\nfor i in range(3): print(i); time.sleep(1)"])
-  handle.each do |event|       # ExecHandle is Enumerable
-    print event.text if event.stdout?
-  end
-  # or: out = handle.collect  → ExecOutput  (drain to the end)
-  # interactive stdin — create the stream with stdin: :pipe to get a writable sink:
-  #   h = sb.exec_stream("cat", [], stdin: :pipe)
-  #   sink = h.stdin; sink.write("data\n"); sink.close  # close sends EOF
-  # control: handle.signal(15), handle.kill, handle.resize(rows, cols)
-end
-```
-
-> **Streams are single-pass.** `ExecHandle`, `LogStream`, `MetricsStream`,
-> `FsReadStream`, `PullSession`, and `AgentStream` are `Enumerable`, but `each`
-> drains a one-shot native channel — they are forward-only, not rewindable, and
-> meant for a single consumer. Iterate (or `collect`/`read`) exactly once: a
-> second `each`, or a combinator after a partial drain (`count` then `each`,
-> `to_a` twice), silently yields nothing. Don't share one handle across threads.
-
-### Images
-
-Manage the local OCI image cache (images are pulled automatically on `create`):
-
-```ruby
-Microsandbox::Image.list           # => [Microsandbox::ImageInfo, ...]
-Microsandbox::Image.get("public.ecr.aws/docker/library/alpine:latest")  # => Microsandbox::ImageInfo
-Microsandbox::Image.inspect("public.ecr.aws/docker/library/alpine:latest").layers  # => [{...}, ...]
-Microsandbox::Image.remove("public.ecr.aws/docker/library/alpine:latest", force: true)
-report = Microsandbox::Image.prune
-report.bytes_reclaimed
-```
-
-### Private & authenticated registries
-
-Images are pulled automatically on `create`. For a private registry — or to lift
-Docker Hub's anonymous rate limit — pass `registry_auth:` with a username and a
-password or token:
-
-```ruby
-Microsandbox::Sandbox.create(
-  "private",
-  image: "registry.example.com/team/app:latest",
-  registry_auth: { username: "ci-bot", password: ENV.fetch("REGISTRY_TOKEN") }
+  strict: true,
+  proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"),
+  secrets: { "API_KEY" => { env: "HOST_API_KEY", allowed_hosts: ["api.example.com"] } }
 ) do |sb|
   # ...
 end
 ```
 
-For self-hosted registries you can also reach the registry over plain HTTP and
-trust a private CA:
+See [docs/configuration.md](docs/configuration.md) for every create option,
+including resources, ports, volumes, and root-disk layout.
+
+### Observability and live modification
 
 ```ruby
-Microsandbox::Sandbox.create(
-  "internal",
-  image: "registry.internal:5000/app:latest",
-  registry_insecure: true,                                  # plain HTTP instead of HTTPS
-  registry_ca_certs: File.read("/etc/pki/internal-ca.pem")  # String or Array of PEMs
-)
+sb.metrics.cpu_percent                     # metrics slot goes live a beat after boot
+sb.logs(tail: 100).each { |e| puts e.text }
+sb.ping.latency_ms
+sb.modify(cpus: 2, memory: 1024, dry_run: true).changes   # preview, then apply
 ```
 
-Without `registry_auth:`, the core's default credential resolution still applies
-(OS keyring, global config, and `~/.docker/config.json`), so an existing
-`docker login` is honored automatically.
+See [docs/observability.md](docs/observability.md).
 
-### Named volumes
+## Documentation
 
-Persistent storage that outlives individual sandboxes:
+| Topic | Guide |
+|-------|-------|
+| Create, stop, handles, convergent lifecycle, identity checks | [docs/lifecycle.md](docs/lifecycle.md) |
+| Create options: resources, network policy, strict mode, proxies, secrets, volumes | [docs/configuration.md](docs/configuration.md) |
+| `exec`/`shell`, default workload, streaming, single-pass streams, threads and timeouts, SSH, raw agent client | [docs/execution.md](docs/execution.md) |
+| Guest filesystem, streaming reads/writes, host copies | [docs/filesystem.md](docs/filesystem.md) |
+| Metrics, logs, `ping`/`touch`, live `modify` plans | [docs/observability.md](docs/observability.md) |
+| Image cache, private registries, snapshots | [docs/images.md](docs/images.md) |
+| Runtime binaries gem, `msb` resolution order, backends, environment variables | [docs/runtime.md](docs/runtime.md) |
+| Error classes and stable codes | [docs/errors.md](docs/errors.md) |
+| Complete supported surface and what is not yet exposed | [docs/surface.md](docs/surface.md) |
+| Release process, precompiled and binaries gems | [docs/releasing.md](docs/releasing.md) |
+| Architecture: native extension, sync bridge, GVL, error mapping | [DESIGN.md](DESIGN.md) |
+| Companion runtime gem internals | [binaries/README.md](https://github.com/ya-luotao/microsandbox-rb/blob/main/binaries/README.md) |
 
-```ruby
-Microsandbox::Volume.create("cache", kind: "disk", size_mib: 512)
-Microsandbox::Volume.list           # => [Microsandbox::VolumeInfo, ...]
+API reference: [rubydoc.info/gems/microsandbox-rb](https://rubydoc.info/gems/microsandbox-rb).
+Type signatures: [`sig/microsandbox.rbs`](sig/microsandbox.rbs).
 
-Microsandbox::Sandbox.create("with-vol", image: "public.ecr.aws/docker/library/alpine:latest",
-                             volumes: { "/data" => { named: "cache" } }) do |sb|
-  sb.fs.write("/data/state.txt", "persisted")
-end
+## Comparison with the official Ruby gem
 
-Microsandbox::Volume.remove("cache")
-```
+Since upstream `v0.6.9` the microsandbox repository ships an official
+`microsandbox` gem built from
+[`sdk/ruby`](https://github.com/superradcompany/microsandbox/tree/main/sdk/ruby),
+a compact veneer over the same Rust SDK. Both gems define the `Microsandbox`
+module, so use one or the other in a process, not both. Differences below are
+taken from the official gem's own README as of upstream `v0.6.18`.
 
-`volumes:` accepts a host path String (bind mount) or `{ bind: "/host" }` /
-`{ named: "volume-name" }` per guest path. A bind or named mount may pin the
-fallback guest owner for host files with `uid:`/`gid:` (both required together,
-runtime `v0.6.15`). Boot from a snapshot with
-`Sandbox.create(name, from_snapshot: "snap-name-or-path")`.
-
-### Error handling
-
-All errors descend from `Microsandbox::Error` and carry a stable `#code`:
-
-```ruby
-begin
-  Microsandbox::Sandbox.create("dup", image: "public.ecr.aws/docker/library/alpine:latest")
-  Microsandbox::Sandbox.create("dup", image: "public.ecr.aws/docker/library/alpine:latest")  # name clash
-rescue Microsandbox::SandboxAlreadyExistsError => e
-  warn "#{e.code}: #{e.message}"       # => "sandbox-already-exists: ..."
-rescue Microsandbox::Error => e
-  warn "microsandbox failed: #{e.message}"
-end
-```
-
-| Class | `#code` |
-|-------|---------|
-| `InvalidConfigError` | `invalid-config` |
-| `SandboxNotFoundError` | `sandbox-not-found` |
-| `SandboxAlreadyExistsError` | `sandbox-already-exists` |
-| `SandboxStillRunningError` | `sandbox-still-running` |
-| `ExecTimeoutError` | `exec-timeout` |
-| `ExecFailedError` | `exec-failed` |
-| `FilesystemError` | `filesystem-error` |
-| `ImageNotFoundError` | `image-not-found` |
-| `MetricsDisabledError` / `MetricsUnavailableError` | `metrics-disabled` / `metrics-unavailable` |
-| … | (see `lib/microsandbox/errors.rb`) |
-
-## Runtime configuration
-
-The `msb` runtime path is resolved in this order: the `MSB_PATH` environment
-variable → the `microsandbox-rb-binaries` gem (or another SDK-set override) →
-the config file → `~/.microsandbox/bin/msb` → `msb` on `PATH`.
-`Microsandbox.runtime_path` reports the winner.
-
-```ruby
-Microsandbox.installed?            # => true/false
-Microsandbox.install               # download + install the runtime (idempotent)
-Microsandbox.runtime_path          # => "/Users/you/.microsandbox/bin/msb"
-Microsandbox.runtime_path = "/opt/microsandbox/bin/msb"  # override (set-once)
-Microsandbox.libkrunfw_path = "/opt/microsandbox/lib/libkrunfw.dylib"  # override (set-once)
-```
-
-When [`microsandbox-rb-binaries`](#the-runtime-binaries) is installed,
-`require "microsandbox"` claims that SDK-set slot with the gem's vendored `msb`
-(the firmware is found alongside it), and `runtime_path` points into the gem.
-The two gems are versioned in lockstep and the companion gem must be the same
-version **and** built for the same upstream runtime — a mismatch of either is reported with a warning and
-skipped, and the SDK falls back to `~/.microsandbox` rather than driving a
-runtime it doesn't match. Because the slot is **set-once**,
-`Microsandbox.runtime_path=` is then a no-op: use the `MSB_PATH` environment
-variable, which outranks it, to point at a different runtime.
-
-### Backend routing
-
-As of v0.5.8 every operation runs through a backend. The default is the local
-libkrun backend; without any configuration nothing changes. A backend can be
-selected programmatically or via the environment:
-
-```ruby
-Microsandbox.default_backend_kind          # => :local (or :cloud)
-Microsandbox.set_default_backend(:cloud, url: "https://api.example.com", api_key: ENV["MSB_API_KEY"])
-# or a named profile from ~/.microsandbox/config.json:
-Microsandbox.set_default_backend(:cloud, profile: "prod")
-
-# Scoped override (restored afterward, even on error):
-Microsandbox.with_backend(:local) { Microsandbox::Sandbox.create("box", image: "alpine") { |sb| ... } }
-```
-
-Resolution order when no backend is set programmatically: `MSB_BACKEND`
-(`local`/`cloud`) → `MSB_PROFILE` → the `active_profile` in
-`~/.microsandbox/config.json` (path overridable via `MSB_CONFIG_PATH`) →
-local. **Cloud intent must be explicit** (since runtime `v0.6.9`): a bare
-`MSB_API_KEY` is treated as credential material, not backend intent, and no
-longer selects the cloud on its own — pair it with `MSB_BACKEND=cloud` (which
-reads `MSB_API_URL`/`MSB_API_KEY`), or select a cloud profile. Invalid cloud
-configuration (e.g. `MSB_BACKEND=cloud` without a usable API key or cloud
-profile) fails closed with `Microsandbox::InvalidConfigError` instead of
-silently running locally. The cloud backend currently supports a subset of
-operations (create/start/stop/remove/get/list, one-shot exec, follow log
-streaming); unsupported operations raise `Microsandbox::UnsupportedError`.
+| Capability | `microsandbox-rb` (this gem) | official `microsandbox` gem |
+|---|:---:|:---:|
+| Lifecycle, convergent `connect_or_create`, local/cloud backends | ✅ | ✅ |
+| Collected `exec`/`shell`, logs, metrics, guest filesystem | ✅ | ✅ |
+| Image, volume, and snapshot management | ✅ | ✅ |
+| Streaming exec, logs, metrics, filesystem handles | ✅ | not exposed |
+| Interactive SSH/SFTP client and server | ✅ | `ssh_exec` only |
+| Live modification plans (`modify`, dry-run) | ✅ | not exposed |
+| Outbound SOCKS proxy (`proxy:`) | ✅ | ✅ |
+| Full network policy and mount builders, strict hostname mode | ✅ | not exposed |
+| Rootfs patches, structured root disk, raw `agentd` client | ✅ | — |
+| RBS type signatures | ✅ | — |
+| Runtime binaries | companion gem or first-use download | first-use download |
+| Version numbering | own semver; runtime tag via `Microsandbox.runtime_version` | mirrors the upstream tag |
 
 ## Versioning
 
-The gem follows its **own** [semantic version](https://semver.org/), **independent
-of** the upstream `microsandbox` runtime it embeds. Early releases (`0.5.7`–`0.5.9`)
-happened to share the upstream tag, but gem-only revisions and a bundled breaking
-change diverged the two numbers — the gem version is **not** a reliable indicator
-of the embedded runtime version. To learn which runtime a build wraps, ask it:
+The gem follows its **own** [semantic version](https://semver.org/), independent
+of the upstream runtime it embeds: early releases (`0.5.7`–`0.5.9`) happened to
+share the upstream tag, but the numbers have diverged since and the gem version
+is **not** an indicator of the embedded runtime. Ask the build instead:
 
 ```ruby
 Microsandbox::VERSION          # => "0.17.0"  (the gem's own version)
 Microsandbox.runtime_version   # => "v0.6.18" (the embedded upstream runtime tag)
 ```
 
-The companion [`microsandbox-rb-binaries`](#the-runtime-binaries) gem is
-versioned in **lockstep** with this gem (same number, released together) and
-pins the same upstream runtime — install both at the same version. The gem's
-`Microsandbox::Binaries::VERSION` and `::RUNTIME_VERSION` are asserted against
-this gem's constants by the test suite, so a companion gem can't silently go
-stale.
+While the gem is `0.x`, a breaking API change bumps the minor and a fix bumps
+the patch. Adopting a new upstream runtime bumps the gem version, the pinned
+git tag, `Microsandbox::RUNTIME_VERSION`, and the table below together. The
+companion `microsandbox-rb-binaries` gem is versioned in lockstep (same number,
+released together) and pins the same runtime; the test suite asserts both
+constants against this gem's. Every release records its runtime in
+[CHANGELOG.md](CHANGELOG.md).
 
 | Gem version | Upstream runtime | Notes |
 |-------------|------------------|-------|
@@ -637,145 +235,41 @@ stale.
 | `0.16.0` | `v0.6.16` | adopts upstream `v0.6.15`+`v0.6.16` step by step: mount fallback ownership, readonly-mount write-probe fix, log retrieval rerouted through the SDK backends, config overlaid by field presence, network-slot recycling. Parity: per-mount `uid:`/`gid:`, and the convergent lifecycle — `Sandbox.connect_or_create`, `#id`, `#wait_for_status`, `#restart`, `#destroy`, `SandboxHandle#connect_or_start`, `SandboxReplacedError` |
 | `0.17.0` | `v0.6.18` | adopts upstream `v0.6.17`+`v0.6.18` step by step: outbound SOCKS4/SOCKS5 proxies (SOCKS5 UDP + credentials), migration-order fix for databases last opened by a `v0.6.15` `msb`, security hardening — plain-HTTP `Host`/`:authority` now checked against domain-rule policies even in non-strict mode, plus fail-closed strict hostname mode. Parity: `proxy:` (`Microsandbox::OutboundProxy` / `SecretSource`), `strict:` |
 
-**Going forward** — the gem version moves on its own semver track and no longer
-mirrors the upstream tag:
-
-- A **gem-only** change (new bindings, fixes, refactors over the *same* runtime)
-  bumps the gem version by itself.
-- **Adopting a new upstream runtime** bumps the gem version too and updates the
-  pinned git tag, `Microsandbox::RUNTIME_VERSION`, and the table above together.
-- While the gem is `0.x`, a breaking API change bumps the **minor** (`0.5 → 0.6`),
-  not the patch — the `0.5.9 → 0.5.10` lifecycle split predates this policy and is
-  the reason for it.
-
-Every release records its embedded runtime in `CHANGELOG.md`, and
-`Microsandbox.runtime_version` reports it at runtime.
-
 ## Development
 
 ```bash
-bin/setup            # bundle install
-bundle exec rake compile          # build the native extension (debug)
-bundle exec rake compile:release  # build optimized
-bundle exec rake spec             # run unit specs (no runtime needed)
-MICROSANDBOX_INTEGRATION=1 bundle exec rake spec:all   # + real microVM specs
+bin/setup                                  # bundle install + compile the native extension
+bundle exec rake compile                   # rebuild the extension (debug); compile:release for optimized
+bundle exec rake spec                      # unit specs (no runtime needed)
+MICROSANDBOX_INTEGRATION=1 bundle exec rspec spec/integration   # boot real microVMs (KVM / Apple Silicon)
+bundle exec standardrb                     # Ruby lint
+cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml
+cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings
 ```
 
-Unit specs run without a runtime. Integration specs boot real microVMs and are
-opt-in via `MICROSANDBOX_INTEGRATION=1` (override the test image with
-`MICROSANDBOX_TEST_IMAGE`).
+CI compiles and runs the unit suite on Ruby 3.1 through 3.4 on Linux and macOS,
+lints Rust and Ruby, packages and installs the built gems, builds every
+`microsandbox-rb-binaries` platform gem, and boots real microVMs in a KVM
+integration job against both the provisioned and the bundled runtime.
 
-The native extension depends on the `microsandbox` core crate via a pinned git
-tag, so it builds without an adjacent checkout. To develop against a sibling
-`microsandbox/` checkout instead (faster, reflects local runtime changes):
+The native extension pins the upstream core crate by git tag, so it builds
+without an adjacent checkout. To develop against a sibling `microsandbox/`
+checkout instead:
 
 ```bash
 cp .cargo/config.toml.example .cargo/config.toml   # gitignored path override
 bundle exec rake compile
 ```
 
-## Releasing
-
-Releases are automated by `.github/workflows/release.yml` via RubyGems
-**Trusted Publishing** (OIDC) — there is no API key to store as a secret. The
-trusted publisher is already configured for this gem, so no per-release secret
-or credential setup is needed.
-
-**Each release:**
-
-1. Bump the gem's **own** version — `Microsandbox::VERSION` and the matching
-   `[package] version` in `ext/microsandbox/Cargo.toml` (they must stay equal) —
-   on its independent semver track (see [Versioning](#versioning)); **don't** pick
-   the number to mirror the upstream tag. If the release also adopts a new upstream
-   runtime, bump the `tag = "vX.Y.Z"` on **both** the `microsandbox` and
-   `microsandbox-network` git deps, update `Microsandbox::RUNTIME_VERSION` to match,
-   and add a row to the Versioning table. Also bump
-   `Microsandbox::Binaries::VERSION` (and, on a runtime adoption,
-   `::RUNTIME_VERSION`) in `binaries/lib/microsandbox/binaries.rb` — the
-   companion gem ships in lockstep and the specs assert both. Update
-   `CHANGELOG.md`.
-2. Push a `vX.Y.Z` tag. CI builds the **source gem** and pushes it to RubyGems
-   via `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no
-   `RUBYGEMS_API_KEY` secret required.
-
-> **Precompiled per-platform gems** are built best-effort by the `cross-gems`
-> job, gated to manual `workflow_dispatch` so you can iterate
-> (`gh workflow run release.yml`) without failing tag releases. They are not
-> auto-published on tags yet: a gem that *compiles but can't boot a microVM*
-> would be served to users ahead of the source gem, and CI can't boot a VM to
-> prove otherwise — so promotion is manual after validating the artifact on each
-> platform. A precompiled gem ships the compiled extension (with the guest
-> `agentd` baked in by *target* arch); the host-side `msb` + `libkrunfw` runtime
-> is **not** in it — that comes from the companion `microsandbox-rb-binaries`
-> gem, or, when that isn't installed, is fetched into `~/.microsandbox` on first
-> use by `Microsandbox.ensure_runtime!` (libkrunfw is `dlopen`'d by `msb` at
-> runtime, never linked into the gem). The
-> real cross-compile work is linking the *target* native libraries — `libcap-ng`
-> on Linux (handled via Debian multiarch in the workflow) and the Hypervisor +
-> Security frameworks on macOS (via osxcross; the one platform left to confirm).
-> Until promoted, users install the source gem (which compiles via `rb_sys`).
-
-> **Runtime binaries gems** (`microsandbox-rb-binaries`, source in `binaries/`)
-> are a *separate* artifact from the precompiled extension gems above: they carry
-> no Ruby extension, only the upstream `msb` + `libkrunfw` for one platform,
-> verified against the release's published `checksums.sha256` when vendored. CI's
-> `binaries` job vendors and builds all three (`arm64-darwin`,
-> `x86_64-linux-gnu`, `aarch64-linux-gnu`) on every run and smoke-tests the host
-> one; `release.yml`'s `binaries-gems` job does the same on a tag and a separate
-> `publish-binaries` job pushes them after the SDK gem is live (a companion
-> failure is its own red job and never blocks the SDK release).
-> They use their own RubyGems trusted-publisher entry (same repo + workflow,
-> gem name `microsandbox-rb-binaries`). To build them by hand:
-> `rake -C binaries vendor[<platform>]` then `rake -C binaries build[<platform>]`
-> (→ `binaries/pkg/*.gem`).
-
-See [DESIGN.md](DESIGN.md) for the architecture and the implemented-surface
-section. The binding covers the official-SDK surface: sandbox
-lifecycle (the live `Sandbox` `stop`/`stop_and_wait`/`kill`/`drain`/`wait`/
-`status`/`detach`/`owns_lifecycle?`, plus the `SandboxHandle` controls
-`stop_with_timeout`/`request_stop`/`request_kill`/`request_drain`/
-`wait_until_stopped`/`config`/`config_json`/`snapshot` from
-`Sandbox.get`, and the cursor-paginated `list`/`list_with` with label
-filters),
-backend routing (`set_default_backend`/`with_backend`/`default_backend_kind`),
-`exec`/`shell` (collected and streaming), interactive `attach`/
-`attach_shell`, the full guest filesystem (incl. streaming `read_stream`/
-`write_stream`), metrics (per-sandbox, `Microsandbox.all_sandbox_metrics`, and
-streaming `metrics_stream`/`log_stream`), logs, OCI image-cache management,
-named volumes (incl. host-side `Volume.fs`/`VolumeInfo#fs` read/write),
-snapshots (create/open/list/list_dir/reindex/verify/save/load +
-boot-from-snapshot), image archives (`Image.load`/`Image.save`), streaming
-image-pull progress (`Sandbox.create_with_progress` → `PullSession`),
-**rootfs patches** (`Microsandbox::Patch`), the structured **root disk**
-(`root_disk:` managed/tmpfs/disk via `Microsandbox::RootDisk`), **network
-configuration** (composable profiles, custom per-rule
-`Microsandbox::NetworkPolicy`/`Rule`/`Destination`, plus DNS, TLS interception,
-IPv4/IPv6 pools, `max_connections`, `trust_host_cas`, `strict` hostname mode,
-outbound SOCKS4/SOCKS5 `proxy:`), **secrets** (multi-host /
-wildcard allow-lists, injection toggles, per-secret + sandbox-level violation
-policy), **SSH** (`Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`), and the
-**raw agent client** (`Microsandbox::AgentClient`). Create options span
-resources, `init`/`ephemeral`, disk-image `fstype`, network policy + config,
-`log_level`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches`/`volumes`
-(bind/named/tmpfs/disk with mount policies) and more; `exec`/`shell` take
-per-call `rlimits`, and `create` accepts
-`registry_auth`/`registry_insecure`/`registry_ca_certs` for private and
-authenticated registries, plus customizable provisioning via `Microsandbox.setup`.
-
-A few secondary upstream knobs are not yet exposed: per-published-port host bind
-address (ports always bind loopback), network interface overrides, and inline
-named-volume create-mode (pre-create the volume with `Volume.create`, then mount
-it with `{ named: "…" }`).
-
 ## Contributing
 
-This is a community-maintained gem and **contributions are very welcome** —
-bug reports, fixes, docs, and feature work alike. Open an
-[issue](https://github.com/ya-luotao/microsandbox-rb/issues) or send a
-[pull request](https://github.com/ya-luotao/microsandbox-rb/pulls); PRs target
-`main`. Before pushing, run the local gate (Rust `fmt`/`clippy`, `standardrb`,
-and unit specs) — see [Development](#development).
+Bug reports and pull requests are welcome on
+[GitHub](https://github.com/ya-luotao/microsandbox-rb/issues). Please include a
+failing spec with bug reports where possible and keep pull requests focused on
+one change; PRs target `main`. When the public API changes, update
+`sig/microsandbox.rbs` and `CHANGELOG.md` in the same change, and run the local
+gate (`cargo fmt`/`clippy`, `standardrb`, unit specs) before pushing.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Released under the [Apache License 2.0](LICENSE).

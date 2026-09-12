@@ -48,6 +48,7 @@ Gem::Specification.new do |spec|
     "Cargo.lock",
     "README.md",
     "CHANGELOG.md",
+    "docs/**/*.md",
     "DESIGN.md",
     "LICENSE"
   ]

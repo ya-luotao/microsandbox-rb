@@ -19,7 +19,8 @@ Plus a companion gem in its own subtree:
   build[<platform>]`). It is NOT part of this gem's bundle and has no dependency edge to it in
   either direction; the SDK discovers it at `require "microsandbox"` time. See `binaries/README.md`.
 
-Deeper architecture is in `DESIGN.md`; usage in `README.md`.
+Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the per-topic guides in
+`docs/` (shipped in the gem; `docs/surface.md` is the single authoritative scope statement).
 
 ## Build / test / lint
 
@@ -77,8 +78,9 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md`.
 
 ## Conventions
 
-- When the public Ruby API changes, update `sig/microsandbox.rbs` (hand-maintained RBS) and
-  `CHANGELOG.md` (Keep-a-Changelog) in the same change.
+- When the public Ruby API changes, update `sig/microsandbox.rbs` (hand-maintained RBS),
+  `CHANGELOG.md` (Keep-a-Changelog), and the relevant `docs/*.md` guide (at minimum
+  `docs/surface.md`) in the same change.
 - Commits: conventional style, e.g. `fix(exec): ...`, `docs(readme): ...`. Branches:
   `feature/<desc>`, `fix/<desc>`. PRs target `main`.
 

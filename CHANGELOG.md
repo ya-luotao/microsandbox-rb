@@ -6,6 +6,22 @@ All notable changes to this gem are documented here. The format is based on
 microsandbox runtime it embeds; each release notes the upstream runtime tag it
 wraps, and the README's Versioning section keeps the full gem→runtime map.
 
+## [Unreleased]
+
+### Changed
+
+- **README restructured** along the lines of a conventional Ruby SDK README:
+  badges, a Highlights list, a short install + quick start, a Documentation
+  table, and a sourced comparison with the official `microsandbox` gem. The
+  detailed guides moved verbatim into `docs/` (`lifecycle`, `configuration`,
+  `execution`, `filesystem`, `observability`, `images`, `runtime`, `errors`,
+  `surface`, `releasing`), which the gem now ships (`spec.files`), so the
+  links resolve on rubygems.org and rubydoc.info. `docs/surface.md` replaces
+  the duplicated implemented-surface prose in README and `DESIGN.md` as the
+  single scope statement. `docs/errors.md` lists every error class and marks
+  the four the native layer does not currently raise (`PathNotFoundError`,
+  `ImagePullFailedError`, `SecretViolationError`, `TlsError`) as reserved.
+
 ## [0.17.0] - 2026-09-13
 
 Adopts upstream runtime **`v0.6.16` → `v0.6.18`**, stepping through the

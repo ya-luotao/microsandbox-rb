@@ -211,7 +211,7 @@ git. The override must never be committed — it would break container builds.
   The job is gated to `workflow_dispatch` and **not** auto-published on tags:
   since CI can't boot a microVM to prove a built gem actually works, gems are
   promoted to the publish path manually after per-platform validation. Published
-  to RubyGems via Trusted Publishing (OIDC). See [Releasing](README.md#releasing).
+  to RubyGems via Trusted Publishing (OIDC). See [docs/releasing.md](docs/releasing.md).
 * **Runtime binaries gems** (`microsandbox-rb-binaries`): a distinct artifact
   from the precompiled *extension* gems above — no Ruby code beyond a small
   locator module, just the verified upstream `msb` + `libkrunfw` for one
@@ -232,42 +232,11 @@ git. The override must never be committed — it would break container builds.
 
 ## Implemented surface (v1) vs roadmap
 
-**Implemented:** sandbox lifecycle (`create`/`start`/`get`/`list`/`list_with`/
-`remove`; the live `Sandbox` exposes `stop`/`stop_and_wait`/`kill`/`drain`/
-`wait` (→ `ExitStatus`) / `status` / `detach` / `owns_lifecycle?`, while the
-controllable `SandboxHandle` from `get`/`list` carries the fine-grained
-`stop_with_timeout`/`request_stop`/`request_kill`/`request_drain`/
-`wait_until_stopped` (→ `SandboxStopResult`) controls — the v0.5.8 live-vs-handle
-split that mirrors the official SDKs), backend routing (`set_default_backend`/
-`with_backend`/`default_backend_kind`), block form), `exec`/`shell` with collected `ExecOutput`,
-**streaming** `exec_stream`/`shell_stream` (`ExecHandle` is `Enumerable` over
-`ExecEvent`s, with stdin sink + signal/kill/resize), the full guest filesystem
-API (`fs.read`/`write`/`list`/`mkdir`/`remove`/`stat`/…), `metrics`,
-`Microsandbox.all_sandbox_metrics`, **streaming `metrics_stream`/`log_stream`**
-(`Enumerable` over `Metrics`/`LogEntry`), `logs`,
-**OCI image-cache management** (`Image.get`/`list`/`inspect`/`remove`/`prune`),
-**named volumes** (`Volume.create`/`get`/`list`/`remove` + `volumes:` mounts),
-**snapshots** (`Snapshot.create`/`get`/`list`/`remove`/`verify`/`export`/`import`
-+ `from_snapshot:` boot), **rootfs patches** (`Patch.text`/`file`/`append`/
-`copy_file`/`copy_dir`/`symlink`/`mkdir`/`remove` via `create(patches:)`),
-**custom per-rule network policies** (`NetworkPolicy`/`Rule`/`Destination` —
-CIDR/IP/domain/suffix/group allow-deny rules with per-direction defaults and
-bulk domain denials, alongside the presets), interactive **`attach`/
-`attach_shell`** (host-TTY coupled — raw mode + SIGWINCH), **SSH**
-(`Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`), the **raw agent client**
-(`AgentClient` → `AgentStream`/`AgentFrame`),
-`version`/`install`/`installed?`/`ensure_runtime!`, **registry auth**
-(`registry_auth`/`registry_insecure`/`registry_ca_certs` on `create`, for
-private/authenticated registries), and the typed error hierarchy.
-
-Create options now cover `image`, `cpus`, `memory`, `oci_upper_size`, `env`,
-`workdir`, `shell`, `user`, `hostname`, `labels`, `scripts`, `entrypoint`,
-`ports`/`ports_udp`, `volumes`, `patches`, `network` (policy presets
-`public_only`/`none`/`allow_all`/`non_local`, or a custom `NetworkPolicy`/Hash),
-`log_level`, `quiet_logs`, `security`, `max_duration`, `idle_timeout`, `rlimits`,
-`pull_policy`, `registry_auth`/`registry_insecure`/`registry_ca_certs`,
-`secrets`, `from_snapshot`, `detached`, and `replace`/`replace_with_timeout`.
-`exec`/`shell` add per-call `rlimits`.
+The authoritative, up-to-date scope statement — every implemented API family,
+the full create-option list, and the handful of upstream knobs not yet exposed —
+lives in [docs/surface.md](docs/surface.md), with the typed counterpart in
+`sig/microsandbox.rbs`. It is maintained there (and only there) so this file
+and the README cannot drift from each other.
 
 ## Verification
 
