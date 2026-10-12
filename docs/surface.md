@@ -23,8 +23,10 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   `write_stream`.
 - **Observability** — per-sandbox `metrics`, `Microsandbox.all_sandbox_metrics`,
   streaming `metrics_stream`/`log_stream`, `logs`, `ping`/`touch`.
-- **Live modification** — `modify` with `dry_run:`, `policy:`, CPU/memory
-  resize, root-disk growth, env/labels/workdir, secret rotation.
+- **Live modification** — `modify` with `dry_run:` and `policy:`: CPU/memory
+  resize (`cpus`/`max_cpus`/`memory`/`max_memory`), root-disk growth
+  (`root_disk_size`, MiB), `env`/`remove_env`, `labels`/`remove_labels`,
+  `workdir`, and secret rotation (`secrets`/`remove_secrets`).
 - **OCI image cache** — `Image.get`/`list`/`inspect`/`remove`/`prune`, image
   archives (`Image.load`/`Image.save`), streaming pull progress
   (`Sandbox.create_with_progress` → `PullSession`).
@@ -35,14 +37,16 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 - **Rootfs patches** — `Microsandbox::Patch` (text/file/append/copy_file/
   copy_dir/symlink/mkdir/remove) via `create(patches:)`.
 - **Root disk** — structured `root_disk:` (managed / tmpfs / disk / flat via
-  `Microsandbox::RootDisk`), `follow_root_symlinks:`.
+  `Microsandbox::RootDisk`), `follow_root_symlinks:`; `oci_upper_size:` is the
+  deprecated alias for a managed `root_disk:` size.
 - **Network configuration** — composable profiles, custom per-rule
-  `Microsandbox::NetworkPolicy`/`Rule`/`Destination`, DNS, TLS interception,
-  IPv4/IPv6 pools, `max_connections`, `trust_host_cas`, `strict` hostname mode,
+  `Microsandbox::NetworkPolicy`/`Rule`/`Destination`, custom DNS (`dns:`),
+  TLS-interception tuning (`tls:`), guest address pools (`ipv4_pool:`/
+  `ipv6_pool:`), `max_connections`, `trust_host_cas`, `strict` hostname mode,
   outbound SOCKS4/SOCKS5 `proxy:` (`OutboundProxy`/`SecretSource`),
   `rate_limiter:`, `vsock:`.
 - **Secrets** — multi-host / wildcard allow-lists, injection toggles,
-  per-secret and sandbox-level violation policy.
+  per-secret `on_violation:` and sandbox-level `on_secret_violation:` policy.
 - **SSH** — `Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`, with
   `inactivity_timeout:`.
 - **Raw agent client** — `Microsandbox::AgentClient` → `AgentStream`/
@@ -55,9 +59,10 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 - **Errors** — the typed hierarchy in [errors.md](errors.md).
 
 Create options span resources (`cpus`/`memory`/`max_cpus`/`max_memory`),
-`env`/`workdir`/`labels`/`user`/`hostname`/`shell`, `init`/`ephemeral`,
+`env`/`workdir`/`labels`/`user`/`hostname`/`shell`, named `scripts`, the image
+`entrypoint`/`cmd` overrides, `init`/`ephemeral`,
 disk-image `fstype`, `ports`/`ports_udp`, network policy + config,
-`log_level`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches`/`volumes`
+`log_level`/`quiet_logs`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches`/`volumes`
 (bind/named/tmpfs/disk with mount policies, `uid`/`gid`, `quota_mib`),
 `idle_timeout`/`max_duration`, `from_snapshot`, `detached`, and
 `replace`/`replace_with_timeout`.

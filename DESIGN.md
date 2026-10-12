@@ -317,7 +317,8 @@ create options, full mount options (tmpfs/disk + stat-virtualization/
 host-permissions), and snapshot inspection (`open`/`list_dir`/`reindex`).
 
 A few **secondary** upstream knobs remain unexposed (a genuine binding gap, not
-upstream-gated — they exist at the pinned `v0.6.2` runtime): per-published-port host
+upstream-gated — they exist at the pinned runtime,
+`Microsandbox::RUNTIME_VERSION`): per-published-port host
 **bind address** (ports always bind loopback), network **interface overrides**,
 and inline **named-volume create-mode** (pre-create with `Volume.create`, then
 mount with `{ named: }`). These slot in module-by-module exactly as the existing

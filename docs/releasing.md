@@ -7,19 +7,34 @@ or credential setup is needed.
 
 ## Each release
 
-1. Bump the gem's **own** version — `Microsandbox::VERSION` and the matching
-   `[package] version` in `ext/microsandbox/Cargo.toml` (they must stay equal) —
-   on its independent semver track (see the
+1. Bump the gem's **own** version on its independent semver track (see the
    [Versioning](../README.md#versioning) section of the README); **don't** pick
-   the number to mirror the upstream tag. If the release also adopts a new
-   upstream runtime, bump the `tag = "vX.Y.Z"` on **all three** upstream git
-   deps (`microsandbox`, `microsandbox-network`, `microsandbox-runtime`), update
-   `Microsandbox::RUNTIME_VERSION` to match, commit the release's
-   `checksums.sha256` as `binaries/checksums/<tag>.sha256`, and add a row to the
-   Versioning table. Also bump `Microsandbox::Binaries::VERSION` (and, on a
-   runtime adoption, `::RUNTIME_VERSION`) in
-   `binaries/lib/microsandbox/binaries.rb` — the companion gem ships in
-   lockstep and the specs assert both. Update `CHANGELOG.md`.
+   the number to mirror the upstream tag. The version is written in three
+   files that must stay equal (`spec/unit/version_spec.rb` asserts it), and
+   recorded in the lockfile:
+   - `lib/microsandbox/version.rb` — `Microsandbox::VERSION`;
+   - `ext/microsandbox/Cargo.toml` — the `[package] version`;
+   - `binaries/lib/microsandbox/binaries.rb` — `Microsandbox::Binaries::VERSION`
+     (the companion gem ships in lockstep);
+   - `Cargo.lock` — committed and packed into the gem, and it records the
+     extension crate's version, so a version bump must commit the regenerated
+     lock (`bundle exec rake compile` rewrites it).
+
+   If the release also adopts a new upstream runtime, move the runtime tag
+   everywhere it is named:
+   - `ext/microsandbox/Cargo.toml` — the `tag = "vX.Y.Z"` on **all three**
+     upstream git deps (`microsandbox`, `microsandbox-network`,
+     `microsandbox-runtime`);
+   - `lib/microsandbox/version.rb` — `Microsandbox::RUNTIME_VERSION`;
+   - `binaries/lib/microsandbox/binaries.rb` —
+     `Microsandbox::Binaries::RUNTIME_VERSION`;
+   - `binaries/checksums/<tag>.sha256` — the release's `checksums.sha256`,
+     committed (vendoring fails closed without it);
+   - `Cargo.lock` — regenerated again, since it pins the git deps to the new
+     tag's commit.
+
+   Then add a row to the Versioning table in the README and update
+   `CHANGELOG.md`.
 2. Push a `vX.Y.Z` tag. Once the [release preflight](#release-preflight)
    passes, CI pushes the **source gem** to RubyGems via
    `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no

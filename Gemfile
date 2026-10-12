@@ -13,6 +13,10 @@ gemspec glob: "{,*}.gemspec"
 group :development do
   gem "rake", "~> 13.0"
   gem "rake-compiler", "~> 1.2"
+  # Parses sig/microsandbox.rbs for spec/unit/rbs_contract_spec.rb and backs
+  # `rbs -I sig validate` in CI. Held on the 3.x line because rbs 4 needs
+  # Ruby >= 3.2 and this gem (and its CI matrix) still supports Ruby 3.1.
+  gem "rbs", "~> 3.10"
   gem "rspec", "~> 3.13"
   # Retries only the :integration examples (see spec/spec_helper.rb) so a microVM
   # that loses the GitHub-hosted nested-KVM boot-latency lottery and trips the
