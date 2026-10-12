@@ -8,6 +8,15 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-12
+
+Gem-only fix and release-pipeline hardening release; the embedded runtime
+stays at **`v0.6.18`**. One behaviour change is visible: under
+`Thread.handle_interrupt(X => :on_blocking)` a native call now raises an
+already-deferred exception before it starts instead of after it finishes,
+except in the four sandbox-acquisition methods, which deliver it after the
+acquisition (see the first Fixed entry).
+
 ### Added
 
 - Two contract specs keep the hand-maintained parts honest:
@@ -1461,7 +1470,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.2...HEAD
+[0.17.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.15.0...v0.16.0

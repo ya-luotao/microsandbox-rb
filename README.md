@@ -209,7 +209,7 @@ share the upstream tag, but the numbers have diverged since and the gem version
 is **not** an indicator of the embedded runtime. Ask the build instead:
 
 ```ruby
-Microsandbox::VERSION          # => "0.17.1"  (the gem's own version)
+Microsandbox::VERSION          # => "0.17.2"  (the gem's own version)
 Microsandbox.runtime_version   # => "v0.6.18" (the embedded upstream runtime tag)
 ```
 
@@ -246,6 +246,7 @@ constants against this gem's. Every release records its runtime in
 | `0.16.0` | `v0.6.16` | adopts upstream `v0.6.15`+`v0.6.16` step by step: mount fallback ownership, readonly-mount write-probe fix, log retrieval rerouted through the SDK backends, config overlaid by field presence, network-slot recycling. Parity: per-mount `uid:`/`gid:`, and the convergent lifecycle — `Sandbox.connect_or_create`, `#id`, `#wait_for_status`, `#restart`, `#destroy`, `SandboxHandle#connect_or_start`, `SandboxReplacedError` |
 | `0.17.0` | `v0.6.18` | adopts upstream `v0.6.17`+`v0.6.18` step by step: outbound SOCKS4/SOCKS5 proxies (SOCKS5 UDP + credentials), migration-order fix for databases last opened by a `v0.6.15` `msb`, security hardening — plain-HTTP `Host`/`:authority` now checked against domain-rule policies even in non-strict mode, plus fail-closed strict hostname mode. Parity: `proxy:` (`Microsandbox::OutboundProxy` / `SecretSource`), `strict:` |
 | `0.17.1` | `v0.6.18` | gem-only security and hardening release: relative host paths pinned at create time (GHSA-mcw9-9rf6-p4rm), `Volume.fs` path validation, `Cargo.lock` advisory updates, argument-guard and cleanup fixes, `SECURITY.md` |
+| `0.17.2` | `v0.6.18` | gem-only fix and release-pipeline hardening release: an interrupted native call no longer loses its result (a sandbox the call owns is stopped on `Timeout`/`Thread#kill`), release preflight, SHA-pinned workflow actions and `cargo deny` advisory checks, RBS and docs contract specs |
 
 ## Development
 
