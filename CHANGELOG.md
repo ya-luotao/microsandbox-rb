@@ -21,7 +21,9 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   directory before the configuration is persisted: bind and disk mount
   sources in `volumes:`, a directory or disk-image `image:`, a `root_disk:`
   image path, `Patch.copy_file` / `Patch.copy_dir` sources, the `tls:`
-  certificate paths, and a path-form `from_snapshot:`. Paths are anchored
+  certificate paths, and a path-form `from_snapshot:`. This covers sandboxes
+  created through the gem; the `msb` CLI the gem installs is unchanged, so use
+  absolute paths with it. Paths are anchored
   without following symlinks and without requiring the target to exist, so a
   symlinked bind-mount root is still refused unless
   `follow_root_symlinks: true`. Absolute paths, named volumes, and OCI
@@ -40,17 +42,19 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   wrapper. Volume paths are relative to the volume root and never need one.
   A path such as `"a/../b"` that used to be accepted must now be written as
   `"b"`. Names that merely contain dots (`"..hidden"`, `"a..b"`) are fine.
-  Upgrade if you pass paths you did not construct yourself to `Volume.fs`.
 - **Errors no longer repeat values that can be credentials.** A URL-style
   proxy address (`socks5://user:pass@host:port`) is refused by shape without
-  being echoed; a non-Hash `env:` / `labels:` / `scripts:`, a malformed patch,
-  and a non-Hash secret spec are reported by class name only.
+  being echoed; an `env:` / `labels:` / `scripts:` value that is not a Hash
+  (or convertible to one, like `ENV`), a malformed patch, and a non-Hash
+  secret spec are reported by class name only.
 - **Dependencies with published advisories updated in `Cargo.lock`**:
   `russh` 0.63.1 → 0.63.3 (GHSA-35g8-35p8-c8fw, SSH server side),
   `rustls` 0.23.41 → 0.23.45 (RUSTSEC-2026-0285), `h2` 0.4.15 → 0.4.16
   (RUSTSEC-2026-0258), plus `anyhow` 1.0.104 and `event-listener` 5.4.2
-  (unsoundness fixes). `rkyv` and `rsa` have no compatible fixed release at
-  the pinned runtime and are unchanged.
+  (unsoundness fixes). Those pulled in `aws-lc-rs` 1.18.1, `aws-lc-sys`
+  0.45.0, `rustls-webpki` 0.103.15, and `num-bigint` 0.5.1 in place of
+  `internal-russh-num-bigint`. `rkyv` and `rsa` have no compatible fixed
+  release at the pinned runtime and are unchanged.
 
 ### Added
 

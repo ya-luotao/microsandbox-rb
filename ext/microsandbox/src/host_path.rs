@@ -84,10 +84,11 @@ impl HostPaths {
 
     /// Pin a `from_snapshot:` value when it is a path rather than a snapshot
     /// name or digest. Uses the core's own name-vs-path split: a value that
-    /// contains `/` or starts with `.` is a path. A leading `~` is left alone
-    /// (the core does not expand it either).
+    /// contains `/` or starts with `.` or `~` is a path. (The core does not
+    /// expand `~`; like any other relative path it is anchored as written.)
     pub fn pin_snapshot(self, raw: String) -> Result<String, Error> {
-        if !self.local || !(raw.contains('/') || raw.starts_with('.')) {
+        let path_like = raw.contains('/') || raw.starts_with('.') || raw.starts_with('~');
+        if !self.local || !path_like {
             return Ok(raw);
         }
         self.pin(raw, "snapshot path")?

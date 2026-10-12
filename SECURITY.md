@@ -27,11 +27,12 @@ runtime tag.
 Upstream advisories name the upstream packages (the Rust crate, the CLI, and
 the official SDKs). **They do not list `microsandbox-rb`**, so `bundler-audit`
 and Dependabot will not flag this gem for them. The `rubygems:microsandbox`
-entry in some of them is a different gem. This table is the mapping.
+entry in some of them refers to the upstream project's own Ruby gem, not to
+`microsandbox-rb`. This table is the mapping.
 
 | Advisory | Severity | Affected `microsandbox-rb` | Status |
 |---|---|---|---|
-| [GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm) — relative bind-mount paths re-resolved against the working directory on restart | High | `<= 0.17.0` | Fixed in `0.17.1` (paths are pinned at create time in the binding). Sandboxes created earlier with a relative path keep it: recreate them. |
+| [GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm) — relative bind-mount paths re-resolved against the working directory on restart | High | `<= 0.17.0` | Fixed in `0.17.1` for sandboxes created through this gem (paths are pinned at create time in the binding). Sandboxes created earlier with a relative path keep it: recreate them. The `msb` CLI this gem installs is still runtime `v0.6.18`, so a sandbox created with `msb` directly is not covered: use absolute paths there. |
 | [GHSA-cg9x-2vfm-3j58](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-cg9x-2vfm-3j58) — NAT64 addresses can bypass destination-group network policy | High | all versions (runtime `< v0.7.5`) | **Not fixed in this gem yet**; needs the runtime fix. Only exploitable where the host network routes a NAT64 prefix. Mitigate by denying the prefix explicitly (see below) or blocking it at the host. |
 | [GHSA-3mpp-52gc-935r](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-3mpp-52gc-935r) — hostname allowlist bypass via mismatched HTTP `Host` / `:authority` | High | `<= 0.16.0` | Runtime fix included from `0.17.0`. If you rely on a hostname allowlist for HTTPS without TLS interception, also pass `strict: true` (off by default in this gem). |
 | [GHSA-gj24-29j2-3x78](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-gj24-29j2-3x78) — egress allowlist bypass on malformed HTTP/1 request lines | Medium | `<= 0.12.0` | Runtime fix included from `0.13.0`. |
@@ -55,5 +56,10 @@ Microsandbox::Sandbox.create("worker", image: "python",
 
 If your network uses a different NAT64 prefix, deny that one as well, or block
 the prefix at the host or network boundary. Hosts without NAT64 routing are not
-expected to be exploitable through this vector. This mitigation follows the
-upstream advisory's guidance; it has not been exercised on a NAT64 network.
+expected to be exploitable through this vector.
+
+The deny rule is this gem's suggestion, relying on the policy engine matching
+rules in order; it has not been exercised on a NAT64 network. The upstream
+advisory's own workarounds are to disable sandbox networking for untrusted
+workloads (`network: :none`) or to block NAT64 prefixes at the host or network
+boundary.

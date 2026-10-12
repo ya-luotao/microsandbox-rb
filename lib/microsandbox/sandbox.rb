@@ -792,9 +792,16 @@ module Microsandbox
       end
 
       def stringify(hash)
-        # Name the type, not the value: env values are often credentials.
-        raise ArgumentError, "expected a Hash of names to values (got #{hash.class})" unless hash.is_a?(Hash)
-        hash.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v.to_s }
+        # Anything that converts to pairs is fine (a Hash, ENV, an Array of
+        # pairs). For the rest, name the type, not the value: env values are
+        # often credentials.
+        pairs = begin
+          hash.to_h if hash.respond_to?(:to_h)
+        rescue TypeError
+          nil
+        end
+        raise ArgumentError, "expected a Hash of names to values (got #{hash.class})" unless pairs
+        pairs.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v.to_s }
       end
 
       # Wrap a native page Hash ({"sandboxes" => [...], "next_cursor" => ...})

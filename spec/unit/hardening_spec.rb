@@ -78,6 +78,14 @@ RSpec.describe "argument guards and cleanup semantics" do
       end
     end
 
+    it "still accepts ENV and a list of pairs where a Hash is expected" do
+      stub_const("ENV", ENV.to_h.merge("MSB_RB_SPEC_VAR" => "1"))
+      expect(create_opts(image: "python", env: [["A", 1], [:B, "2"]])["env"]).to eq("A" => "1", "B" => "2")
+      expect(Microsandbox::Sandbox.send(:stringify, ::ENV)).to be_a(Hash)
+      expect { Microsandbox::Sandbox.send(:stringify, ["TOKEN=SYNTHETIC-SECRET"]) }
+        .to raise_error(ArgumentError, "expected a Hash of names to values (got Array)")
+    end
+
     it "names the class of a malformed patch, never its content" do
       expect { Microsandbox::Sandbox.create("box", image: "python", patches: ["SYNTHETIC-SECRET"]) }
         .to raise_error(ArgumentError) { |e|

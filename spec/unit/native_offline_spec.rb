@@ -6,12 +6,12 @@ require "securerandom"
 # backend's catalog, typed-error mapping, and the whole host-side Volume /
 # VolumeFs surface. They run on every PR (no KVM), unlike spec/integration.
 #
-# Requires the hermetic unit environment (spec_helper points MSB_HOME at a
-# throwaway directory); refuses to run against a real ~/.microsandbox.
+# Requires the hermetic unit environment: spec_helper points MSB_HOME at a
+# throwaway directory unless MICROSANDBOX_INTEGRATION is set, in which case the
+# home is the caller's real one and these examples are skipped.
 RSpec.describe "native layer, offline (no VM, no runtime)" do
-  before(:all) do
-    home = ENV["MSB_HOME"].to_s
-    raise "native_offline_spec needs an isolated MSB_HOME (see spec_helper)" if home.empty?
+  before do
+    skip "writes to MSB_HOME; runs only in the hermetic unit environment" if ENV["MICROSANDBOX_INTEGRATION"]
   end
 
   def unique(prefix) = "#{prefix}-#{SecureRandom.hex(4)}"
@@ -128,7 +128,7 @@ RSpec.describe "native layer, offline (no VM, no runtime)" do
       native = Microsandbox::Native::Volume.fs(name)
       expect { native.write("d/../b.txt", "x".b) }.to raise_error(Microsandbox::FilesystemError, /traversal/)
       expect { native.mkdir("d/../e") }.to raise_error(Microsandbox::FilesystemError, /traversal/)
-      expect { native.rename("a", "../b") }.to raise_error(Microsandbox::FilesystemError, /traversal/)
+      expect { native.rename("d/a.txt", "d/../b.txt") }.to raise_error(Microsandbox::FilesystemError, /traversal/)
     end
 
     it "still accepts names that merely contain dots" do

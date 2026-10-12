@@ -24,7 +24,11 @@ RSpec.describe "host paths are pinned at create time (no VM, no runtime)" do
     end
   end
 
-  before { allow(Microsandbox).to receive(:ensure_runtime!) }
+  before do
+    # spec_helper isolates MSB_HOME only outside integration runs.
+    skip "writes to MSB_HOME; runs only in the hermetic unit environment" if ENV["MICROSANDBOX_INTEGRATION"]
+    allow(Microsandbox).to receive(:ensure_runtime!)
+  end
 
   after do
     Microsandbox::Sandbox.remove(name)
@@ -77,6 +81,8 @@ RSpec.describe "host paths are pinned at create time (no VM, no runtime)" do
   it "resolves a path-form from_snapshot: against the creating directory, and leaves a name alone" do
     expect { Microsandbox::Sandbox.create(name, from_snapshot: "./snap") }
       .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(here("snap"))}/)
+    expect { Microsandbox::Sandbox.create(name, from_snapshot: "~snap") }
+      .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(here("~snap"))}/)
     expect { Microsandbox::Sandbox.create(name, from_snapshot: "snap") }
       .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(File.join(ENV.fetch("MSB_HOME"), "snapshots", "snap"))}/)
   end
@@ -90,8 +96,14 @@ RSpec.describe "host paths are pinned at create time (no VM, no runtime)" do
     expect(tls.fetch("intercept_ca")).to include("cert_path" => here("cert.pem"), "key_path" => here("key.pem"))
   end
 
-  it "still applies a patch whose source is relative" do
-    persisted(image: here("rootfs"), patches: [Microsandbox::Patch.copy_file("data/seed.txt", "/seed.txt")])
+  it "stores relative patch sources as absolute paths, and still applies them" do
+    config = persisted(image: here("rootfs"), patches: [
+      Microsandbox::Patch.copy_file("data/seed.txt", "/seed.txt"),
+      Microsandbox::Patch.copy_dir("./data", "/copied")
+    ])
+    sources = config.fetch("patches").map { |patch| patch.values.first.fetch("src") }
+    expect(sources).to eq([here("data", "seed.txt"), here("data")])
     expect(File.read(here("rootfs", "seed.txt"))).to eq("seed")
+    expect(File.read(here("rootfs", "copied", "seed.txt"))).to eq("seed")
   end
 end

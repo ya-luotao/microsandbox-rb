@@ -76,10 +76,10 @@ name (start it again with `Sandbox.start`, or delete it with `Sandbox.remove`),
 and creating another one with the same name raises `SandboxAlreadyExistsError`.
 See [docs/lifecycle.md](docs/lifecycle.md).
 
-Outside Bundler, write `require "microsandbox-rb"`: a different, unrelated gem
-named `microsandbox` also ships a `microsandbox.rb`, and plain
-`require "microsandbox"` loads whichever is found first. The two cannot be
-loaded in the same process.
+Outside Bundler, write `require "microsandbox-rb"`: the separate `microsandbox`
+gem on RubyGems also ships a `microsandbox.rb`, and plain
+`require "microsandbox"` loads whichever is found first. Both define a
+top-level `Microsandbox` module, so load only one of them in a process.
 
 The examples pull from AWS's public Docker Library mirror because anonymous
 Docker Hub pulls are rate-limited; `image: "python"` works too when you aren't.
