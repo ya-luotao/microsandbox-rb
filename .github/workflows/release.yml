@@ -83,8 +83,8 @@ jobs:
           - aarch64-linux
           - arm64-darwin
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
           bundler-cache: true
@@ -122,7 +122,7 @@ jobs:
             # Bundler::GemNotFound. Skip the dev group (rspec etc. aren't needed to build).
             bundle config set --local without development
             bundle install --jobs 4
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gem-${{ matrix.platform }}
           path: pkg/*.gem
@@ -140,8 +140,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       # The companion gem rides the lockstep version train: its VERSION must be
@@ -160,7 +160,7 @@ jobs:
       - name: Smoke-test the host platform gem (msb --version)
         run: rake -C binaries 'vendor[x86_64-linux-gnu]' verify
       - run: ls -la binaries/pkg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gem-binaries
           path: binaries/pkg/*.gem
@@ -170,13 +170,13 @@ jobs:
     name: source gem
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
           bundler-cache: true
       - run: bundle exec rake build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gem-source
           path: pkg/*.gem
@@ -217,14 +217,14 @@ jobs:
       # Never interpolated into the script text: passed through the environment.
       PREFLIGHT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight_ref || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history + all tags: the script resolves the tag and asks
           # whether its commit is an ancestor of origin/main. (NOT
           # fetch-tags:true — see the note in `github-release` below.)
           fetch-depth: 0
       # The version constants are read by requiring the two Ruby files.
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       - name: Release preflight
@@ -253,11 +253,11 @@ jobs:
       contents: read
       id-token: write # required for Trusted Publishing (OIDC)
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: gem-source
           path: dist
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       # Exchange the GitHub OIDC token for short-lived RubyGems credentials.
@@ -314,11 +314,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: gem-binaries
           path: dist
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       - name: Configure RubyGems credentials (OIDC trusted publishing)
@@ -356,7 +356,7 @@ jobs:
     permissions:
       contents: write # create/edit the GitHub Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history + all tags, so the "is this the newest tag?" check below
           # (git tag --sort=-v:refname) sees every version. NOT fetch-tags:true —
