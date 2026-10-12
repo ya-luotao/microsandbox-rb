@@ -82,6 +82,7 @@ module Microsandbox
   end
 
   class FsEntry
+    def initialize: (Hash[String, untyped] data) -> void
     def path: () -> String
     def name: () -> String
     def type: () -> Symbol
@@ -94,6 +95,7 @@ module Microsandbox
   end
 
   class FsMetadata
+    def initialize: (Hash[String, untyped] data) -> void
     def type: () -> Symbol
     def size: () -> Integer
     def mode: () -> Integer
@@ -106,6 +108,7 @@ module Microsandbox
   end
 
   class FS
+    def initialize: (untyped native) -> void
     def read: (String path) -> String
     def read_text: (String path) -> String
     def write: (String path, String data) -> nil
@@ -125,17 +128,20 @@ module Microsandbox
 
   class FsReadStream
     include Enumerable[String]
+    def initialize: (untyped native) -> void
     def each: () { (String) -> void } -> self
             | () -> Enumerator[String, self]
     def read: () -> String
   end
 
   class FsWriteSink
+    def initialize: (untyped native) -> void
     def write: (String data) -> self
     def close: () -> nil
   end
 
   class Metrics
+    def initialize: (Hash[String, untyped] data) -> void
     def cpu_percent: () -> Float
     def vcpu_time_ns: () -> Integer
     def memory_bytes: () -> Integer
@@ -154,6 +160,7 @@ module Microsandbox
   end
 
   class LogEntry
+    def initialize: (Hash[String, untyped] entry) -> void
     def source: () -> Symbol
     def session_id: () -> Integer?
     def cursor: () -> String
@@ -163,6 +170,7 @@ module Microsandbox
   end
 
   class SandboxHandle
+    def initialize: (untyped native) -> void
     def name: () -> String
     def id: () -> String
     def status: () -> Symbol
@@ -200,6 +208,7 @@ module Microsandbox
   SandboxInfo: singleton(SandboxHandle)
 
   class SandboxStopResult
+    def initialize: (Hash[String, untyped] data) -> void
     def name: () -> String
     def status: () -> Symbol
     def exit_code: () -> Integer?
@@ -290,6 +299,7 @@ module Microsandbox
     def self.list_with: (?labels: Hash[untyped, untyped], ?limit: Integer?, ?cursor: String?) -> SandboxPage
     def self.remove: (String name) -> nil
 
+    def initialize: (untyped native) -> void
     def name: () -> String
     def id: () -> String
     def exec: (String command, ?Array[String] args, ?cwd: String?, ?user: String?,
@@ -354,17 +364,20 @@ module Microsandbox
 
   class LogStream
     include Enumerable[LogEntry]
+    def initialize: (untyped native) -> void
     def each: () { (LogEntry) -> void } -> self
             | () -> Enumerator[LogEntry, self]
   end
 
   class MetricsStream
     include Enumerable[Metrics]
+    def initialize: (untyped native) -> void
     def each: () { (Metrics) -> void } -> self
             | () -> Enumerator[Metrics, self]
   end
 
   class ExecEvent
+    def initialize: (Hash[String, untyped] event) -> void
     def type: () -> Symbol
     def pid: () -> Integer?
     def code: () -> Integer?
@@ -379,18 +392,21 @@ module Microsandbox
   end
 
   class ExitStatus
+    def initialize: (Hash[String, untyped] data) -> void
     def exit_code: () -> Integer?
     def success?: () -> bool
     def failure?: () -> bool
   end
 
   class ExecStdin
+    def initialize: (untyped native) -> void
     def write: (String data) -> self
     def close: () -> nil
   end
 
   class ExecHandle
     include Enumerable[ExecEvent]
+    def initialize: (untyped native) -> void
     def id: () -> String
     def each: () { (ExecEvent) -> void } -> self
             | () -> Enumerator[ExecEvent, self]
@@ -403,6 +419,7 @@ module Microsandbox
   end
 
   class ImageInfo
+    def initialize: (Hash[String, untyped] data) -> void
     def reference: () -> String
     def size_bytes: () -> Integer?
     def manifest_digest: () -> String?
@@ -414,6 +431,7 @@ module Microsandbox
   end
 
   class ImageDetail
+    def initialize: (Hash[String, untyped] data) -> void
     def handle: () -> ImageInfo
     def config: () -> Hash[String, untyped]?
     def layers: () -> Array[Hash[String, untyped]]
@@ -421,6 +439,7 @@ module Microsandbox
   end
 
   class ImagePruneReport
+    def initialize: (Hash[String, untyped] data) -> void
     def image_refs_removed: () -> Integer
     def manifests_removed: () -> Integer
     def layers_removed: () -> Integer
@@ -441,6 +460,7 @@ module Microsandbox
   end
 
   class VolumeInfo
+    def initialize: (Hash[String, untyped] data) -> void
     def name: () -> String
     def path: () -> String?
     def kind: () -> Symbol?
@@ -481,6 +501,7 @@ module Microsandbox
   end
 
   class SnapshotInfo
+    def initialize: (Hash[String, untyped] data) -> void
     def digest: () -> String
     def path: () -> String
     def name: () -> String?
@@ -506,6 +527,7 @@ module Microsandbox
   end
 
   class SnapshotVerifyReport
+    def initialize: (Hash[String, untyped] data) -> void
     def digest: () -> String
     def path: () -> String
     def status: () -> Symbol
@@ -569,6 +591,7 @@ module Microsandbox
   end
 
   class BackendInfo
+    def initialize: (Hash[String, untyped] data) -> void
     def kind: () -> Symbol
     def api_url: () -> String?
     def source: () -> Symbol
@@ -643,6 +666,7 @@ module Microsandbox
 
   class AgentStream
     include Enumerable[AgentFrame]
+    def initialize: (untyped native, Integer id, Integer handle) -> void
     def id: () -> Integer
     def recv: () -> AgentFrame?
     def each: () { (AgentFrame) -> void } -> self
