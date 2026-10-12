@@ -1,41 +1,29 @@
 name: Release
 
-# Publishes the gem to RubyGems on a version tag (vX.Y.Z), or builds artifacts
-# only on manual dispatch (dry run). Produces:
-#   - precompiled, multi-ABI platform gems via rake-compiler-dock (oxidize-rb
-#     cross-gem-action): one fat gem per platform, covering Ruby 3.1–3.4
-#   - the pure source gem (fallback for unlisted platforms; needs a Rust toolchain)
+# Publishes the gems to RubyGems on a version tag (vX.Y.Z), or only builds the
+# artifacts on manual dispatch (nothing is published). Produces:
+#   - the source gem `microsandbox-rb` (compiles the Rust extension at install
+#     time via rb_sys, so it needs a Rust toolchain on the installing host)
+#   - the three companion `microsandbox-rb-binaries` platform gems
+#
+# Precompiled *extension* gems are not built or published: every platform
+# installs the source gem.
 #
 # The native extension depends on the microsandbox core crate via a pinned git
-# tag, so every build is self-contained (no adjacent checkout needed) — the
-# rake-compiler-dock containers fetch it from git.
+# tag, so every build is self-contained (no adjacent checkout needed).
 #
 # Publishing uses RubyGems Trusted Publishing (OIDC); configure the gem's trusted
 # publisher to this repo + workflow in the RubyGems UI before the first release.
 #
-# What a precompiled gem ships (and what it does NOT): the gem carries the
-# compiled Rust extension with the guest-side `agentd` baked in (the core's
-# filesystem build.rs downloads agentd by *target* arch via CARGO_CFG_TARGET_ARCH
-# and embeds it with include_bytes!, so it cross-compiles correctly). The gem
+# What the SDK gem ships (and what it does NOT): the extension it compiles
+# carries the guest-side `agentd` baked in (the core's filesystem build.rs
+# downloads agentd by *target* arch and embeds it with include_bytes!). The gem
 # does NOT carry the host-side `msb` runtime + `libkrunfw`: the SDK gem is
 # SDK-only. Those ship in the companion `microsandbox-rb-binaries` platform gems
 # (built by the `binaries-gems` job below from the upstream release, verified
 # against the checksums committed under binaries/checksums/, and published on
 # the same tag) — or, without that gem, are downloaded into ~/.microsandbox on
 # first use by `Microsandbox.ensure_runtime!` (by the *running* host's arch).
-#
-# Cross-compile reality check (corrects an earlier, pessimistic note here):
-#   - The SDK crate's `prebuilt` feature (host msb download at compile time) is
-#     off, so nothing host-arch-specific enters the build; libkrunfw is dlopen'd
-#     by msb at runtime and is never *linked* into the extension.
-#   - The genuine cross blockers are the *target* native libraries the extension
-#     links: libcap-ng on Linux (via the capng crate → msb_krun_devices) and the
-#     Hypervisor + Security system frameworks on macOS (HVF + Apple-native keyring).
-#     aarch64-linux therefore needs libcap-ng:arm64 (handled below via Debian
-#     multiarch); arm64-darwin needs osxcross to resolve those frameworks from the
-#     macOS SDK — that's the one platform still to confirm on first dispatch. If it
-#     can't link, move arm64-darwin to a native macos-14 runner job (which builds
-#     all 3.1–3.4 ABIs into one fat gem with no osxcross involved).
 
 on:
   push:
@@ -46,87 +34,22 @@ on:
         description: "Build artifacts but do not publish"
         type: boolean
         default: true
+      preflight_ref:
+        description: "tag to dry-run the release preflight against; nothing is published"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
-  # Precompiled per-platform gems — a UX optimization (users skip the Rust
-  # compile). Gated to manual `workflow_dispatch`: tag releases ship the source
-  # gem (which installs everywhere by compiling via rb_sys), while precompiled
-  # gems are built best-effort here for validation. They are NOT auto-published
-  # on tags yet, because a gem that *compiles but doesn't boot a microVM* would
-  # be served to users in preference to the source gem — and CI cannot boot a VM
-  # to prove it works (no nested virt). Validate a dispatched build by installing
-  # the artifact on each real platform, then promote it (see `publish` below).
-  #
-  # cross-compile prerequisites handled below:
-  #   - bundle install: rake/rb_sys/rake-compiler inside the dock container
-  #     (else Bundler::GemNotFound).
-  #   - libcap-ng: host package for x86_64-linux; the arm64 multiarch variant for
-  #     aarch64-linux (the extension links -lcap-ng for the *target* arch).
-  cross-gems:
-    name: gem (${{ matrix.platform }})
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - x86_64-linux
-          - aarch64-linux
-          - arm64-darwin
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
-      - name: Build precompiled gem
-        # v7 is the latest release of this action; pinned to its commit SHA.
-        uses: oxidize-rb/cross-gem-action@80f59339d90789841d772f412fe4a8b201a8cfa2 # v7
-        with:
-          platform: ${{ matrix.platform }}
-          ruby-versions: "3.1,3.2,3.3,3.4"
-          # The extension links libcap-ng on Linux targets (capng crate →
-          # msb_krun_devices), so the rake-compiler-dock container needs the dev
-          # package before the cross-build (else `cannot find -lcap-ng`). The
-          # Linux containers are Debian-based (apt); darwin needs nothing here
-          # (its frameworks come from the osxcross macOS SDK), so the apt guard
-          # keeps it from erroring.
-          #
-          # aarch64-linux is cross-compiled from an x86_64 container: the target
-          # linker (aarch64-linux-gnu) resolves -lcap-ng from the *arm64* sysroot,
-          # not the host package — so add the arch and install libcap-ng-dev:arm64.
-          # Debian's main mirror carries every arch, so multiarch fetches work
-          # without switching to ports.ubuntu.com.
-          setup: |
-            if command -v apt-get >/dev/null 2>&1; then
-              apt-get update && apt-get install -y libcap-ng-dev
-              case "${{ matrix.platform }}" in
-                aarch64-linux*)
-                  dpkg --add-architecture arm64
-                  apt-get update
-                  apt-get install -y libcap-ng-dev:arm64
-                  ;;
-              esac
-            fi
-            # The dock container runs `bundle exec rake native:<plat> gem`; install
-            # the bundle (rb_sys/rake/rake-compiler) first or it fails with
-            # Bundler::GemNotFound. Skip the dev group (rspec etc. aren't needed to build).
-            bundle config set --local without development
-            bundle install --jobs 4
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gem-${{ matrix.platform }}
-          path: pkg/*.gem
-
   # The companion runtime gems: one `microsandbox-rb-binaries` gem per platform
   # (arm64-darwin, x86_64-linux-gnu, aarch64-linux-gnu), vendored from the
   # upstream release named by Microsandbox::Binaries::RUNTIME_VERSION and
   # sha256-verified fail-closed against binaries/checksums/<tag>.sha256 (the live
-  # release file must agree). Builds on every run; only `publish` pushes. Their
+  # release file must agree). Builds on every run; only `publish-binaries`
+  # pushes, and a failure here blocks `publish` as well (see there). Their
   # RubyGems trusted publisher is a separate entry for the new gem name (same
   # repo + workflow), created as a *pending* publisher before the first push.
   binaries-gems:
@@ -134,8 +57,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       # The companion gem rides the lockstep version train: its VERSION must be
@@ -154,7 +77,7 @@ jobs:
       - name: Smoke-test the host platform gem (msb --version)
         run: rake -C binaries 'vendor[x86_64-linux-gnu]' verify
       - run: ls -la binaries/pkg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gem-binaries
           path: binaries/pkg/*.gem
@@ -164,28 +87,93 @@ jobs:
     name: source gem
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
-          bundler-cache: true
-      - run: bundle exec rake build
-      - uses: actions/upload-artifact@v4
+      # The gem that gets PUBLISHED is built with plain `gem build`: no Bundler,
+      # no `bundle install`, so nothing from the (unlocked — Gemfile.lock is not
+      # committed) development dependency closure runs in the job that produces
+      # the release artifact. The gemspec needs only lib/microsandbox/version.rb.
+      # `bundle exec rake build` yields an identical file list and metadata;
+      # it stays in ci.yml's `package` job, which installs what it builds.
+      - name: Build the source gem (gem build, no Bundler)
+        run: |
+          version="$(ruby -Ilib -r microsandbox/version -e 'print Microsandbox::VERSION')"
+          mkdir -p pkg
+          gem build microsandbox-rb.gemspec --output "pkg/microsandbox-rb-${version}.gem"
+          ls -la pkg
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gem-source
           path: pkg/*.gem
+          if-no-files-found: error
+
+  # The release gate. Nothing is pushed to RubyGems unless this passes:
+  #   - the tag is vX.Y.Z and the three lock-step version constants in the
+  #     tagged commit (Microsandbox::VERSION, the ext crate's [package] version,
+  #     Microsandbox::Binaries::VERSION) all equal X.Y.Z;
+  #   - the tagged commit is on main;
+  #   - the `CI` workflow's push run for that exact commit concluded `success`.
+  # The release SOP pushes main and the tag in one `git push`, so that CI run is
+  # usually still in progress (or not created yet) when this job starts: the
+  # script waits for it, bounded by PREFLIGHT_CI_WAIT_SECONDS (default 45 min,
+  # under this job's 60 min cap). A tag release therefore publishes only after
+  # CI — including the real-microVM integration lanes — has finished green.
+  #
+  # The logic lives in .github/scripts/release_preflight.sh so it can be run
+  # locally. Dry run against an existing tag, publishing nothing:
+  #   gh workflow run release.yml --ref main -f preflight_ref=vX.Y.Z
+  # (a dispatch without `preflight_ref` skips this job).
+  #
+  # This is a workflow-level gate, not a repository one: it does not stop a
+  # maintainer from editing the workflow. Branch protection / a protected
+  # `environment` on the trusted publisher are repository settings.
+  preflight:
+    name: release preflight
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.preflight_ref != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read # gh run list: find the CI run of the tagged commit
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # Never interpolated into the script text: passed through the environment.
+      PREFLIGHT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Full history + all tags: the script resolves the tag and asks
+          # whether its commit is an ancestor of origin/main. (NOT
+          # fetch-tags:true — see the note in `github-release` below.)
+          fetch-depth: 0
+      # The version constants are read by requiring the two Ruby files.
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
+        with:
+          ruby-version: "3.4"
+      - name: Release preflight
+        run: .github/scripts/release_preflight.sh "$PREFLIGHT_TAG"
 
   publish:
     name: publish to RubyGems
-    # On a tag push, only `source-gem` is needed here: this publishes the SDK
-    # source gem alone, exactly the pre-companion path. The companion runtime
-    # gems are pushed by `publish-binaries` below, which runs AFTER this job —
-    # a companion build or push failure is therefore its own red job and can
-    # never block the SDK release (a `needs` on `binaries-gems` here would skip
-    # this whole job when that build fails). cross-gems (precompiled extension
-    # gems) remain workflow_dispatch-only; once validated they can be promoted
-    # by re-adding `cross-gems` to `needs` and dropping its dispatch gate.
-    needs: [source-gem]
+    # Pushes the SDK source gem, and only when all three of these succeeded:
+    #   - `preflight`: the tag is a real, green release (see above);
+    #   - `source-gem`: the gem being pushed;
+    #   - `binaries-gems`: the three companion runtime gems BUILT (vendored,
+    #     checksum-verified, packaged, smoke-run). A companion build failure
+    #     therefore blocks the SDK publish too: the two gems ship in lockstep,
+    #     so the SDK is not pushed when its companions could not even be built.
+    #     (Before, this job needed only `source-gem` so a companion failure
+    #     could never block the SDK release.)
+    # The companion gems are still PUSHED by `publish-binaries` below, after
+    # this job. A companion push failure is its own red job once the SDK gem is
+    # live — the SDK version is then on RubyGems without its companions until
+    # `publish-binaries` is re-run.
+    needs: [source-gem, binaries-gems, preflight]
     runs-on: ubuntu-latest
     # Real tag pushes only — never on a manual dry run.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -193,11 +181,11 @@ jobs:
       contents: read
       id-token: write # required for Trusted Publishing (OIDC)
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: gem-source
           path: dist
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       # Exchange the GitHub OIDC token for short-lived RubyGems credentials.
@@ -239,12 +227,14 @@ jobs:
   publish-binaries:
     name: publish binaries gems to RubyGems
     # The three companion runtime gems, pushed only once the SDK gem is live
-    # (`needs: publish`). Isolated on purpose: if `binaries-gems` failed this
-    # job is skipped, if a push fails (e.g. the trusted publisher for the new
-    # gem name not configured) only this job goes red — the SDK release and the
-    # GitHub Release (gated on `publish`) are unaffected. Same OIDC exchange:
-    # the companion gem has its own trusted-publisher entry for this workflow.
-    # Re-run is idempotent (see the push loop).
+    # (`needs: publish`, which itself needs `binaries-gems` and `preflight` —
+    # so a failed companion build or preflight skips BOTH publish jobs).
+    # Still its own job on purpose: if a push fails here (e.g. the trusted
+    # publisher for the companion gem name not configured) only this job goes
+    # red — the SDK gem is already live and the GitHub Release (gated on
+    # `publish`) is unaffected. Same OIDC exchange: the companion gem has its
+    # own trusted-publisher entry for this workflow. Re-run is idempotent (see
+    # the push loop).
     needs: [binaries-gems, publish]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -252,11 +242,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: gem-binaries
           path: dist
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       - name: Configure RubyGems credentials (OIDC trusted publishing)
@@ -294,7 +284,7 @@ jobs:
     permissions:
       contents: write # create/edit the GitHub Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history + all tags, so the "is this the newest tag?" check below
           # (git tag --sort=-v:refname) sees every version. NOT fetch-tags:true —

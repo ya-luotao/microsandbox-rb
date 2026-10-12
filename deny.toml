@@ -1,0 +1,24 @@
+# cargo-deny configuration for the native extension. Only the advisories check
+# is configured and run:
+#
+#   cargo deny --manifest-path ext/microsandbox/Cargo.toml check advisories
+#
+# (the `lint` job in .github/workflows/ci.yml). cargo-deny finds this file
+# because it sits at the workspace root, next to the root Cargo.toml and
+# Cargo.lock. It lives here rather than in ext/microsandbox/ on purpose: the
+# gemspec packs `ext/**/*.toml`, and a CI-only config has no business in the
+# published gem. Yanked crates stay at the default (a warning, not a failure).
+
+[advisories]
+# "Unmaintained" notices fail only for this crate's DIRECT dependencies.
+# Transitive ones (today: proc-macro-error2 via sea-orm) are inherited from the
+# pinned upstream runtime and cannot be resolved from this repository.
+unmaintained = "workspace"
+
+# Vulnerabilities with NO fixed release to move to at the pinned upstream
+# runtime (Microsandbox::RUNTIME_VERSION). Never add an advisory that has a
+# compatible fix — update the crate instead — and re-check every entry on each
+# runtime adoption.
+ignore = [
+  { id = "RUSTSEC-2023-0071", reason = "rsa 0.10.0-rc.18 (Marvin Attack timing side channel): no patched release exists, 0.9.x and 0.10.0-rc are both affected; pulled in only by the pinned upstream runtime via russh / ssh-key. Re-check on the next runtime adoption." },
+]

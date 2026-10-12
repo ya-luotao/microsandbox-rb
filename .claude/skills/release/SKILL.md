@@ -43,17 +43,24 @@ version with the user before pushing the tag.
    ```
 
 8. **CI does the rest on the `v*` tag** (`.github/workflows/release.yml`):
+   - `release preflight` gates everything: the tag must equal the three version constants in the
+     tagged commit, the commit must be on `main`, and the `CI` push run for it must be green. It
+     waits (up to 45 min) for that CI run, so publishing starts only after CI finishes — expect
+     the publish jobs to sit pending meanwhile. If it fails nothing was published. Commit right
+     (CI flake): re-run CI for it until green, then re-run the failed Release run. Tag on the
+     wrong commit: delete the tag, fix, push the tag again (a new run) — never re-run the old run
+     after retagging, it still checks the old commit. Dry-run against an existing tag with
+     `gh workflow run release.yml --ref main -f preflight_ref=vX.Y.Z`.
    - `source gem` + `publish to RubyGems` build the source gem and push it via Trusted Publishing
-     (OIDC) — no API key.
+     (OIDC) — no API key. `publish` also needs the `binaries gems` build: a companion-gem build
+     failure blocks the SDK publish; a companion push failure (`publish binaries gems`) is its
+     own red job after the SDK gem is live.
    - `GitHub Release` then creates the GitHub Release from the matching `CHANGELOG.md` section
      (the `## [X.Y.Z]` heading the awk slice keys on, so keep step 4's format) and marks it latest.
      It is idempotent on re-runs. If a Release ever needs doing by hand — e.g. backfilling an old
      tag — slice the section and `gh release create vX.Y.Z --title vX.Y.Z --notes-file notes.md
      --latest --verify-tag` (use `--latest=false` for non-newest backfills, then
      `gh release edit <newest> --latest`).
-
-   Precompiled platform gems are NOT published by this tag flow — they require manual
-   `workflow_dispatch` and per-platform validation. Mention this if the user expected fat gems.
 
 Report what you changed and the tag you pushed, and link the user to the Actions run if `gh` is
 available (`gh run list --workflow=release.yml`). Confirm the GitHub Release was created

@@ -1,0 +1,41 @@
+# Dependabot keeps the pinned supply chain moving: every action in
+# .github/workflows is pinned to a commit SHA, so without this nothing would
+# ever propose a newer one.
+version: 2
+updates:
+  # Workflow actions (the `# vX.Y.Z` comment after each SHA is updated too).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # Development dependencies in the Gemfile and the gemspec's rb_sys
+  # requirement. Gemfile.lock is deliberately not committed, so this can only
+  # propose requirement changes, not lockfile bumps.
+  - package-ecosystem: bundler
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # The native extension's crates. The directory is the repository root, not
+  # ext/microsandbox: the root Cargo.toml is the workspace (its only member is
+  # the extension) and the ONLY Cargo.lock lives next to it. Dependabot looks
+  # for the lockfile in the configured directory alone, so pointing it at the
+  # member would bump ext/microsandbox/Cargo.toml and leave Cargo.lock stale —
+  # which breaks `--locked` builds of the published gem.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    ignore:
+      # The three upstream git dependencies are pinned to one runtime tag and
+      # moved together, by hand, when a new upstream runtime is adopted (see
+      # "Version lock-step" in CLAUDE.md: several files plus a committed
+      # checksum file change in the same commit). An automated bump of one of
+      # them would break that.
+      - dependency-name: microsandbox
+      - dependency-name: microsandbox-network
+      - dependency-name: microsandbox-runtime

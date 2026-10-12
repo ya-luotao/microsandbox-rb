@@ -22,7 +22,7 @@ jobs:
         os: [ubuntu-latest, macos-14]
         ruby: ["3.1", "3.2", "3.3", "3.4"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The core crate is statically linked into the extension and pulls in
       # libcap-ng on Linux (via the caps/capng crates). The ubuntu runners don't
@@ -42,7 +42,7 @@ jobs:
       # The repo's rust-toolchain.toml pins `stable`; this keeps the action's
       # installed toolchain in sync (the input is `rustup-toolchain`, not
       # `rust-toolchain` — the latter is silently ignored).
-      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@ec90b4aa48795518d79be3f5cc478d1d7ccd02a8 # v1.5.0
         with:
           ruby-version: ${{ matrix.ruby }}
           rustup-toolchain: stable
@@ -61,7 +61,8 @@ jobs:
   # the from-gem build are never validated — a packaging regression (an omitted
   # source file, a stale/absent Cargo.lock or rust-toolchain.toml, a renamed
   # path) would reach RubyGems and break `gem install microsandbox-rb` (the
-  # default install for every non-fat-gem platform) with no pre-publish signal.
+  # install path on every platform: no precompiled gems are published) with no
+  # pre-publish signal.
   # No KVM/microVM boot, so it runs cheaply on a hosted runner.
   package:
     name: package (install built source gem + binaries gem)
@@ -69,14 +70,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libcap-ng-dev gcc make flex bison libelf-dev bc python3-pyelftools
 
-      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@ec90b4aa48795518d79be3f5cc478d1d7ccd02a8 # v1.5.0
         with:
           ruby-version: "3.4"
           rustup-toolchain: stable
@@ -104,7 +105,7 @@ jobs:
       # and `ensure_runtime!` must then skip the ~/.microsandbox installer. Runs
       # with MICROSANDBOX_NO_AUTO_INSTALL unset so a silently inactive tier
       # would surface as an unexpected download attempt, not pass by fallback.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: binaries-gems
           path: binaries-gems
@@ -164,7 +165,7 @@ jobs:
     # 20-min cap and surface a clean failure as a confusing job timeout.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Enable KVM
         run: |
@@ -178,7 +179,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcap-ng-dev gcc make flex bison libelf-dev bc python3-pyelftools
 
-      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@ec90b4aa48795518d79be3f5cc478d1d7ccd02a8 # v1.5.0
         with:
           ruby-version: "3.4"
           rustup-toolchain: stable
@@ -259,8 +260,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
       - name: Vendor + build every platform gem
@@ -285,19 +286,19 @@ jobs:
           '
       - name: List built gems
         run: ls -la binaries/pkg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binaries-gems
           path: binaries/pkg/*.gem
           if-no-files-found: error
 
   lint:
-    name: lint (rustfmt + clippy + standardrb)
+    name: lint (rustfmt + clippy + cargo-deny + standardrb)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: oxidize-rb/actions/setup-ruby-and-rust@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oxidize-rb/actions/setup-ruby-and-rust@ec90b4aa48795518d79be3f5cc478d1d7ccd02a8 # v1.5.0
         with:
           ruby-version: "3.4"
           rustup-toolchain: stable
@@ -307,6 +308,18 @@ jobs:
         run: cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml
       - name: clippy
         run: cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings
+      # Known advisories (RustSec) against everything in Cargo.lock. The config
+      # is deny.toml at the repository root, which cargo-deny finds at the
+      # workspace root (kept out of ext/ so the gem does not pack it): it holds
+      # the exceptions (advisories with no fix at the pinned runtime). A new
+      # advisory published upstream turns this red on an otherwise unchanged
+      # tree — that is the point; update the crate or, only when there is no
+      # fixed release, add it there with a reason.
+      - name: cargo-deny (advisories)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+          manifest-path: ext/microsandbox/Cargo.toml
       # Ruby lint/format for the lib/ + spec/ + binaries/ layers (StandardRB,
       # zero-config; it scans every Ruby file in the checkout).
       - name: standardrb

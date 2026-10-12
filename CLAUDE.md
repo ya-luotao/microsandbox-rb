@@ -42,10 +42,12 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the p
   - Rust: `cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml` and
     `cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings`. Always pass
     `--manifest-path ext/microsandbox/Cargo.toml` — the workspace root has no buildable crate.
+  - Advisories: `cargo deny --manifest-path ext/microsandbox/Cargo.toml check advisories` (CI's
+    `lint` job; exceptions with no fixed release live in the root `deny.toml`).
   - Ruby (`lib/`, `spec/`): `bundle exec standardrb` (zero-config StandardRB; autocorrect with
     `bundle exec standardrb --fix`).
 
-  CI gates on all three — run them before claiming a change is done. The `verify-local` skill runs
+  CI gates on all of them — run them before claiming a change is done. The `verify-local` skill runs
   the Rust + spec gate in one shot.
 
 ## Version lock-step (three independent axes)
@@ -107,7 +109,12 @@ Push a `vX.Y.Z` tag → `.github/workflows/release.yml` builds the source gem AN
 `microsandbox-rb-binaries` platform gems (`binaries-gems` job: `rake -C binaries vendor:all`,
 version checked against the tag) and publishes all four to RubyGems via Trusted Publishing (OIDC —
 no API key; the binaries gem has its own trusted-publisher entry for its gem name, same repo +
-workflow). The SDK gem is pushed by `publish` (needs only `source-gem`, the pre-split path); the companions
-by a separate `publish-binaries` job that runs after it, so a companion build or push failure is
-its own red job and never blocks the SDK release or the GitHub Release (re-runs are idempotent). Precompiled *extension* platform gems are built only via manual `workflow_dispatch`
-and require per-platform validation before promotion; they do not auto-publish on tags.
+workflow). Nothing is pushed until the `preflight` job passes (`.github/scripts/release_preflight.sh`:
+the tag equals the three version constants in the tagged commit, that commit is on `main`, and the
+`CI` push run for it is green — it WAITS for that run, up to 45 min, because main and the tag are
+pushed together; dry-run with `gh workflow run release.yml --ref main -f preflight_ref=vX.Y.Z`).
+The SDK gem is pushed by `publish` (needs `source-gem`, `binaries-gems` AND `preflight`); the
+companions by a separate `publish-binaries` job that runs after it. So a companion BUILD failure
+blocks the SDK publish too, while a companion PUSH failure is its own red job after the SDK gem is
+live: it does not block the GitHub Release, but the release is incomplete until `publish-binaries`
+is re-run (re-runs are idempotent).
