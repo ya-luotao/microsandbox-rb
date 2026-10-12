@@ -34,8 +34,10 @@
 //!
 //! Together: after `block_on` returns `Ok`, the next interrupt checkpoint is
 //! the Ruby VM's own, reached only once the bound method has handed its value
-//! to Ruby. From then on the value is an ordinary Ruby object — returned to the
-//! caller, or garbage whose `free` drops the Rust value. It is never abandoned.
+//! to Ruby (the first one is `vm_pop_frame` popping the native method's frame,
+//! in `vm_call_cfunc_with_frame_`). From then on the value is an ordinary Ruby
+//! object — returned to the caller, or garbage whose `free` drops the Rust
+//! value. It is never abandoned.
 
 use std::ffi::c_void;
 use std::future::Future;

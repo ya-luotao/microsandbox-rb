@@ -606,9 +606,14 @@ module Microsandbox
       #   ({Microsandbox.ensure_runtime!}) and the block forms' `yield` stay
       #   outside it, with normal interrupt handling;
       # - the `ensure` plus the `acquired` flag — not `rescue Exception; raise` —
-      #   is what also covers `Thread#kill`, which no `rescue` can catch. (A
-      #   SIGINT is not queued like those two and cannot be masked: it may
-      #   still arrive before the assignment, and then GC is the fallback.)
+      #   is what also covers `Thread#kill`, which no `rescue` can catch.
+      #
+      # A SIGINT (Ctrl-C on the main thread) is the exception: it is not queued
+      # like those two and cannot be masked. One that lands during the native
+      # call is raised the moment the call returns — the VM checks interrupts
+      # as it pops the native method's frame, before any Ruby code here can
+      # hold the result — so no assignment order would catch it; the sandbox
+      # is then torn down when the unreferenced object is garbage-collected.
       #
       # Ownership: {connect_or_create} can hand back a sandbox that was already
       # running for someone else, and {start} restarts a persisted one. The
