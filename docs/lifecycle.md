@@ -75,9 +75,20 @@ for `Thread#raise` and `Thread#kill`, and for `Sandbox.connect_or_create`,
   that merely connected to a sandbox already running for someone else leaves
   it running, exactly as its block form does.
 
+The cleanup stop is best-effort: if it fails, the interrupt is still the
+exception you get, and the sandbox is torn down when its now unreferenced
+object is garbage-collected.
+
 A Ctrl-C (`SIGINT`) is the one interrupt that cannot be held back until the
-sandbox is in your hands; if it lands first, the sandbox is torn down when the
-unreferenced object is garbage-collected instead of immediately.
+sandbox is in your hands: one that lands during the create is raised the
+moment the create returns, before anything can stop the sandbox, which is then
+torn down when the unreferenced object is garbage-collected instead of
+immediately.
+
+These methods hold queued interrupts back while they acquire the sandbox, so
+an exception you deferred with `Thread.handle_interrupt(X => :on_blocking)` is
+not raised by them: you get the sandbox, and the exception arrives at the
+thread's next blocking operation.
 
 ## Convergent lifecycle
 

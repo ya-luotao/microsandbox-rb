@@ -118,10 +118,18 @@ reached once the result is a Ruby object. What happens to it then:
 
 The calls themselves remain uninterruptible, so `Timeout.timeout { Sandbox.create(...) }`
 still waits for the create to finish — and now also for the stop that cleans
-it up — before `Timeout::Error` surfaces. `Thread.handle_interrupt(X =>
-:on_blocking)` treats a native call as the blocking point at its *start*: an
-exception already deferred is raised before the call begins, and one that
-arrives during the call waits for the thread's next blocking operation.
+it up — before `Timeout::Error` surfaces. That stop is best-effort (a failure
+is swallowed so the interrupt is what the caller sees; GC then tears the
+sandbox down).
+
+`Thread.handle_interrupt(X => :on_blocking)` treats a native call as the
+blocking point at its *start*: the bridge raises an exception that is already
+deferred before the call begins, and one that arrives during the call waits
+for the thread's next blocking operation. The four acquisition methods are
+the exception: their own `Object => :never` mask sits on top of the caller's,
+so a deferred exception is not raised at the native call's entry there — the
+sandbox is returned and the exception is delivered at the next blocking
+operation after the acquisition.
 
 `spec/fake_runtime/interrupt_safety_spec.rb` pins all of this against the real
 extension, driving it with a fake `msb` (`spec/support/fake_runtime/`) whose

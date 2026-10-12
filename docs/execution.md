@@ -78,8 +78,10 @@ running. The *calling* thread blocks uninterruptibly until the call returns:
 `Timeout::timeout`, `Thread#kill`, and Ctrl-C cannot interrupt a blocked native
 call — they are delivered once it has returned. Its result is not lost when
 that happens: an interrupted `exec_stream` handle, stream or SSH client is
-closed when the unreferenced object is garbage-collected, and an interrupted
-`Sandbox.create` stops the sandbox it booted (see
+closed when the unreferenced object is garbage-collected, and a
+`Sandbox.create` interrupted by a `Timeout`/`Thread#raise` or a `Thread#kill`
+stops the sandbox it booted (after a Ctrl-C it is torn down by garbage
+collection instead; see
 [lifecycle.md](lifecycle.md#timeouts-and-interrupts-around-a-create)). Bound
 long-running work with a real deadline where one exists:
 
