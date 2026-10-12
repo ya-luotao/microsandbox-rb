@@ -69,9 +69,10 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   synthesized a zero-argument `new` for them.
 - **Docs:** `docs/surface.md` now lists every `create`/`modify` keyword;
   `DESIGN.md` no longer names a runtime tag the gem stopped pinning long ago;
-  the `with_backend` example in `docs/runtime.md` is valid Ruby. In this
-  file, `0.9.3` (never tagged or published) is folded into `0.10.0`, and the
-  compare links for `0.9.1`–`0.13.0` are defined.
+  the `with_backend` example in `docs/runtime.md` is valid Ruby. `0.9.3`
+  (never tagged or published) is folded into `0.10.0`, both in this file and
+  in the README's Versioning table, and this file now defines the compare
+  links for `0.9.1`–`0.13.0`.
 
 ## [0.17.1] - 2026-10-12
 
