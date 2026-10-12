@@ -45,6 +45,12 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   proxy address (`socks5://user:pass@host:port`) is refused by shape without
   being echoed; a non-Hash `env:` / `labels:` / `scripts:`, a malformed patch,
   and a non-Hash secret spec are reported by class name only.
+- **Dependencies with published advisories updated in `Cargo.lock`**:
+  `russh` 0.63.1 → 0.63.3 (GHSA-35g8-35p8-c8fw, SSH server side),
+  `rustls` 0.23.41 → 0.23.45 (RUSTSEC-2026-0285), `h2` 0.4.15 → 0.4.16
+  (RUSTSEC-2026-0258), plus `anyhow` 1.0.104 and `event-listener` 5.4.2
+  (unsoundness fixes). `rkyv` and `rsa` have no compatible fixed release at
+  the pinned runtime and are unchanged.
 
 ### Fixed
 
