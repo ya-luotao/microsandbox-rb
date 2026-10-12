@@ -173,11 +173,7 @@ module Microsandbox
       session = SftpClient.new(@native.sftp)
       return session unless block_given?
 
-      begin
-        yield session
-      ensure
-        session.close
-      end
+      Microsandbox.close_after(session) { yield session }
     end
 
     # Close the SSH client session. Idempotent. Sends the graceful protocol
@@ -245,11 +241,7 @@ module Microsandbox
       client = SshClient.new(@native.ssh_open_client(opts))
       return client unless block_given?
 
-      begin
-        yield client
-      ensure
-        client.close
-      end
+      Microsandbox.close_after(client) { yield client }
     end
 
     # Prepare a reusable SSH server endpoint for the sandbox.

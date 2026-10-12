@@ -178,6 +178,21 @@ RSpec.describe "Microsandbox runtime helpers" do
       expect(activate).to eq("/gems/binaries/vendor/bin/msb")
     end
 
+    # A host project that is itself a gem, with its bundle under the project
+    # directory, is a path prefix of the companion gem. Which spec comes first
+    # in Gem.loaded_specs depends on the project's name.
+    it "attributes the provider to the innermost gem root, whatever the spec order" do
+      stub_companion(fake_binaries)
+      inner = File.dirname(__FILE__)
+      host = instance_double(Gem::Specification, name: "host-app", full_gem_path: File.dirname(inner))
+      companion = instance_double(Gem::Specification, name: "microsandbox-rb-binaries", full_gem_path: inner)
+      [{"host-app" => host, "microsandbox-rb-binaries" => companion},
+        {"microsandbox-rb-binaries" => companion, "host-app" => host}].each do |specs|
+        allow(Gem).to receive(:loaded_specs).and_return(specs)
+        expect(activate).to eq("/gems/binaries/vendor/bin/msb")
+      end
+    end
+
     it "is activated once at load time, so the slot is claimed before any entry point runs" do
       # Not every msb-spawning entry point goes through ensure_runtime!, so the
       # claim cannot be lazy. Assert the load-time hook exists rather than
@@ -201,6 +216,16 @@ RSpec.describe "Microsandbox runtime helpers" do
       Microsandbox.runtime_path = "/custom/path/to/msb"
       expect(Microsandbox::Native).to have_received(:set_runtime_msb_path)
         .with("/custom/path/to/msb")
+    end
+
+    it "refuses nil and empty paths instead of writing an empty set-once slot" do
+      allow(Microsandbox::Native).to receive(:set_runtime_msb_path)
+      allow(Microsandbox::Native).to receive(:set_runtime_libkrunfw_path)
+      expect { Microsandbox.runtime_path = nil }.to raise_error(ArgumentError, /runtime_path= needs a non-empty path/)
+      expect { Microsandbox.runtime_path = "" }.to raise_error(ArgumentError)
+      expect { Microsandbox.libkrunfw_path = nil }.to raise_error(ArgumentError, /libkrunfw_path= needs a non-empty path/)
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_msb_path)
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_libkrunfw_path)
     end
   end
 

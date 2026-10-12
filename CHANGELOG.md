@@ -41,6 +41,48 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   A path such as `"a/../b"` that used to be accepted must now be written as
   `"b"`. Names that merely contain dots (`"..hidden"`, `"a..b"`) are fine.
   Upgrade if you pass paths you did not construct yourself to `Volume.fs`.
+- **Errors no longer repeat values that can be credentials.** A URL-style
+  proxy address (`socks5://user:pass@host:port`) is refused by shape without
+  being echoed; a non-Hash `env:` / `labels:` / `scripts:`, a malformed patch,
+  and a non-Hash secret spec are reported by class name only.
+
+### Fixed
+
+- **A rejected option no longer triggers a runtime download.** The first-use
+  runtime check ran before most argument validation, so `Sandbox.create` with
+  a bad option downloaded and installed `msb` before raising. It now runs
+  after the options are validated, in `create`, `connect_or_create` and
+  `create_with_progress`.
+- **First-use provisioning is serialized within a process.** Several threads
+  making their first `Sandbox.create` at once each ran the installer, which
+  replaces files in place. `Microsandbox.install`, `Microsandbox.setup` and
+  the first-use check now share one lock, and the check runs once.
+- **`Microsandbox.runtime_path = nil` / `libkrunfw_path = nil`** (or `""`)
+  raise `ArgumentError` instead of writing an empty path into the set-once
+  slot for the rest of the process.
+- **Companion gem detection no longer depends on the host project's name.**
+  When the host project is itself a gem with its bundle installed inside the
+  project directory, `microsandbox-rb-binaries` could be attributed to the
+  host project and ignored, depending on gem load order. The owner is now
+  the gem with the innermost matching root.
+- **`patches:` with `from_snapshot:`** raises `ArgumentError` up front. The
+  runtime rejects the pair only after claiming the sandbox name on disk,
+  which left an empty directory holding the name.
+- **Block forms keep the caller's exception.** `fs.write_stream { }`,
+  `ssh.open_client { }` and `client.sftp { }` closed in a bare `ensure`, so a
+  failing close replaced whatever the block had raised. The block's exception
+  now wins; a close failure is still raised when the block itself succeeded.
+- **`PullSession#sandbox`** re-raises the original create failure when called
+  again, instead of an unrelated "already taken" error.
+- **Timestamps are exact to the millisecond.** `Time.at(ms / 1000.0)` went
+  through a Float and reported one millisecond low for about half of all
+  values (`FsEntry#modified`, `FsMetadata#modified` / `#created`,
+  `LogEntry#timestamp`, `Metrics#timestamp`, and every `created_at` /
+  `updated_at` / `last_used_at` / `observed_at` reader).
+- **`secrets:` given as a `{ "NAME" => { ... } }` Hash** (the `#modify`
+  shape) raises a descriptive `ArgumentError` instead of `TypeError`; a single
+  bare spec Hash is accepted as a list of one, as is a single patch Hash for
+  `patches:`.
 
 ### Changed
 

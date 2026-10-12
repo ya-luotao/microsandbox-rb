@@ -92,7 +92,7 @@ module Microsandbox
 
     # @return [Time, nil]
     def created_at
-      @created_at_ms && Time.at(@created_at_ms / 1000.0)
+      Microsandbox.time_from_ms(@created_at_ms)
     end
 
     # Re-open this snapshot's artifact (cheap metadata validation), returning a

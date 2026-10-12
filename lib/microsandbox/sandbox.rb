@@ -42,13 +42,13 @@ module Microsandbox
     # @return [Time, nil]
     def created_at
       ms = @native.created_at_ms
-      ms && Time.at(ms / 1000.0)
+      Microsandbox.time_from_ms(ms)
     end
 
     # @return [Time, nil]
     def updated_at
       ms = @native.updated_at_ms
-      ms && Time.at(ms / 1000.0)
+      Microsandbox.time_from_ms(ms)
     end
 
     # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default).
@@ -263,7 +263,7 @@ module Microsandbox
 
     # @return [Time] when the stopped state was observed
     def observed_at
-      Time.at(@observed_at_ms / 1000.0)
+      Microsandbox.time_from_ms(@observed_at_ms)
     end
 
     def inspect
@@ -495,6 +495,7 @@ module Microsandbox
       # @return [Sandbox, Object] the sandbox, or the block's return value
       def create(name, **kwargs, &block)
         opts = build_create_opts(**kwargs)
+        Microsandbox.ensure_runtime!
         sandbox = new(Native::Sandbox.create(name.to_s, opts))
         return sandbox unless block_given?
 
@@ -551,6 +552,7 @@ module Microsandbox
       # @return [Sandbox, Object] the live sandbox, or the block's return value
       def connect_or_create(name, **kwargs, &block)
         opts = build_create_opts(**kwargs)
+        Microsandbox.ensure_runtime!
         sandbox = new(Native::Sandbox.connect_or_create(name.to_s, opts))
         return sandbox unless block_given?
 
@@ -582,11 +584,15 @@ module Microsandbox
             "for progress, then call #sandbox and stop it when done"
         end
         opts = build_create_opts(**kwargs)
+        Microsandbox.ensure_runtime!
         PullSession.new(Native::Sandbox.create_with_progress(name.to_s, opts))
       end
 
       # @api private
-      # Shared keyword-option builder for {create}/{create_with_progress}.
+      # Shared keyword-option builder for {create}/{connect_or_create}/
+      # {create_with_progress}. Pure validation and normalization: the callers
+      # provision the runtime ({Microsandbox.ensure_runtime!}) only after this
+      # returns, so a rejected option never triggers a runtime download.
       def build_create_opts(image: nil, cpus: nil, max_cpus: nil, memory: nil, max_memory: nil,
         env: nil, workdir: nil,
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
@@ -610,7 +616,14 @@ module Microsandbox
         if root_disk && oci_upper_size
           raise ArgumentError, "pass either root_disk: or oci_upper_size:, not both"
         end
-        Microsandbox.ensure_runtime!
+        # The core refuses patches on a snapshot-booted sandbox, but only after
+        # it has claimed the sandbox name on disk. Refuse the pair before any
+        # side effect.
+        if from_snapshot && patches && !Array(patches).empty?
+          raise ArgumentError,
+            "patches: cannot be combined with from_snapshot: (a snapshot restores its own " \
+            "root disk; apply changes after boot with sandbox.fs instead)"
+        end
         # `fstype:` names the inner filesystem of a disk-image rootfs, so it only
         # applies when `image:` is a disk-image path (a local path ending in
         # .raw/.qcow2/.vmdk). Routing an OCI ref (e.g. "python") through the
@@ -779,6 +792,8 @@ module Microsandbox
       end
 
       def stringify(hash)
+        # Name the type, not the value: env values are often credentials.
+        raise ArgumentError, "expected a Hash of names to values (got #{hash.class})" unless hash.is_a?(Hash)
         hash.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v.to_s }
       end
 
@@ -844,7 +859,21 @@ module Microsandbox
       # :inject_basic_auth / :inject_query / :inject_body, and :on_violation (see
       # {#normalize_violation}).
       def normalize_secrets(secrets)
-        Array(secrets).map { |spec| normalize_secret(spec) }
+        if secrets.is_a?(Hash)
+          # One spec given bare is fine. A Hash keyed by variable name is the
+          # shape {Sandbox#modify} takes, where `env:` also means something
+          # else (the HOST variable to read); it is not a create-time spec.
+          unless secrets.key?(:env) || secrets.key?("env")
+            raise ArgumentError,
+              "secrets: takes an Array of Hashes like { env:, value:, host: } at create time; " \
+              "the { \"NAME\" => { ... } } form belongs to #modify"
+          end
+          secrets = [secrets]
+        end
+        Array(secrets).map do |spec|
+          raise ArgumentError, "secret spec must be a Hash (got #{spec.class})" unless spec.is_a?(Hash)
+          normalize_secret(spec)
+        end
       end
 
       # @api private
@@ -1409,9 +1438,11 @@ module Microsandbox
       # plain Hash) into string-keyed Hashes for the native layer. Values are
       # passed through unchanged (mode stays Integer, content stays String).
       def normalize_patches(patches)
+        patches = [patches] if patches.is_a?(Hash) # a single patch, not a list of pairs
         Array(patches).map do |p|
           unless p.is_a?(Hash)
-            raise ArgumentError, "patch must be a Hash (use Microsandbox::Patch.*): #{p.inspect}"
+            # Name the type, not the value: a patch can carry file content.
+            raise ArgumentError, "patch must be a Hash (use Microsandbox::Patch.*), got #{p.class}"
           end
           p.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v }
         end
@@ -1957,10 +1988,16 @@ module Microsandbox
 
     # The booted sandbox. Joins the create task (draining any remaining pull
     # progress first), so call it after iterating progress. The returned
-    # {Sandbox} is live — stop it when done. Memoized; callable once.
+    # {Sandbox} is live — stop it when done. Memoized: the native result can be
+    # taken only once, so a later call returns the same {Sandbox}, or re-raises
+    # the same error if the create failed.
     # @return [Sandbox]
     def sandbox
+      raise @failure if @failure
       @sandbox ||= Sandbox.new(@native.result)
+    rescue Microsandbox::Error => e
+      @failure ||= e
+      raise
     end
   end
 end

@@ -18,12 +18,12 @@ module Microsandbox
 
     # @return [Time, nil]
     def created_at
-      @created_at_ms && Time.at(@created_at_ms / 1000.0)
+      Microsandbox.time_from_ms(@created_at_ms)
     end
 
     # @return [Time, nil]
     def last_used_at
-      @last_used_at_ms && Time.at(@last_used_at_ms / 1000.0)
+      Microsandbox.time_from_ms(@last_used_at_ms)
     end
 
     def inspect

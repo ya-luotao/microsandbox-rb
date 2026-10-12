@@ -38,7 +38,7 @@ module Microsandbox
 
     # @return [Time, nil]
     def created_at
-      @created_at_ms && Time.at(@created_at_ms / 1000.0)
+      Microsandbox.time_from_ms(@created_at_ms)
     end
 
     # A host-side filesystem view over this volume (read/write its contents
