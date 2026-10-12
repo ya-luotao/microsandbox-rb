@@ -546,7 +546,7 @@ impl Sandbox {
     /// Create and boot a sandbox. `opts` is a string-keyed options Hash.
     fn create(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let b = Self::build_builder(name, opts)?;
-        let inner = block_on(b.create()).map_err(error::to_ruby)?;
+        let inner = block_on(b.create())?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
 
@@ -559,7 +559,7 @@ impl Sandbox {
         // `create_with_pull_progress` spawns a tokio task, so it must run inside
         // the runtime context even though the call itself is synchronous.
         let (handle, join) =
-            block_on(async move { b.create_with_pull_progress() }).map_err(error::to_ruby)?;
+            block_on(async move { b.create_with_pull_progress() })?.map_err(error::to_ruby)?;
         Ok(PullSession::new(handle, join))
     }
 
@@ -569,7 +569,7 @@ impl Sandbox {
     /// the combination with `replace`.
     fn connect_or_create(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let b = Self::build_builder(name, opts)?;
-        let inner = block_on(b.connect_or_create()).map_err(error::to_ruby)?;
+        let inner = block_on(b.connect_or_create())?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
 
@@ -577,9 +577,9 @@ impl Sandbox {
     fn start(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let detached = conv::opt_bool(opts, "detached")?;
         let inner = if detached {
-            block_on(microsandbox::Sandbox::start_detached(&name)).map_err(error::to_ruby)?
+            block_on(microsandbox::Sandbox::start_detached(&name))?.map_err(error::to_ruby)?
         } else {
-            block_on(microsandbox::Sandbox::start(&name)).map_err(error::to_ruby)?
+            block_on(microsandbox::Sandbox::start(&name))?.map_err(error::to_ruby)?
         };
         Ok(Sandbox::from_inner(inner))
     }
@@ -587,7 +587,7 @@ impl Sandbox {
     /// A controllable handle for a sandbox by name (running or not). Carries
     /// metadata accessors and the full lifecycle surface (see `SbHandle`).
     fn get(name: String) -> Result<SbHandle, Error> {
-        let handle = block_on(microsandbox::Sandbox::get(&name)).map_err(error::to_ruby)?;
+        let handle = block_on(microsandbox::Sandbox::get(&name))?.map_err(error::to_ruby)?;
         Ok(SbHandle::from_inner(handle))
     }
 
@@ -607,7 +607,7 @@ impl Sandbox {
     /// First page of sandboxes (default page size), as a page Hash of
     /// controllable handles.
     fn list() -> Result<RHash, Error> {
-        let page = block_on(microsandbox::Sandbox::list()).map_err(error::to_ruby)?;
+        let page = block_on(microsandbox::Sandbox::list())?.map_err(error::to_ruby)?;
         Self::page_to_hash(page)
     }
 
@@ -626,14 +626,14 @@ impl Sandbox {
                 b = b.cursor(cursor);
             }
             b.labels(labels)
-        }))
+        }))?
         .map_err(error::to_ruby)?;
         Self::page_to_hash(page)
     }
 
     /// Remove a (stopped) sandbox by name.
     fn remove(name: String) -> Result<(), Error> {
-        block_on(microsandbox::Sandbox::remove(&name)).map_err(error::to_ruby)
+        block_on(microsandbox::Sandbox::remove(&name))?.map_err(error::to_ruby)
     }
 
     //----------------------------------------------------------------------
@@ -655,7 +655,7 @@ impl Sandbox {
     /// string-keyed Hash (cwd, user, env, timeout, tty, stdin).
     fn exec(&self, cmd: String, args: Vec<String>, opts: RHash) -> Result<RHash, Error> {
         let parsed = ExecOpts::parse(args, opts)?;
-        let output = block_on(self.inner.exec_with(cmd, move |b| parsed.apply(b)))
+        let output = block_on(self.inner.exec_with(cmd, move |b| parsed.apply(b)))?
             .map_err(error::to_ruby)?;
         exec_output_to_hash(output)
     }
@@ -663,7 +663,7 @@ impl Sandbox {
     /// Run a shell script (pipes/redirects allowed).
     fn shell(&self, script: String, opts: RHash) -> Result<RHash, Error> {
         let parsed = ExecOpts::parse(Vec::new(), opts)?;
-        let output = block_on(self.inner.shell_with(script, move |b| parsed.apply(b)))
+        let output = block_on(self.inner.shell_with(script, move |b| parsed.apply(b)))?
             .map_err(error::to_ruby)?;
         exec_output_to_hash(output)
     }
@@ -676,7 +676,7 @@ impl Sandbox {
         opts: RHash,
     ) -> Result<ExecHandle, Error> {
         let parsed = ExecOpts::parse(args, opts)?;
-        let handle = block_on(self.inner.exec_stream_with(cmd, move |b| parsed.apply(b)))
+        let handle = block_on(self.inner.exec_stream_with(cmd, move |b| parsed.apply(b)))?
             .map_err(error::to_ruby)?;
         Ok(ExecHandle::from_core(handle))
     }
@@ -688,7 +688,7 @@ impl Sandbox {
     /// NoDefaultCommandError when the image resolves no executable command.
     fn exec_default(&self, opts: RHash) -> Result<RHash, Error> {
         let parsed = ExecOpts::parse(Vec::new(), opts)?;
-        let output = block_on(self.inner.exec_default_with(move |b| parsed.apply(b)))
+        let output = block_on(self.inner.exec_default_with(move |b| parsed.apply(b)))?
             .map_err(error::to_ruby)?;
         exec_output_to_hash(output)
     }
@@ -699,7 +699,7 @@ impl Sandbox {
         let handle = block_on(
             self.inner
                 .exec_default_stream_with(move |b| parsed.apply(b)),
-        )
+        )?
         .map_err(error::to_ruby)?;
         Ok(ExecHandle::from_core(handle))
     }
@@ -710,7 +710,7 @@ impl Sandbox {
         let handle = block_on(
             self.inner
                 .shell_stream_with(script, move |b| parsed.apply(b)),
-        )
+        )?
         .map_err(error::to_ruby)?;
         Ok(ExecHandle::from_core(handle))
     }
@@ -731,29 +731,29 @@ impl Sandbox {
     /// Fine-grained control — a custom timeout or fire-and-return `request_*` —
     /// lives on `SandboxHandle`, obtained via `Sandbox.get`.
     fn stop(&self) -> Result<(), Error> {
-        block_on(self.inner.stop()).map_err(error::to_ruby)
+        block_on(self.inner.stop())?.map_err(error::to_ruby)
     }
 
     /// Graceful stop, then wait for the process to exit. Returns an exit-status
     /// Hash (`exit_code`, `success`). Local backend only.
     fn stop_and_wait(&self) -> Result<RHash, Error> {
-        let status = block_on(self.inner.stop_and_wait()).map_err(error::to_ruby)?;
+        let status = block_on(self.inner.stop_and_wait())?.map_err(error::to_ruby)?;
         Ok(exit_status_to_hash(status))
     }
 
     /// Force kill (SIGKILL).
     fn kill(&self) -> Result<(), Error> {
-        block_on(self.inner.kill()).map_err(error::to_ruby)
+        block_on(self.inner.kill())?.map_err(error::to_ruby)
     }
 
     /// Trigger a graceful drain (SIGUSR1 on local).
     fn drain(&self) -> Result<(), Error> {
-        block_on(self.inner.drain()).map_err(error::to_ruby)
+        block_on(self.inner.drain())?.map_err(error::to_ruby)
     }
 
     /// Wait for the process to exit. Returns an exit-status Hash. Local only.
     fn wait(&self) -> Result<RHash, Error> {
-        let status = block_on(self.inner.wait()).map_err(error::to_ruby)?;
+        let status = block_on(self.inner.wait())?.map_err(error::to_ruby)?;
         Ok(exit_status_to_hash(status))
     }
 
@@ -762,7 +762,7 @@ impl Sandbox {
     /// `SandboxReplacedError` instead of silently redirecting the wait.
     fn wait_for_status(&self, status: String) -> Result<SbHandle, Error> {
         let status = sandbox_status_from_str(&status)?;
-        let handle = block_on(self.inner.wait_for_status(status)).map_err(error::to_ruby)?;
+        let handle = block_on(self.inner.wait_for_status(status))?.map_err(error::to_ruby)?;
         Ok(SbHandle::from_inner(handle))
     }
 
@@ -770,19 +770,19 @@ impl Sandbox {
     /// `opts` carries `force`/`timeout`/`detached`.
     fn restart(&self, opts: RHash) -> Result<Sandbox, Error> {
         let options = restart_options(opts)?;
-        let inner = block_on(self.inner.restart_with(options)).map_err(error::to_ruby)?;
+        let inner = block_on(self.inner.restart_with(options))?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
 
     /// Stop and remove this exact sandbox. `opts` carries `force`/`timeout`.
     fn destroy(&self, opts: RHash) -> Result<(), Error> {
         let options = destroy_options(opts)?;
-        block_on(self.inner.destroy_with(options)).map_err(error::to_ruby)
+        block_on(self.inner.destroy_with(options))?.map_err(error::to_ruby)
     }
 
     /// Live status fetched from the backend (a round-trip per call).
     fn status(&self) -> Result<String, Error> {
-        let status = block_on(self.inner.status()).map_err(error::to_ruby)?;
+        let status = block_on(self.inner.status())?.map_err(error::to_ruby)?;
         Ok(sandbox_status_str(status).to_string())
     }
 
@@ -798,13 +798,13 @@ impl Sandbox {
     /// detaching a clone disarms the shared handle just the same.
     fn detach(&self) -> Result<(), Error> {
         let inner = self.inner.clone();
-        block_on(inner.detach());
+        block_on(inner.detach())?;
         Ok(())
     }
 
     /// Latest metrics snapshot as a Hash.
     fn metrics(&self) -> Result<RHash, Error> {
-        let m = block_on(self.inner.metrics()).map_err(error::to_ruby)?;
+        let m = block_on(self.inner.metrics())?.map_err(error::to_ruby)?;
         Ok(metrics_to_hash(&m))
     }
 
@@ -816,14 +816,14 @@ impl Sandbox {
     /// `{ name, latency_secs }` (round-trip latency as f64 seconds; the Ruby
     /// layer exposes both seconds and milliseconds).
     fn ping(&self) -> Result<RHash, Error> {
-        let result = block_on(self.inner.ping()).map_err(error::to_ruby)?;
+        let result = block_on(self.inner.ping())?.map_err(error::to_ruby)?;
         Ok(ping_result_to_hash(&result))
     }
 
     /// Explicitly refresh the idle-activity timer. Returns
     /// `{ name, activity_seq }`.
     fn touch(&self) -> Result<RHash, Error> {
-        let result = block_on(self.inner.touch()).map_err(error::to_ruby)?;
+        let result = block_on(self.inner.touch())?.map_err(error::to_ruby)?;
         Ok(touch_result_to_hash(&result))
     }
 
@@ -840,7 +840,7 @@ impl Sandbox {
     /// until_ms, sources (Array of "stdout"/"stderr"/"output"/"system"/"all").
     fn logs(&self, opts: RHash) -> Result<RArray, Error> {
         let log_opts = parse_log_options(opts)?;
-        let entries = block_on(self.inner.logs(&log_opts)).map_err(error::to_ruby)?;
+        let entries = block_on(self.inner.logs(&log_opts))?.map_err(error::to_ruby)?;
         rhash_array(entries.iter().map(log_entry_to_hash))
     }
 
@@ -860,7 +860,7 @@ impl Sandbox {
         // which panics ("no reactor running") unless constructed inside the
         // runtime context — so build it under `block_on`. (`log_stream` is async
         // and already runs inside `block_on`, so it needs no such wrapper.)
-        let stream = block_on(async { self.inner.metrics_stream(dur) });
+        let stream = block_on(async { self.inner.metrics_stream(dur) })?;
         Ok(MetricsStream::from_stream(stream))
     }
 
@@ -868,7 +868,7 @@ impl Sandbox {
     /// from_cursor, until_ms, follow. Returns a LogStream.
     fn log_stream(&self, opts: RHash) -> Result<LogStream, Error> {
         let log_opts = parse_log_stream_options(opts)?;
-        let stream = block_on(self.inner.log_stream(&log_opts)).map_err(error::to_ruby)?;
+        let stream = block_on(self.inner.log_stream(&log_opts))?.map_err(error::to_ruby)?;
         Ok(LogStream::from_stream(stream))
     }
 
@@ -878,13 +878,13 @@ impl Sandbox {
 
     fn fs_read(&self, path: String) -> Result<RString, Error> {
         let fs = self.inner.fs();
-        let bytes = block_on(fs.read(&path)).map_err(error::to_ruby)?;
+        let bytes = block_on(fs.read(&path))?.map_err(error::to_ruby)?;
         Ok(ruby().str_from_slice(bytes.as_ref()))
     }
 
     fn fs_read_text(&self, path: String) -> Result<String, Error> {
         let fs = self.inner.fs();
-        block_on(fs.read_to_string(&path)).map_err(error::to_ruby)
+        block_on(fs.read_to_string(&path))?.map_err(error::to_ruby)
     }
 
     fn fs_write(&self, path: String, data: RString) -> Result<(), Error> {
@@ -892,72 +892,72 @@ impl Sandbox {
         // could be moved/freed by GC.compact once block_on releases it.
         let bytes = unsafe { data.as_slice() }.to_vec();
         let fs = self.inner.fs();
-        block_on(fs.write(&path, &bytes)).map_err(error::to_ruby)
+        block_on(fs.write(&path, &bytes))?.map_err(error::to_ruby)
     }
 
     fn fs_list(&self, path: String) -> Result<RArray, Error> {
         let fs = self.inner.fs();
-        let entries = block_on(fs.list(&path)).map_err(error::to_ruby)?;
+        let entries = block_on(fs.list(&path))?.map_err(error::to_ruby)?;
         rhash_array(entries.iter().map(fs_entry_to_hash))
     }
 
     fn fs_mkdir(&self, path: String) -> Result<(), Error> {
         let fs = self.inner.fs();
-        block_on(fs.mkdir(&path)).map_err(error::to_ruby)
+        block_on(fs.mkdir(&path))?.map_err(error::to_ruby)
     }
 
     fn fs_remove(&self, path: String) -> Result<(), Error> {
         let fs = self.inner.fs();
-        block_on(fs.remove(&path)).map_err(error::to_ruby)
+        block_on(fs.remove(&path))?.map_err(error::to_ruby)
     }
 
     fn fs_remove_dir(&self, path: String) -> Result<(), Error> {
         let fs = self.inner.fs();
-        block_on(fs.remove_dir(&path)).map_err(error::to_ruby)
+        block_on(fs.remove_dir(&path))?.map_err(error::to_ruby)
     }
 
     fn fs_copy(&self, src: String, dst: String) -> Result<(), Error> {
         let fs = self.inner.fs();
-        block_on(fs.copy(&src, &dst)).map_err(error::to_ruby)
+        block_on(fs.copy(&src, &dst))?.map_err(error::to_ruby)
     }
 
     fn fs_rename(&self, src: String, dst: String) -> Result<(), Error> {
         let fs = self.inner.fs();
-        block_on(fs.rename(&src, &dst)).map_err(error::to_ruby)
+        block_on(fs.rename(&src, &dst))?.map_err(error::to_ruby)
     }
 
     fn fs_exists(&self, path: String) -> Result<bool, Error> {
         let fs = self.inner.fs();
-        block_on(fs.exists(&path)).map_err(error::to_ruby)
+        block_on(fs.exists(&path))?.map_err(error::to_ruby)
     }
 
     fn fs_stat(&self, path: String) -> Result<RHash, Error> {
         let fs = self.inner.fs();
-        let meta = block_on(fs.stat(&path)).map_err(error::to_ruby)?;
+        let meta = block_on(fs.stat(&path))?.map_err(error::to_ruby)?;
         Ok(fs_metadata_to_hash(&meta))
     }
 
     fn fs_copy_from_host(&self, host_path: String, guest_path: String) -> Result<(), Error> {
         let fs = self.inner.fs();
-        block_on(fs.copy_from_host(&host_path, &guest_path)).map_err(error::to_ruby)
+        block_on(fs.copy_from_host(&host_path, &guest_path))?.map_err(error::to_ruby)
     }
 
     fn fs_copy_to_host(&self, guest_path: String, host_path: String) -> Result<(), Error> {
         let fs = self.inner.fs();
-        block_on(fs.copy_to_host(&guest_path, &host_path)).map_err(error::to_ruby)
+        block_on(fs.copy_to_host(&guest_path, &host_path))?.map_err(error::to_ruby)
     }
 
     /// Open a streaming reader over a guest file (for files too large to buffer).
     fn fs_read_stream(&self, path: String) -> Result<crate::fs_stream::FsReadStreamHandle, Error> {
         let fs = self.inner.fs();
-        let stream = block_on(fs.read_stream(&path)).map_err(error::to_ruby)?;
+        let stream = block_on(fs.read_stream(&path))?.map_err(error::to_ruby)?;
         Ok(crate::fs_stream::FsReadStreamHandle::new(stream))
     }
 
     /// Open a streaming writer to a guest file.
     fn fs_write_stream(&self, path: String) -> Result<crate::fs_stream::FsWriteSinkHandle, Error> {
         let fs = self.inner.fs();
-        let sink = block_on(fs.write_stream(&path)).map_err(error::to_ruby)?;
+        let sink = block_on(fs.write_stream(&path))?.map_err(error::to_ruby)?;
         Ok(crate::fs_stream::FsWriteSinkHandle::new(sink))
     }
 
@@ -986,7 +986,7 @@ impl Sandbox {
                 b = b.inactivity_timeout(t);
             }
             b.sftp(sftp)
-        }))
+        }))?
         .map_err(error::to_ruby)?;
         Ok(crate::ssh::SshClient::from_core(client))
     }
@@ -1017,7 +1017,7 @@ impl Sandbox {
                 b = b.inactivity_timeout(t);
             }
             b.sftp(sftp)
-        }))
+        }))?
         .map_err(error::to_ruby)?;
         Ok(crate::ssh::SshServer::from_core(server))
     }
@@ -1032,12 +1032,12 @@ impl Sandbox {
     /// cwd, user, env, detach_keys, rlimits.
     fn attach(&self, cmd: String, args: Vec<String>, opts: RHash) -> Result<i32, Error> {
         let parsed = AttachOpts::parse(args, opts)?;
-        block_on(self.inner.attach_with(cmd, move |b| parsed.apply(b))).map_err(error::to_ruby)
+        block_on(self.inner.attach_with(cmd, move |b| parsed.apply(b)))?.map_err(error::to_ruby)
     }
 
     /// Attach an interactive terminal running the sandbox's default shell.
     fn attach_shell(&self) -> Result<i32, Error> {
-        block_on(self.inner.attach_shell()).map_err(error::to_ruby)
+        block_on(self.inner.attach_shell())?.map_err(error::to_ruby)
     }
 
     /// Attach an interactive terminal to the image's resolved OCI ENTRYPOINT
@@ -1045,7 +1045,7 @@ impl Sandbox {
     /// cwd, user, env, detach_keys, rlimits.
     fn attach_default(&self, opts: RHash) -> Result<i32, Error> {
         let parsed = AttachOpts::parse(Vec::new(), opts)?;
-        block_on(self.inner.attach_default_with(move |b| parsed.apply(b))).map_err(error::to_ruby)
+        block_on(self.inner.attach_default_with(move |b| parsed.apply(b)))?.map_err(error::to_ruby)
     }
 }
 
@@ -2373,7 +2373,7 @@ fn run_modify(builder: SandboxModificationBuilder, opts: RHash) -> Result<String
         } else {
             builder.apply().await
         }
-    })
+    })?
     .map_err(error::to_ruby)?;
     serde_json::to_string(&plan)
         .map_err(|e| error::base_error(format!("failed to serialize modification plan: {e}")))
@@ -2601,7 +2601,7 @@ impl PullSession {
     /// Next progress event as a Hash, or nil when the pull is finished.
     fn recv(&self) -> Result<Option<RHash>, Error> {
         let progress = Arc::clone(&self.progress);
-        let event = block_on(async move { progress.lock().await.recv().await });
+        let event = block_on(async move { progress.lock().await.recv().await })?;
         Ok(event.map(|p| pull_progress_to_hash(&p)))
     }
 
@@ -2609,9 +2609,9 @@ impl PullSession {
     /// create task). Consumes the join handle, so it is callable only once.
     fn result(&self) -> Result<Sandbox, Error> {
         let join = Arc::clone(&self.join);
-        let taken = block_on(async move { join.lock().await.take() });
+        let taken = block_on(async move { join.lock().await.take() })?;
         let handle = taken.ok_or_else(|| error::base_error("pull session result already taken"))?;
-        let inner = block_on(handle)
+        let inner = block_on(handle)?
             .map_err(|e| error::base_error(format!("sandbox creation task failed: {e}")))?
             .map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
@@ -2663,37 +2663,37 @@ impl SbHandle {
 
     /// Graceful stop (SIGTERM→SIGKILL escalation, 10s default) and wait.
     fn stop(&self) -> Result<(), Error> {
-        block_on(self.inner.stop()).map_err(error::to_ruby)
+        block_on(self.inner.stop())?.map_err(error::to_ruby)
     }
 
     /// Graceful stop with a custom escalation timeout (seconds).
     fn stop_with_timeout(&self, secs: f64) -> Result<(), Error> {
-        block_on(self.inner.stop_with_timeout(secs_to_duration(secs)?)).map_err(error::to_ruby)
+        block_on(self.inner.stop_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
     }
 
     /// Force kill (SIGKILL) and wait.
     fn kill(&self) -> Result<(), Error> {
-        block_on(self.inner.kill()).map_err(error::to_ruby)
+        block_on(self.inner.kill())?.map_err(error::to_ruby)
     }
 
     /// Force kill, waiting up to `secs` for the process to disappear.
     fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
-        block_on(self.inner.kill_with_timeout(secs_to_duration(secs)?)).map_err(error::to_ruby)
+        block_on(self.inner.kill_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
     }
 
     /// Send the graceful-shutdown request and return without waiting.
     fn request_stop(&self) -> Result<(), Error> {
-        block_on(self.inner.request_stop()).map_err(error::to_ruby)
+        block_on(self.inner.request_stop())?.map_err(error::to_ruby)
     }
 
     /// Send the force-kill request and return without waiting.
     fn request_kill(&self) -> Result<(), Error> {
-        block_on(self.inner.request_kill()).map_err(error::to_ruby)
+        block_on(self.inner.request_kill())?.map_err(error::to_ruby)
     }
 
     /// Send the drain request (SIGUSR1) and return without waiting.
     fn request_drain(&self) -> Result<(), Error> {
-        block_on(self.inner.request_drain()).map_err(error::to_ruby)
+        block_on(self.inner.request_drain())?.map_err(error::to_ruby)
     }
 
     /// Connect when this exact sandbox is running, wait while it is starting,
@@ -2707,7 +2707,7 @@ impl SbHandle {
             } else {
                 self.inner.connect_or_start().await
             }
-        })
+        })?
         .map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
@@ -2717,7 +2717,7 @@ impl SbHandle {
     /// `SandboxReplacedError` instead of silently redirecting the wait.
     fn wait_for_status(&self, status: String) -> Result<SbHandle, Error> {
         let status = sandbox_status_from_str(&status)?;
-        let handle = block_on(self.inner.wait_for_status(status)).map_err(error::to_ruby)?;
+        let handle = block_on(self.inner.wait_for_status(status))?.map_err(error::to_ruby)?;
         Ok(SbHandle::from_inner(handle))
     }
 
@@ -2725,20 +2725,20 @@ impl SbHandle {
     /// `opts` carries `force`/`timeout`/`detached`.
     fn restart(&self, opts: RHash) -> Result<Sandbox, Error> {
         let options = restart_options(opts)?;
-        let inner = block_on(self.inner.restart_with(options)).map_err(error::to_ruby)?;
+        let inner = block_on(self.inner.restart_with(options))?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
 
     /// Stop and remove this exact sandbox. `opts` carries `force`/`timeout`.
     fn destroy(&self, opts: RHash) -> Result<(), Error> {
         let options = destroy_options(opts)?;
-        block_on(self.inner.destroy_with(options)).map_err(error::to_ruby)
+        block_on(self.inner.destroy_with(options))?.map_err(error::to_ruby)
     }
 
     /// Block until the sandbox reaches a terminal state; returns a stop-result
     /// Hash (name, status, exit_code, signal, observed_at_ms, source).
     fn wait_until_stopped(&self) -> Result<RHash, Error> {
-        let result = block_on(self.inner.wait_until_stopped()).map_err(error::to_ruby)?;
+        let result = block_on(self.inner.wait_until_stopped())?.map_err(error::to_ruby)?;
         Ok(stop_result_to_hash(&result))
     }
 
@@ -2755,7 +2755,7 @@ impl SbHandle {
     /// (`snapshot_to` was removed upstream in v0.6.7 — use `Snapshot.create`
     /// with `dest_dir:` for explicit placement.)
     fn snapshot(&self, name: String) -> Result<RHash, Error> {
-        let snap = block_on(self.inner.snapshot(&name)).map_err(error::to_ruby)?;
+        let snap = block_on(self.inner.snapshot(&name))?.map_err(error::to_ruby)?;
         Ok(crate::snapshot::snapshot_to_hash(&snap))
     }
 
@@ -2763,14 +2763,14 @@ impl SbHandle {
     /// sandbox raises `SandboxNotRunningError` (the handle does not start it
     /// implicitly). Returns `{ name, latency_secs }`.
     fn ping(&self) -> Result<RHash, Error> {
-        let result = block_on(self.inner.ping()).map_err(error::to_ruby)?;
+        let result = block_on(self.inner.ping())?.map_err(error::to_ruby)?;
         Ok(ping_result_to_hash(&result))
     }
 
     /// Explicitly refresh the idle-activity timer. A stopped sandbox raises
     /// `SandboxNotRunningError`. Returns `{ name, activity_seq }`.
     fn touch(&self) -> Result<RHash, Error> {
-        let result = block_on(self.inner.touch()).map_err(error::to_ruby)?;
+        let result = block_on(self.inner.touch())?.map_err(error::to_ruby)?;
         Ok(touch_result_to_hash(&result))
     }
 
@@ -2866,6 +2866,8 @@ pub(crate) fn log_entry_to_hash(entry: &LogEntry) -> RHash {
 
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let class = native.define_class("Sandbox", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<Sandbox>(ruby);
 
     class.define_singleton_method("create", function!(Sandbox::create, 2))?;
     class.define_singleton_method(
@@ -2939,6 +2941,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("attach_shell", method!(Sandbox::attach_shell, 0))?;
 
     let handle = native.define_class("SandboxHandle", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<SbHandle>(ruby);
     handle.define_method("name", method!(SbHandle::name, 0))?;
     handle.define_method("id", method!(SbHandle::id, 0))?;
     handle.define_method("status", method!(SbHandle::status, 0))?;
@@ -2966,6 +2970,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     handle.define_method("modify", method!(SbHandle::modify, 1))?;
 
     let session = native.define_class("PullSession", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<PullSession>(ruby);
     session.define_method("recv", method!(PullSession::recv, 0))?;
     session.define_method("result", method!(PullSession::result, 0))?;
 

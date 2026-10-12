@@ -41,8 +41,8 @@ impl AgentClient {
     /// Connect to a running sandbox by name. `timeout` is optional seconds.
     fn connect_sandbox(name: String, timeout: Option<f64>) -> Result<AgentClient, Error> {
         let bridge = match dur(timeout)? {
-            Some(t) => block_on(AgentBridge::connect_sandbox_with_timeout(&name, t)),
-            None => block_on(AgentBridge::connect_sandbox(&name)),
+            Some(t) => block_on(AgentBridge::connect_sandbox_with_timeout(&name, t))?,
+            None => block_on(AgentBridge::connect_sandbox(&name))?,
         }
         .map_err(to_ruby_agent)?;
         Ok(AgentClient::from_bridge(bridge))
@@ -51,8 +51,8 @@ impl AgentClient {
     /// Connect to an agentd relay socket by path. `timeout` is optional seconds.
     fn connect_path(path: String, timeout: Option<f64>) -> Result<AgentClient, Error> {
         let bridge = match dur(timeout)? {
-            Some(t) => block_on(AgentBridge::connect_path_with_timeout(&path, t)),
-            None => block_on(AgentBridge::connect_path(&path)),
+            Some(t) => block_on(AgentBridge::connect_path_with_timeout(&path, t))?,
+            None => block_on(AgentBridge::connect_path(&path))?,
         }
         .map_err(to_ruby_agent)?;
         Ok(AgentClient::from_bridge(bridge))
@@ -73,7 +73,7 @@ impl AgentClient {
         let body = unsafe { body.as_slice() }.to_vec();
         let inner = Arc::clone(&self.inner);
         let frame =
-            block_on(async move { inner.request(flags, body).await }).map_err(to_ruby_agent)?;
+            block_on(async move { inner.request(flags, body).await })?.map_err(to_ruby_agent)?;
         Ok(frame_to_hash(frame))
     }
 
@@ -81,8 +81,8 @@ impl AgentClient {
     fn stream_open(&self, flags: u8, body: RString) -> Result<RHash, Error> {
         let body = unsafe { body.as_slice() }.to_vec();
         let inner = Arc::clone(&self.inner);
-        let (id, handle) =
-            block_on(async move { inner.stream_open(flags, body).await }).map_err(to_ruby_agent)?;
+        let (id, handle) = block_on(async move { inner.stream_open(flags, body).await })?
+            .map_err(to_ruby_agent)?;
         let hash = ruby().hash_new();
         hash.aset("id", id)?;
         hash.aset("handle", handle)?;
@@ -93,14 +93,14 @@ impl AgentClient {
     fn stream_next(&self, handle: u64) -> Result<Option<RHash>, Error> {
         let inner = Arc::clone(&self.inner);
         let frame =
-            block_on(async move { inner.stream_next(handle).await }).map_err(to_ruby_agent)?;
+            block_on(async move { inner.stream_next(handle).await })?.map_err(to_ruby_agent)?;
         Ok(frame.map(frame_to_hash))
     }
 
     /// Close a stream handle. Idempotent.
     fn stream_close(&self, handle: u64) -> Result<(), Error> {
         let inner = Arc::clone(&self.inner);
-        block_on(async move { inner.stream_close(handle).await });
+        block_on(async move { inner.stream_close(handle).await })?;
         Ok(())
     }
 
@@ -108,7 +108,7 @@ impl AgentClient {
     fn send(&self, id: u32, flags: u8, body: RString) -> Result<(), Error> {
         let body = unsafe { body.as_slice() }.to_vec();
         let inner = Arc::clone(&self.inner);
-        block_on(async move { inner.send(id, flags, body).await }).map_err(to_ruby_agent)
+        block_on(async move { inner.send(id, flags, body).await })?.map_err(to_ruby_agent)
     }
 
     /// Cached handshake `core.ready` frame body bytes (CBOR).
@@ -120,7 +120,7 @@ impl AgentClient {
     /// Close the connection. Idempotent.
     fn close(&self) -> Result<(), Error> {
         let inner = Arc::clone(&self.inner);
-        block_on(async move { inner.close().await });
+        block_on(async move { inner.close().await })?;
         Ok(())
     }
 }
@@ -157,6 +157,8 @@ fn frame_to_hash(frame: BridgeFrame) -> RHash {
 
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let class = native.define_class("AgentClient", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<AgentClient>(ruby);
 
     class.define_singleton_method(
         "connect_sandbox",

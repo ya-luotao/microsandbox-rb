@@ -43,7 +43,7 @@ impl ExecHandle {
     /// Next event as a Hash, or nil when the stream ends.
     fn recv(&self) -> Result<Option<RHash>, Error> {
         let inner = Arc::clone(&self.inner);
-        let event = block_on(async move { inner.lock().await.recv().await });
+        let event = block_on(async move { inner.lock().await.recv().await })?;
         Ok(event.map(exec_event_to_hash))
     }
 
@@ -51,7 +51,7 @@ impl ExecHandle {
     fn wait(&self) -> Result<RHash, Error> {
         let inner = Arc::clone(&self.inner);
         let status =
-            block_on(async move { inner.lock().await.wait().await }).map_err(error::to_ruby)?;
+            block_on(async move { inner.lock().await.wait().await })?.map_err(error::to_ruby)?;
         let hash = ruby().hash_new();
         hash.aset("exit_code", status.code)?;
         hash.aset("success", status.success)?;
@@ -62,20 +62,20 @@ impl ExecHandle {
     fn collect(&self) -> Result<RHash, Error> {
         let inner = Arc::clone(&self.inner);
         let output =
-            block_on(async move { inner.lock().await.collect().await }).map_err(error::to_ruby)?;
+            block_on(async move { inner.lock().await.collect().await })?.map_err(error::to_ruby)?;
         crate::sandbox::exec_output_to_hash(output)
     }
 
     fn signal(&self, sig: i32) -> Result<(), Error> {
-        block_on(self.control.signal(sig)).map_err(error::to_ruby)
+        block_on(self.control.signal(sig))?.map_err(error::to_ruby)
     }
 
     fn kill(&self) -> Result<(), Error> {
-        block_on(self.control.kill()).map_err(error::to_ruby)
+        block_on(self.control.kill())?.map_err(error::to_ruby)
     }
 
     fn resize(&self, rows: u16, cols: u16) -> Result<(), Error> {
-        block_on(self.control.resize(rows, cols)).map_err(error::to_ruby)
+        block_on(self.control.resize(rows, cols))?.map_err(error::to_ruby)
     }
 
     /// The stdin sink (only the first call returns it; nil afterwards or if
@@ -95,11 +95,11 @@ impl ExecSink {
     fn write(&self, data: RString) -> Result<(), Error> {
         // Copy out while holding the GVL (see sandbox::fs_write for the rationale).
         let bytes = unsafe { data.as_slice() }.to_vec();
-        block_on(self.inner.write(&bytes)).map_err(error::to_ruby)
+        block_on(self.inner.write(&bytes))?.map_err(error::to_ruby)
     }
 
     fn close(&self) -> Result<(), Error> {
-        block_on(self.inner.close()).map_err(error::to_ruby)
+        block_on(self.inner.close())?.map_err(error::to_ruby)
     }
 }
 
@@ -141,6 +141,8 @@ fn exec_event_to_hash(event: microsandbox::ExecEvent) -> RHash {
 
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let handle = native.define_class("ExecHandle", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<ExecHandle>(ruby);
     handle.define_method("id", method!(ExecHandle::id, 0))?;
     handle.define_method("recv", method!(ExecHandle::recv, 0))?;
     handle.define_method("wait", method!(ExecHandle::wait, 0))?;
@@ -151,6 +153,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     handle.define_method("take_stdin", method!(ExecHandle::take_stdin, 0))?;
 
     let sink = native.define_class("ExecSink", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<ExecSink>(ruby);
     sink.define_method("write", method!(ExecSink::write, 1))?;
     sink.define_method("close", method!(ExecSink::close, 0))?;
 
