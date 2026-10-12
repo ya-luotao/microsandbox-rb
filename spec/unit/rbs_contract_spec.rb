@@ -7,7 +7,8 @@
 # nothing declared may be missing at runtime, and positional arity, keyword
 # names, required-vs-optional, visibility and superclass must agree. Methods
 # that take `**kwargs` and forward to a shared keyword builder are compared
-# against the builder.
+# against the builder. Block contracts (whether a method requires, accepts or
+# forbids a block) are outside the comparison.
 
 require "rbs"
 
@@ -41,13 +42,21 @@ RSpec.describe "sig/microsandbox.rbs contract" do
 
   d = RBS::AST::Declarations
   m = RBS::AST::Members
-  sig = {} # "Microsandbox::X" => {kind:, super:, methods: {"#name"/".name" => [overload shapes]}}
+  # "Microsandbox::X" => {kind:, super:, methods: {"#name"/".name" => [overload shapes]}, private: [keys]}
+  sig = {}
   walk = lambda do |decl, prefix|
     path = prefix ? "#{prefix}::#{decl.name}" : decl.name.to_s
     entry = sig[path] ||= {kind: decl.is_a?(d::Class) ? :class : :module,
-                           super: decl.is_a?(d::Class) && decl.super_class&.name&.to_s, methods: {}}
+                           super: decl.is_a?(d::Class) && decl.super_class&.name&.to_s, methods: {}, private: []}
+    section = :public # a bare `private`/`public` covers the instance members that follow it
     decl.members.each do |mem|
+      if mem.is_a?(m::MethodDefinition) || mem.is_a?(m::AttrReader)
+        visibility = mem.visibility || ((mem.kind == :instance) ? section : :public)
+        entry[:private] << "#{(mem.kind == :instance) ? "#" : "."}#{mem.name}" if visibility == :private
+      end
       case mem
+      when m::Private then section = :private
+      when m::Public then section = :public
       when d::Class, d::Module then walk.call(mem, path)
       when m::MethodDefinition
         shapes = mem.overloads.map do |o|
@@ -56,9 +65,9 @@ RSpec.describe "sig/microsandbox.rbs contract" do
            rest: !f.rest_positionals.nil?, keyreq: f.required_keywords.keys.map(&:to_s).sort,
            key: f.optional_keywords.keys.map(&:to_s).sort, keyrest: !f.rest_keywords.nil?}
         end
-        entry[:methods]["#{(mem.kind == :singleton) ? "." : "#"}#{mem.name}"] = shapes
+        entry[:methods]["#{(mem.kind == :instance) ? "#" : "."}#{mem.name}"] = shapes
       when m::AttrReader
-        entry[:methods]["#{(mem.kind == :singleton) ? "." : "#"}#{mem.name}"] =
+        entry[:methods]["#{(mem.kind == :instance) ? "#" : "."}#{mem.name}"] =
           [{req: 0, opt: 0, rest: false, keyreq: [], key: [], keyrest: false}]
       end
     end
@@ -98,14 +107,25 @@ RSpec.describe "sig/microsandbox.rbs contract" do
       sides = {"." => mod.singleton_class}
       sides["#"] = mod unless module_function_like
       sides.each do |sep, target|
-        own_public = target.public_instance_methods(false).map(&:to_s) - %w[inspect]
+        own_public = target.public_instance_methods(false).map(&:to_s)
+        # `#inspect` is every object's debugging hook, not typed surface. A
+        # singleton `inspect` (Image.inspect) is a real API and stays in.
+        own_public -= %w[inspect] if sep == "#"
         declared = entry[:methods].keys.select { |k| k.start_with?(sep) }.map { |k| k[1..] } - %w[initialize]
+        declared_private = declared.select { |n| entry[:private].include?("#{sep}#{n}") }
 
         it "declares every public #{(sep == ".") ? "singleton" : "instance"} method (and no stale ones)" do
           undeclared = (own_public - declared).reject { |n| internal.key?("#{mod.name}#{sep}#{n}") }
-          stale = declared.reject { |n| target.public_method_defined?(n) }
+          stale = (declared - declared_private).reject { |n| target.public_method_defined?(n) }
           expect(undeclared).to be_empty, "public at runtime, absent from sig: #{undeclared.inspect}"
           expect(stale).to be_empty, "declared in sig, not public at runtime: #{stale.inspect}"
+        end
+
+        it "declares no public #{(sep == ".") ? "singleton" : "instance"} method private (and no missing private ones)" do
+          hidden = own_public & declared_private
+          stale = declared_private.reject { |n| target.private_method_defined?(n) || own_public.include?(n) }
+          expect(hidden).to be_empty, "public at runtime, declared private in sig: #{hidden.inspect}"
+          expect(stale).to be_empty, "declared private in sig, not private at runtime: #{stale.inspect}"
         end
 
         (own_public & declared).each do |name|
