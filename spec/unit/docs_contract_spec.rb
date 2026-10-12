@@ -39,10 +39,12 @@ RSpec.describe "documentation contract" do
     headings = cl.scan(/^## \[([^\]]+)\]/).flatten
     refs = cl.scan(/^\[([^\]]+)\]: (\S+)/).to_h
 
-    # Release tags without the leading "v": the remote's and the local ones
-    # together. The remote is asked because CI checks out shallow, where
-    # `git tag` is empty; the local list covers an unreachable remote, and an
-    # `origin` that is a fork or mirror holding only some of the tags.
+    # Release tags without the leading "v", from up to three places: `origin`
+    # (CI checks out shallow, where `git tag` is empty), the local tag list
+    # (an unreachable remote), and the canonical repository that the link
+    # definitions above point at (an `origin` that is a fork or mirror holding
+    # only some of the tags). The canonical repository is asked only when the
+    # first two leave a release heading unaccounted for.
     git_lines = lambda do |*args|
       io = IO.popen({"GIT_TERMINAL_PROMPT" => "0"}, ["git", *args], chdir: root, err: File::NULL)
       begin
@@ -54,12 +56,10 @@ RSpec.describe "documentation contract" do
         io.close
       end.lines(chomp: true)
     end
-    release_tags = lambda do
-      remote = git_lines.call("ls-remote", "--tags", "origin")
-        .filter_map { |line| line[%r{\trefs/tags/v([^\^]+)}, 1] }
-      local = git_lines.call("tag").map { |t| t.delete_prefix("v") }
-      remote | local
+    remote_tags = lambda do |remote|
+      git_lines.call("ls-remote", "--tags", remote).filter_map { |line| line[%r{\trefs/tags/v([^\^]+)}, 1] }
     end
+    canonical = refs.values.filter_map { |url| url[%r{\A(\S+?)/compare/}, 1] }.uniq
 
     it "has a section for the current version (or it is still Unreleased)" do
       expect(headings.first(2)).to include(Microsandbox::VERSION)
@@ -77,9 +77,10 @@ RSpec.describe "documentation contract" do
     # A version prepared but never tagged must not keep a release heading: its
     # content shipped under the next tag.
     it "does not present a never-tagged version as released" do
-      tags = release_tags.call
-      skip "no release tags visible: origin unreachable and no local tags" if tags.empty?
       released = headings - ["Unreleased", Microsandbox::VERSION]
+      tags = remote_tags.call("origin") | git_lines.call("tag").map { |t| t.delete_prefix("v") }
+      canonical.each { |url| tags |= remote_tags.call(url) } unless (released - tags).empty?
+      skip "no release tags visible: no remote reachable and no local tags" if tags.empty?
       expect(released - tags).to be_empty
     end
   end
