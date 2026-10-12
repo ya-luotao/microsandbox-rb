@@ -174,12 +174,23 @@ jobs:
       - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
-          bundler-cache: true
-      - run: bundle exec rake build
+      # The gem that gets PUBLISHED is built with plain `gem build`: no Bundler,
+      # no `bundle install`, so nothing from the (unlocked — Gemfile.lock is not
+      # committed) development dependency closure runs in the job that produces
+      # the release artifact. The gemspec needs only lib/microsandbox/version.rb.
+      # `bundle exec rake build` yields an identical file list and metadata;
+      # it stays in ci.yml's `package` job, which installs what it builds.
+      - name: Build the source gem (gem build, no Bundler)
+        run: |
+          version="$(ruby -Ilib -r microsandbox/version -e 'print Microsandbox::VERSION')"
+          mkdir -p pkg
+          gem build microsandbox-rb.gemspec --output "pkg/microsandbox-rb-${version}.gem"
+          ls -la pkg
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gem-source
           path: pkg/*.gem
+          if-no-files-found: error
 
   # The release gate. Nothing is pushed to RubyGems unless this passes:
   #   - the tag is vX.Y.Z and the three lock-step version constants in the
