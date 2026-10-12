@@ -55,6 +55,10 @@ GH_TOKEN=$(gh auth token) .github/scripts/release_preflight.sh vX.Y.Z
 It is a workflow-level gate; branch protection and a protected environment for
 the trusted publisher are separate repository settings.
 
+CI's `lint` job also runs `cargo deny check advisories` against `Cargo.lock`;
+the exceptions (advisories with no fixed release at the pinned runtime) are in
+`ext/microsandbox/deny.toml` — re-check them on every runtime adoption.
+
 ## Precompiled per-platform gems
 
 Precompiled *extension* gems are built best-effort by the `cross-gems` job,

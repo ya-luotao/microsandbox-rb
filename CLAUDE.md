@@ -42,10 +42,12 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the p
   - Rust: `cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml` and
     `cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings`. Always pass
     `--manifest-path ext/microsandbox/Cargo.toml` — the workspace root has no buildable crate.
+  - Advisories: `cargo deny --manifest-path ext/microsandbox/Cargo.toml check advisories` (CI's
+    `lint` job; exceptions with no fixed release live in `ext/microsandbox/deny.toml`).
   - Ruby (`lib/`, `spec/`): `bundle exec standardrb` (zero-config StandardRB; autocorrect with
     `bundle exec standardrb --fix`).
 
-  CI gates on all three — run them before claiming a change is done. The `verify-local` skill runs
+  CI gates on all of them — run them before claiming a change is done. The `verify-local` skill runs
   the Rust + spec gate in one shot.
 
 ## Version lock-step (three independent axes)
