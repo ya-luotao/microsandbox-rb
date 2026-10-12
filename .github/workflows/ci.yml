@@ -293,7 +293,7 @@ jobs:
           if-no-files-found: error
 
   lint:
-    name: lint (rustfmt + clippy + cargo-deny + standardrb)
+    name: lint (rustfmt + clippy + cargo-deny + standardrb + rbs validate)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -324,3 +324,8 @@ jobs:
       # zero-config; it scans every Ruby file in the checkout).
       - name: standardrb
         run: bundle exec standardrb
+      # The hand-maintained signatures must at least be well-formed and
+      # self-consistent (every referenced type resolves). That they match the
+      # loaded gem is spec/unit/rbs_contract_spec.rb's job, in the test matrix.
+      - name: rbs validate
+        run: bundle exec rbs -I sig validate
