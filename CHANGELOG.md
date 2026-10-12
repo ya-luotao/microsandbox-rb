@@ -8,6 +8,14 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Added
+
+- Two contract specs keep the hand-maintained parts honest:
+  `spec/unit/rbs_contract_spec.rb` compares `sig/microsandbox.rbs` with the
+  loaded gem, and `spec/unit/docs_contract_spec.rb` checks the docs against
+  the code (version table, CHANGELOG links, error table, option list,
+  examples, release checklist). CI also runs `rbs -I sig validate`.
+
 ### Changed
 
 - **Release pipeline hardened** (no change to the gem's code or API). A tag
@@ -56,6 +64,14 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   the exception — they hold every queued interrupt back until the sandbox is
   in the caller's hands, so there a deferred exception is delivered after the
   acquisition (at the thread's next blocking operation), not before it.
+- **RBS: `Klass.new` now type-checks with its real arguments.** 24 classes
+  whose constructor takes arguments had no `initialize` declaration, so RBS
+  synthesized a zero-argument `new` for them.
+- **Docs:** `docs/surface.md` now lists every `create`/`modify` keyword;
+  `DESIGN.md` no longer names a runtime tag the gem stopped pinning long ago;
+  the `with_backend` example in `docs/runtime.md` is valid Ruby. In this
+  file, `0.9.3` (never tagged or published) is folded into `0.10.0`, and the
+  compare links for `0.9.1`–`0.13.0` are defined.
 
 ## [0.17.1] - 2026-10-12
 
