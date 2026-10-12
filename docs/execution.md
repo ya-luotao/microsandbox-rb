@@ -76,7 +76,12 @@ Don't share one handle across threads.
 The GVL is released during sandbox calls, so *other* Ruby threads keep
 running. The *calling* thread blocks uninterruptibly until the call returns:
 `Timeout::timeout`, `Thread#kill`, and Ctrl-C cannot interrupt a blocked native
-call. Bound long-running work with a real deadline where one exists:
+call — they are delivered once it has returned. Its result is not lost when
+that happens: an interrupted `exec_stream` handle, stream or SSH client is
+closed when the unreferenced object is garbage-collected, and an interrupted
+`Sandbox.create` stops the sandbox it booted (see
+[lifecycle.md](lifecycle.md#timeouts-and-interrupts-around-a-create)). Bound
+long-running work with a real deadline where one exists:
 
 - `exec(timeout:)` / `shell(timeout:)` kill the guest command after N seconds.
 - `AgentClient.connect_sandbox` / `connect_path` take a `timeout:` that bounds

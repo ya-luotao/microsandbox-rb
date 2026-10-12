@@ -57,6 +57,28 @@ Microsandbox::Sandbox.remove("box")   # remove a stopped sandbox
 `ENTRYPOINT`/`CMD`. See [execution.md](execution.md#default-workload) for
 `exec_default`.
 
+### Timeouts and interrupts around a create
+
+A create cannot be interrupted while it runs, so `Timeout.timeout(5) {
+Sandbox.create(...) }` does not return after 5 seconds: `Timeout::Error` is
+raised only once the create has finished. When that happens the sandbox is
+**stopped before the exception reaches you** — the call returns only after the
+create *and* that cleanup stop have completed, so it takes longer than the
+create alone — and nothing is left running without an owner. The same holds
+for `Thread#raise` and `Thread#kill`, and for `Sandbox.connect_or_create`,
+`Sandbox.start` and `PullSession#sandbox`. Two details:
+
+- The sandbox is stopped, not removed. Like any stopped sandbox it keeps its
+  name until you `Sandbox.remove` it (or pass `ephemeral: true`), so retrying
+  the create under the same name raises `SandboxAlreadyExistsError`.
+- Only a sandbox the interrupted call owns is stopped. `connect_or_create`
+  that merely connected to a sandbox already running for someone else leaves
+  it running, exactly as its block form does.
+
+A Ctrl-C (`SIGINT`) is the one interrupt that cannot be held back until the
+sandbox is in your hands; if it lands first, the sandbox is torn down when the
+unreferenced object is garbage-collected instead of immediately.
+
 ## Convergent lifecycle
 
 Idempotent operations that take a name to the state you want, whatever state

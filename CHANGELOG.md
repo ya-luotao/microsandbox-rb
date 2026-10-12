@@ -25,6 +25,27 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   `rb_sys`), exactly as before. The `microsandbox-rb-binaries` gems are
   unaffected.
 
+### Fixed
+
+- **An interrupted call no longer leaks what it produced.** A `Timeout.timeout`
+  (or any `Thread#raise`), a `Thread#kill` or a Ctrl-C that arrived while a
+  native call was in flight used to discard the call's result without
+  releasing it: `Timeout.timeout { Sandbox.create(...) }` raised
+  `Timeout::Error` and left the sandbox running with no Ruby object owning it
+  until the process exited, an interrupted `exec_stream` left its guest
+  session open with nothing able to kill it, and an interrupted `exec` kept
+  its collected output in memory. The result now always reaches Ruby.
+  `Sandbox.create`, `Sandbox.connect_or_create`, `Sandbox.start` and
+  `PullSession#sandbox` stop the sandbox before the exception propagates —
+  only one the call owns; a sandbox `connect_or_create` merely connected to is
+  left running — and every other interrupted result is released when its
+  object is garbage-collected. Native calls are still uninterruptible, so the
+  exception is raised once the call has finished, and for the four methods
+  above only after the cleanup stop as well (a timed-out create therefore
+  returns later than before). One visible difference:
+  `Thread.handle_interrupt(X => :on_blocking)` now raises a deferred exception
+  *before* a native call starts rather than after it.
+
 ## [0.17.1] - 2026-10-12
 
 Gem-only security and hardening release; the embedded runtime stays at
