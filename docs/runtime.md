@@ -85,7 +85,9 @@ Microsandbox.set_default_backend(:cloud, url: "https://api.example.com", api_key
 Microsandbox.set_default_backend(:cloud, profile: "prod")
 
 # Scoped override (restored afterward, even on error):
-Microsandbox.with_backend(:local) { Microsandbox::Sandbox.create("box", image: "alpine") { |sb| ... } }
+Microsandbox.with_backend(:local) do
+  Microsandbox::Sandbox.create("box", image: "alpine") { |sb| puts sb.shell("uname -a").stdout }
+end
 ```
 
 Resolution order when no backend is set programmatically: `MSB_BACKEND`

@@ -12,20 +12,30 @@ version with the user before pushing the tag.
 
 1. **Confirm a clean tree on `main`** (or the intended release branch) and that CI is green.
 
-2. **Bump the gem version in BOTH files (they must match — `version_spec.rb` enforces it):**
+2. **Bump the gem version in ALL THREE files (they must match — `version_spec.rb` enforces it),
+   then refresh the lockfile:**
    - `lib/microsandbox/version.rb` → `VERSION = "$ARGUMENTS"`
    - `ext/microsandbox/Cargo.toml` `[package]` → `version = "$ARGUMENTS"`
+   - `binaries/lib/microsandbox/binaries.rb` → `VERSION = "$ARGUMENTS"` (the companion
+     `microsandbox-rb-binaries` gem is released in lock-step, same number)
+   - `Cargo.lock` → `bundle exec rake compile` rewrites the `microsandbox_rb` entry; commit it. The
+     lockfile is committed and packed into the gem, so a version bump without the regenerated lock
+     ships a stale one.
 
    The gem version is on its OWN semver track, independent of the upstream runtime tag — do NOT
    pick `$ARGUMENTS` to mirror the runtime version. While 0.x, a breaking API change bumps the
    minor; a fix/addition bumps the patch. (See the Versioning section of `README.md`.)
 
 3. **Upstream runtime tag — only if this release adopts a new upstream runtime.** This is a
-   SEPARATE axis from the gem version. If adopting a new runtime, update the `tag = "vX.Y.Z"` for
-   BOTH `microsandbox` and `microsandbox-network` git deps in `ext/microsandbox/Cargo.toml` to the
-   same tag, then ALSO update `Microsandbox::RUNTIME_VERSION` in `lib/microsandbox/version.rb` to
-   match (`version_spec.rb` asserts the constant equals the Cargo tag) and add a row to the
-   Versioning table in `README.md`. Then `bundle exec rake compile` to refresh `Cargo.lock`.
+   SEPARATE axis from the gem version. If adopting a new runtime, update the `tag = "vX.Y.Z"` on
+   ALL THREE upstream git deps in `ext/microsandbox/Cargo.toml` — `microsandbox`,
+   `microsandbox-network` and `microsandbox-runtime` — to the same tag, then ALSO update
+   `Microsandbox::RUNTIME_VERSION` in `lib/microsandbox/version.rb` and
+   `Microsandbox::Binaries::RUNTIME_VERSION` in `binaries/lib/microsandbox/binaries.rb` to match
+   (`version_spec.rb` asserts both constants equal the Cargo tag), commit the new release's
+   `checksums.sha256` as `binaries/checksums/<tag>.sha256` (vendoring the companion gem fails
+   closed without it), and add a row to the Versioning table in `README.md`. Then
+   `bundle exec rake compile` to refresh `Cargo.lock` and commit it.
    Otherwise leave all of these untouched.
 
 4. **Update `CHANGELOG.md`** (Keep-a-Changelog) — move Unreleased items under a new

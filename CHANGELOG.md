@@ -742,7 +742,9 @@ Deliberately **not** exposed, matching the Python and Node SDKs (both surface
 these only through the CLI): `modify`'s `oci_upper_size` overlay-grow field, and
 the `SandboxMetricsReport` / per-sandbox metrics-report helpers.
 
-## [0.9.3] - 2026-07-09
+### Runtime adoption v0.6.3 → v0.6.6 (prepared as 0.9.3, first released in 0.10.0)
+
+`0.9.3` was never tagged or published; everything below shipped in `0.10.0`.
 
 Adopts upstream runtime **`v0.6.3` → `v0.6.6`** (spanning upstream `v0.6.4` and
 `v0.6.6`; `v0.6.5` was yanked upstream — its GitHub release was pulled and the
@@ -751,7 +753,7 @@ upstream SDK crate's public API grew only *additive* surface (live
 modify/resize, ping/touch — Ruby bindings for these land in the next minor),
 so this is a pure runtime bump with no Ruby API change.
 
-### Fixed
+#### Fixed
 
 - **Snapshot restore survives upstream tag republishes** (upstream #1130):
   restore now pulls the OCI image by its pinned manifest digest
@@ -771,7 +773,7 @@ so this is a pure runtime bump with no Ruby API change.
 - **Filesystem snapshot `readdir` streams entries** (upstream #1133), fixing
   unbounded memory growth (RSS leak) when listing very large directories.
 
-### Changed
+#### Changed
 
 - **Embedded runtime is now `v0.6.6`** (`Microsandbox::RUNTIME_VERSION` /
   `Microsandbox.runtime_version`). Also inherited:
@@ -1446,6 +1448,12 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
 [0.16.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.9.2...v0.10.0
+[0.9.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.0...v0.8.1
