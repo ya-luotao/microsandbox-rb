@@ -24,6 +24,7 @@ RSpec.describe "sig/microsandbox.rbs contract" do
     "Microsandbox.time_from_ms" => "@api private epoch-milliseconds helper",
     "Microsandbox::Rule.build" => "@api private (module_function side effect)",
     "Microsandbox::Rule.normalize_destination" => "@api private (module_function side effect)",
+    "Microsandbox::Sandbox.acquire" => "@api private; public only because PullSession#sandbox calls it across classes",
     "Microsandbox::Sandbox.build_create_opts" => "@api private keyword builder"
   }.freeze
   # Methods whose `**kwargs` are forwarded verbatim to a keyword builder: the
