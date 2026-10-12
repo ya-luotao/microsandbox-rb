@@ -725,8 +725,10 @@ could make a later CLI copy-out overwrite an arbitrary host file — the SDK
 
 Ruby bindings for the additive `v0.6.6` SDK surface (upstream #1099 / #1128),
 bringing the gem to parity with the Python and Node SDKs, which already ship
-this API. The embedded runtime tag is unchanged (`v0.6.6`); this is a pure
-binding addition with no breaking change.
+this API. This release also adopts the upstream runtime **`v0.6.3` →
+`v0.6.6`**: that work was prepared as `0.9.3`, which was never tagged or
+published, so the runtime bump and the bindings for its new surface first
+shipped together here. Neither part is a breaking change.
 
 ### Added
 
@@ -767,8 +769,8 @@ Adopts upstream runtime **`v0.6.3` → `v0.6.6`** (spanning upstream `v0.6.4` an
 `v0.6.6`; `v0.6.5` was yanked upstream — its GitHub release was pulled and the
 type-model refactor it shipped, #1014, was reverted in `v0.6.6`, #1143). The
 upstream SDK crate's public API grew only *additive* surface (live
-modify/resize, ping/touch — Ruby bindings for these land in the next minor),
-so this is a pure runtime bump with no Ruby API change.
+modify/resize, ping/touch). The Ruby bindings for it are the `### Added`
+entries above.
 
 #### Fixed
 
