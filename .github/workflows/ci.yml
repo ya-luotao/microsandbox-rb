@@ -309,11 +309,12 @@ jobs:
       - name: clippy
         run: cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings
       # Known advisories (RustSec) against everything in Cargo.lock. The config
-      # is ext/microsandbox/deny.toml, which cargo-deny finds next to the
-      # manifest: it holds the exceptions (advisories with no fix at the
-      # pinned runtime). A new advisory published upstream turns this red on
-      # an otherwise unchanged tree — that is the point; update the crate or,
-      # only when there is no fixed release, add it there with a reason.
+      # is deny.toml at the repository root, which cargo-deny finds at the
+      # workspace root (kept out of ext/ so the gem does not pack it): it holds
+      # the exceptions (advisories with no fix at the pinned runtime). A new
+      # advisory published upstream turns this red on an otherwise unchanged
+      # tree — that is the point; update the crate or, only when there is no
+      # fixed release, add it there with a reason.
       - name: cargo-deny (advisories)
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
