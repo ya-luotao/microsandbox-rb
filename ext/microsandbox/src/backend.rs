@@ -59,7 +59,7 @@ pub fn with_local_backend<T>(
             .as_local()
             .expect("local_backend() guarantees a local backend");
         op(local).await
-    })
+    })?
     .map_err(error::to_ruby)
 }
 

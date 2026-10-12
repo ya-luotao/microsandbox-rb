@@ -47,7 +47,7 @@ fn all_sandbox_metrics() -> Result<RHash, Error> {
 
 /// Download and install the `msb` runtime + `libkrunfw` into `~/.microsandbox`.
 fn install() -> Result<(), Error> {
-    runtime::block_on(microsandbox::setup::install()).map_err(error::to_ruby)
+    runtime::block_on(microsandbox::setup::install())?.map_err(error::to_ruby)
 }
 
 /// Customizable install via the core `Setup` builder. `opts`: base_dir (install
@@ -84,7 +84,7 @@ fn setup(opts: RHash) -> Result<(), Error> {
             .force(force)
             .build(),
     };
-    runtime::block_on(setup.install()).map_err(error::to_ruby)
+    runtime::block_on(setup.install())?.map_err(error::to_ruby)
 }
 
 /// Whether the `msb` runtime + `libkrunfw` are installed and resolvable.

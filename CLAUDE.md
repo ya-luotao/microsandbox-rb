@@ -10,7 +10,7 @@ magnus + rb-sys native extension. Two layers:
 - `lib/microsandbox/` — idiomatic, **synchronous** Ruby API (the public surface).
 - `ext/microsandbox/src/` — magnus bindings over the async (tokio) core crate. The async core is
   bridged to sync Ruby via a shared blocking tokio runtime; the GVL is released
-  (`rb_thread_call_without_gvl`) during blocking calls. Built as `microsandbox_rb.{bundle,so}`.
+  (`rb_thread_call_without_gvl2`) during blocking calls. Built as `microsandbox_rb.{bundle,so}`.
 
 Plus a companion gem in its own subtree:
 
@@ -28,6 +28,11 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the p
   **stable Rust ≥ 1.91** on PATH — the core crate is edition 2024 / pulls smoltcp; an older rustc
   fails the `extconf.rb` preflight. `rust-toolchain.toml` pins `stable`.
 - Unit specs (no runtime needed): `bundle exec rake spec` (the default task; auto-compiles first).
+  It runs TWO rspec processes: `spec:unit`, then `spec:fake_runtime`.
+- Fake-runtime specs (`spec/fake_runtime/`, `bundle exec rake spec:fake_runtime`): the real native
+  extension driven against a fake `msb` + agent relay (`spec/support/fake_runtime/`, no microVM).
+  They run in their own process because they point `MSB_PATH` at the fake for the whole process,
+  while unit specs assert what happens when no runtime is found; in a mixed run they skip.
 - Integration specs (boot real microVMs, **Linux+KVM or macOS Apple Silicon**):
   `MICROSANDBOX_INTEGRATION=1 bundle exec rspec spec/integration`. They auto-skip without that env
   var or a missing runtime — never assume a green unit run exercised them.

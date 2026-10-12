@@ -50,7 +50,7 @@ multi-threaded tokio runtime via `runtime.block_on(fut)`.
 
 ### GVL release
 
-`block_on` is wrapped in `nogvl` (`rb_thread_call_without_gvl`) so the Ruby
+`block_on` is wrapped in `nogvl` (`rb_thread_call_without_gvl2`) so the Ruby
 Global VM Lock is **released** while a sandbox operation is in flight. Without
 this, a long-running `exec` would freeze every other Ruby thread/fiber in the
 process (a real problem under Rails/Puma). The `nogvl` closure runs pure Rust
@@ -59,21 +59,81 @@ captured and re-raised *after* the GVL is re-acquired rather than unwinding
 across the C frame (which would be UB).
 
 **The *calling* thread is not preemptible during the call.** `nogvl` passes a
-null unblock-function to `rb_thread_call_without_gvl`, and Ruby only checks
-pending interrupts *before* and *after* the GVL-released region — so while a
-native call blocks, the thread that issued it cannot be interrupted:
-`Timeout::timeout` (which relies on `Thread#raise`), `Thread#kill`, and `SIGINT`
-(Ctrl-C) are all deferred until the call returns on its own. The GVL release
-keeps *other* threads live; it does **not** make the calling thread
-cancelable. This is harmless for the bounded calls (`exec`/`shell` with a
-`timeout:`, `AgentClient` with a `timeout:`) because the deadline fires inside
-the future, but the unbounded/streaming paths — `exec`/`shell` with
-`timeout: nil`, `ExecHandle#recv`/`#wait`, `log_stream`/`metrics_stream` `recv`
-(especially `follow: true`), `Sandbox#wait`/`SandboxHandle#wait_until_stopped`,
-and `AgentClient#request` with no timeout — can block their caller indefinitely
-if the guest wedges or a relay drops. **Bound such calls with the explicit
-`timeout:` knobs rather than wrapping them in `Timeout::timeout`**, which will
-not fire while the native call is in flight.
+null unblock-function, so while a native call blocks, the thread that issued it
+cannot be interrupted: `Timeout::timeout` (which relies on `Thread#raise`),
+`Thread#kill`, and `SIGINT` (Ctrl-C) are all deferred until the call returns on
+its own. The GVL release keeps *other* threads live; it does **not** make the
+calling thread cancelable. This is harmless for the bounded calls
+(`exec`/`shell` with a `timeout:`, `AgentClient` with a `timeout:`) because the
+deadline fires inside the future, but the unbounded/streaming paths —
+`exec`/`shell` with `timeout: nil`, `ExecHandle#recv`/`#wait`,
+`log_stream`/`metrics_stream` `recv` (especially `follow: true`),
+`Sandbox#wait`/`SandboxHandle#wait_until_stopped`, and `AgentClient#request`
+with no timeout — can block their caller indefinitely if the guest wedges or a
+relay drops. **Bound such calls with the explicit `timeout:` knobs rather than
+wrapping them in `Timeout::timeout`**, which will not fire while the native
+call is in flight.
+
+### Interrupts never lose a result
+
+An interrupt that arrives during a native call is delivered **after the call
+returns**, and the call's result is not lost. Ruby delivers `Thread#raise`,
+`Thread#kill` and `SIGINT` with a `longjmp`, which skips Rust frames without
+running destructors; if that happened while the value a call had just produced
+(a booted sandbox, a guest exec session, megabytes of output) lived only in a
+Rust frame, it would be neither returned to Ruby nor dropped. The plain
+`rb_thread_call_without_gvl` does exactly that — it checks interrupts once more
+after the callback, before returning — which is why it is not used. Two rules
+in `runtime.rs` replace it:
+
+1. `nogvl` checks interrupts itself, under `rb_protect`, **only before the work
+   starts**: once up front, and again whenever `rb_thread_call_without_gvl2`
+   declined to run the callback because an interrupt was pending at entry. A
+   raise or kill there is an ordinary `Err` that unwinds the Rust frames
+   normally — nothing has happened yet. After the callback has run, nothing is
+   checked. (`nogvl` and `block_on` therefore return `Result`, and every call
+   site propagates it with `?`. A bound method that needs two awaits does both
+   in one `block_on`, so no value sits between two entry checks.)
+2. Between `block_on` returning and the bound method returning its value, the
+   binding does not call into Ruby: no `funcall` (the VM checks interrupts
+   after every one), only C-level Hash/Array/String construction and
+   `TypedData` wrapping. The class lookup magnus would otherwise do with
+   `const_get` on a type's first wrap is resolved at extension load instead.
+
+So the next interrupt checkpoint after a native call is the Ruby VM's own,
+reached once the result is a Ruby object. What happens to it then:
+
+- **`Sandbox.create`, `Sandbox.connect_or_create`, `Sandbox.start`, and
+  `PullSession#sandbox`** mask interrupts (`Thread.handle_interrupt(Object =>
+  :never)`) around the native call plus the wrap, and an `ensure` **stops the
+  sandbox** when an exception or a kill cuts in before the caller has the
+  object — but only a sandbox the call owns (`Sandbox#owns_lifecycle?`, the
+  same predicate as `connect_or_create`'s block form): one that was already
+  running for someone else is left running. A `SIGINT` cannot be masked this
+  way; it can arrive before the wrapper is assigned, and then the next case
+  applies.
+- **Every other wrapper** (`ExecHandle`, streams, SSH clients, write sinks, …)
+  and every plain result simply becomes garbage; GC frees the wrapper and the
+  Rust value's `Drop` closes the session or connection.
+
+The calls themselves remain uninterruptible, so `Timeout.timeout { Sandbox.create(...) }`
+still waits for the create to finish — and now also for the stop that cleans
+it up — before `Timeout::Error` surfaces. That stop is best-effort (a failure
+is swallowed so the interrupt is what the caller sees; GC then tears the
+sandbox down).
+
+`Thread.handle_interrupt(X => :on_blocking)` treats a native call as the
+blocking point at its *start*: the bridge raises an exception that is already
+deferred before the call begins, and one that arrives during the call waits
+for the thread's next blocking operation. The four acquisition methods are
+the exception: their own `Object => :never` mask sits on top of the caller's,
+so a deferred exception is not raised at the native call's entry there — the
+sandbox is returned and the exception is delivered at the next blocking
+operation after the acquisition.
+
+`spec/fake_runtime/interrupt_safety_spec.rb` pins all of this against the real
+extension, driving it with a fake `msb` (`spec/support/fake_runtime/`) whose
+log shows whether a sandbox was stopped, dropped, or left attached.
 
 ## Error mapping
 

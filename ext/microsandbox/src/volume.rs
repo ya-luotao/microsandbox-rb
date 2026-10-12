@@ -68,7 +68,7 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
         builder = builder.label(k, v);
     }
 
-    let vol = block_on(builder.create()).map_err(error::to_ruby)?;
+    let vol = block_on(builder.create())?.map_err(error::to_ruby)?;
     let hash = ruby().hash_new();
     hash.aset("name", vol.name().to_string())?;
     // `path()` is fallible as of v0.5.8 (returns `Unsupported` for cloud
@@ -81,19 +81,19 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
 }
 
 fn get(name: String) -> Result<RHash, Error> {
-    let handle = block_on(microsandbox::Volume::get(&name)).map_err(error::to_ruby)?;
+    let handle = block_on(microsandbox::Volume::get(&name))?.map_err(error::to_ruby)?;
     Ok(handle_to_hash(&handle))
 }
 
 /// The backend's default volume (v0.6.9). Cloud-backend only — the local
 /// backend rejects it (Unsupported) to avoid accidental host access.
 fn get_default() -> Result<RHash, Error> {
-    let handle = block_on(microsandbox::Volume::get_default()).map_err(error::to_ruby)?;
+    let handle = block_on(microsandbox::Volume::get_default())?.map_err(error::to_ruby)?;
     Ok(handle_to_hash(&handle))
 }
 
 fn list() -> Result<RArray, Error> {
-    let handles = block_on(microsandbox::Volume::list()).map_err(error::to_ruby)?;
+    let handles = block_on(microsandbox::Volume::list())?.map_err(error::to_ruby)?;
     let arr = ruby().ary_new();
     for h in handles.iter() {
         arr.push(handle_to_hash(h))?;
@@ -102,7 +102,7 @@ fn list() -> Result<RArray, Error> {
 }
 
 fn remove(name: String) -> Result<(), Error> {
-    block_on(microsandbox::Volume::remove(&name)).map_err(error::to_ruby)
+    block_on(microsandbox::Volume::remove(&name))?.map_err(error::to_ruby)
 }
 
 /// Volume paths are relative to the volume root and never need a `..` segment,
@@ -151,14 +151,14 @@ impl VolumeFs {
     fn read(&self, path: String) -> Result<RString, Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        let bytes = block_on(fs.read(path)).map_err(error::to_ruby)?;
+        let bytes = block_on(fs.read(path))?.map_err(error::to_ruby)?;
         Ok(ruby().str_from_slice(bytes.as_ref()))
     }
 
     fn read_text(&self, path: String) -> Result<String, Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.read_to_string(path)).map_err(error::to_ruby)
+        block_on(fs.read_to_string(path))?.map_err(error::to_ruby)
     }
 
     fn write(&self, path: String, data: RString) -> Result<(), Error> {
@@ -166,13 +166,13 @@ impl VolumeFs {
         let bytes = unsafe { data.as_slice() }.to_vec();
         let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.write(path, &bytes)).map_err(error::to_ruby)
+        block_on(fs.write(path, &bytes))?.map_err(error::to_ruby)
     }
 
     fn list(&self, path: String) -> Result<RArray, Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        let entries = block_on(fs.list(path)).map_err(error::to_ruby)?;
+        let entries = block_on(fs.list(path))?.map_err(error::to_ruby)?;
         let arr = ruby().ary_new();
         for entry in &entries {
             arr.push(fs_entry_to_hash(entry))?;
@@ -183,45 +183,45 @@ impl VolumeFs {
     fn mkdir(&self, path: String) -> Result<(), Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.mkdir(path)).map_err(error::to_ruby)
+        block_on(fs.mkdir(path))?.map_err(error::to_ruby)
     }
 
     fn remove_file(&self, path: String) -> Result<(), Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.remove(path)).map_err(error::to_ruby)
+        block_on(fs.remove(path))?.map_err(error::to_ruby)
     }
 
     fn remove_dir(&self, path: String) -> Result<(), Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.remove_dir(path)).map_err(error::to_ruby)
+        block_on(fs.remove_dir(path))?.map_err(error::to_ruby)
     }
 
     fn exists(&self, path: String) -> Result<bool, Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.exists(path)).map_err(error::to_ruby)
+        block_on(fs.exists(path))?.map_err(error::to_ruby)
     }
 
     fn copy(&self, from: String, to: String) -> Result<(), Error> {
         let from = contained(&from)?;
         let to = contained(&to)?;
         let fs = self.fs();
-        block_on(fs.copy(from, to)).map_err(error::to_ruby)
+        block_on(fs.copy(from, to))?.map_err(error::to_ruby)
     }
 
     fn rename(&self, from: String, to: String) -> Result<(), Error> {
         let from = contained(&from)?;
         let to = contained(&to)?;
         let fs = self.fs();
-        block_on(fs.rename(from, to)).map_err(error::to_ruby)
+        block_on(fs.rename(from, to))?.map_err(error::to_ruby)
     }
 
     fn stat(&self, path: String) -> Result<RHash, Error> {
         let path = contained(&path)?;
         let fs = self.fs();
-        let meta = block_on(fs.stat(path)).map_err(error::to_ruby)?;
+        let meta = block_on(fs.stat(path))?.map_err(error::to_ruby)?;
         Ok(fs_metadata_to_hash(&meta))
     }
 }
@@ -241,6 +241,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_singleton_method("fs", function!(fs, 1))?;
 
     let vfs = native.define_class("VolumeFs", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<VolumeFs>(ruby);
     vfs.define_method("read", method!(VolumeFs::read, 1))?;
     vfs.define_method("read_text", method!(VolumeFs::read_text, 1))?;
     vfs.define_method("write", method!(VolumeFs::write, 2))?;

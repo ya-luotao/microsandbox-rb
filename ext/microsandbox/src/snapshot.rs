@@ -110,7 +110,7 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
         b = b.resumable();
     }
 
-    let snap = block_on(b.create()).map_err(error::to_ruby)?;
+    let snap = block_on(b.create())?.map_err(error::to_ruby)?;
     Ok(snapshot_to_hash(&snap))
 }
 
@@ -119,14 +119,14 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
 /// Hash — the only way to inspect an artifact addressed by path (`get`/`list`
 /// read the local index, which path-addressed artifacts are absent from).
 fn open(path_or_name: String) -> Result<RHash, Error> {
-    let snap = block_on(Snapshot::open(&path_or_name)).map_err(error::to_ruby)?;
+    let snap = block_on(Snapshot::open(&path_or_name))?.map_err(error::to_ruby)?;
     Ok(snapshot_to_hash(&snap))
 }
 
 /// Walk `dir` and parse each subdirectory's `snapshot.json` without touching
 /// the local index — for enumerating external/un-imported snapshot collections.
 fn list_dir(dir: String) -> Result<RArray, Error> {
-    let snaps = block_on(Snapshot::list_dir(Path::new(&dir))).map_err(error::to_ruby)?;
+    let snaps = block_on(Snapshot::list_dir(Path::new(&dir)))?.map_err(error::to_ruby)?;
     let arr = ruby().ary_new();
     for snap in &snaps {
         arr.push(snapshot_to_hash(snap))?;
@@ -145,19 +145,19 @@ fn reindex(dir: Option<String>) -> Result<u64, Error> {
             .map(|l| l.snapshots_dir())
             .unwrap_or_else(|| PathBuf::from(".")),
     };
-    let n = block_on(Snapshot::reindex(&dir)).map_err(error::to_ruby)?;
+    let n = block_on(Snapshot::reindex(&dir))?.map_err(error::to_ruby)?;
     Ok(n as u64)
 }
 
 /// Metadata for one snapshot by name or digest.
 fn get(name_or_digest: String) -> Result<RHash, Error> {
-    let handle = block_on(Snapshot::get(&name_or_digest)).map_err(error::to_ruby)?;
+    let handle = block_on(Snapshot::get(&name_or_digest))?.map_err(error::to_ruby)?;
     Ok(handle_to_hash(&handle))
 }
 
 /// All snapshots as metadata hashes.
 fn list() -> Result<RArray, Error> {
-    let handles = block_on(Snapshot::list()).map_err(error::to_ruby)?;
+    let handles = block_on(Snapshot::list())?.map_err(error::to_ruby)?;
     let arr = ruby().ary_new();
     for h in &handles {
         arr.push(handle_to_hash(h))?;
@@ -167,7 +167,7 @@ fn list() -> Result<RArray, Error> {
 
 /// Remove a snapshot artifact by name or path.
 fn remove(name_or_path: String, force: bool) -> Result<(), Error> {
-    block_on(Snapshot::remove(&name_or_path, force)).map_err(error::to_ruby)
+    block_on(Snapshot::remove(&name_or_path, force))?.map_err(error::to_ruby)
 }
 
 /// Verify a snapshot's recorded upper-layer integrity. Returns
@@ -176,8 +176,14 @@ fn remove(name_or_path: String, force: bool) -> Result<(), Error> {
 /// "verified" (mismatches raise SnapshotIntegrityError), snapshots without
 /// recorded integrity report "not_recorded" with no algorithm/digest keys.
 fn verify(name_or_path: String) -> Result<RHash, Error> {
-    let snap = block_on(Snapshot::open(&name_or_path)).map_err(error::to_ruby)?;
-    let report = block_on(snap.verify()).map_err(error::to_ruby)?;
+    // Open AND verify in ONE `block_on`, so the opened snapshot never sits in
+    // this frame between two calls (`block_on` returns `Err` when an interrupt
+    // is delivered before it starts; one call leaves no such in-between state).
+    let report = block_on(async move {
+        let snap = Snapshot::open(&name_or_path).await?;
+        snap.verify().await
+    })?
+    .map_err(error::to_ruby)?;
     Ok(verify_report_to_hash(&report))
 }
 
@@ -193,7 +199,7 @@ fn save(name_or_path: String, out_path: String, opts: RHash) -> Result<(), Error
         &name_or_path,
         std::path::Path::new(&out_path),
         save_opts,
-    ))
+    ))?
     .map_err(error::to_ruby)
 }
 
@@ -204,7 +210,7 @@ fn load(archive_path: String, dest: Option<String>) -> Result<RHash, Error> {
     let handle = block_on(Snapshot::load(
         std::path::Path::new(&archive_path),
         dest_path.as_deref(),
-    ))
+    ))?
     .map_err(error::to_ruby)?;
     Ok(handle_to_hash(&handle))
 }

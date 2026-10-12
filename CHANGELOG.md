@@ -25,6 +25,38 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   `rb_sys`), exactly as before. The `microsandbox-rb-binaries` gems are
   unaffected.
 
+### Fixed
+
+- **An interrupted call no longer leaks what it produced.** A `Timeout.timeout`
+  (or any `Thread#raise`), a `Thread#kill` or a Ctrl-C that arrived while a
+  native call was in flight used to discard the call's result without
+  releasing it: `Timeout.timeout { Sandbox.create(...) }` raised
+  `Timeout::Error` and left the sandbox running with no Ruby object owning it
+  until the process exited, an interrupted `exec_stream` left its guest
+  session open with nothing able to kill it, and an interrupted `exec` kept
+  its collected output in memory. The result now always reaches Ruby, and
+  what happens to it depends on the interrupt:
+  - **`Timeout`/`Thread#raise` and `Thread#kill`** during `Sandbox.create`,
+    `Sandbox.connect_or_create`, `Sandbox.start` or `PullSession#sandbox`: the
+    sandbox is stopped before the exception propagates — only one the call
+    owns; a sandbox `connect_or_create` merely connected to is left running.
+    The stop is best-effort: if it fails, the interrupt is still what you
+    see, and the sandbox is torn down when its object is garbage-collected.
+  - **Ctrl-C (`SIGINT`)** during those four, and **any interrupt** during
+    every other call (`exec_stream`, streams, SSH clients, …): nothing is
+    stopped at once; the result is released — and a sandbox torn down — when
+    its unreferenced object is garbage-collected.
+
+  Native calls are still uninterruptible, so the exception is raised once the
+  call has finished, and in the first case only after the cleanup stop as well
+  (a timed-out create therefore returns later than before). One visible
+  difference for `Thread.handle_interrupt(X => :on_blocking)`: a native call
+  now raises an exception that is already deferred *before* it starts, where
+  it used to raise it after finishing. The four acquisition methods above are
+  the exception — they hold every queued interrupt back until the sandbox is
+  in the caller's hands, so there a deferred exception is delivered after the
+  acquisition (at the thread's next blocking operation), not before it.
+
 ## [0.17.1] - 2026-10-12
 
 Gem-only security and hardening release; the embedded runtime stays at

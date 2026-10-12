@@ -22,9 +22,12 @@ name = "microsandbox_rb"
 crate-type = ["cdylib"]
 
 [dependencies]
-magnus = "0.8"
-# Low-level Ruby C API — used directly for rb_thread_call_without_gvl (GVL release
-# during blocking sandbox calls). Kept in lock-step with magnus's own rb-sys.
+# "rb-sys" exposes `magnus::rb_sys::protect` (rb_protect), which the GVL bridge
+# uses to check interrupts without letting Ruby longjmp over Rust frames.
+magnus = { version = "0.8", features = ["rb-sys"] }
+# Low-level Ruby C API — used directly for rb_thread_call_without_gvl2 (GVL
+# release during blocking sandbox calls) and rb_thread_check_ints. Kept in
+# lock-step with magnus's own rb-sys.
 rb-sys = "0.9"
 
 # The microsandbox core runtime, wrapped via FFI exactly like the official

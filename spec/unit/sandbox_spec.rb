@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "timeout"
+
 # These specs exercise the pure-Ruby option normalization in Microsandbox::Sandbox
 # WITHOUT booting a real microVM, by stubbing the native layer. The native
 # binding itself is covered by the integration specs.
@@ -955,6 +957,35 @@ RSpec.describe Microsandbox::Sandbox do
       expect(result).to be_stopped
       expect(result.exit_code).to eq(0)
       expect(result.name).to eq("box")
+    end
+  end
+
+  # The acquisition entry points mask interrupts around the native call (so an
+  # interrupted call's sandbox can be stopped), and a mask makes whatever runs
+  # under it uninterruptible. It must therefore cover the native call only:
+  # converting the caller's arguments is the caller's code and has to stay
+  # interruptible. A name whose #to_s blocks stands in for that code.
+  describe "interruptibility before the native call" do
+    let(:slow_name) do
+      Class.new(String) do
+        def to_s
+          sleep 0.4
+          super
+        end
+      end.new("box")
+    end
+
+    {create: {image: "python"}, connect_or_create: {image: "python"}, start: {}}.each do |entry, kwargs|
+      it ".#{entry} can be timed out while its arguments are prepared, before any native call" do
+        allow(Microsandbox::Native::Sandbox).to receive(entry).and_return(native)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        expect {
+          Timeout.timeout(0.05) { Microsandbox::Sandbox.public_send(entry, slow_name, **kwargs) }
+        }.to raise_error(Timeout::Error)
+        # Well short of the 0.4s the conversion takes when it cannot be interrupted.
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.3
+        expect(Microsandbox::Native::Sandbox).not_to have_received(entry)
+      end
     end
   end
 

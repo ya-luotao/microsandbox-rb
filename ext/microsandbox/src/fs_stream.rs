@@ -33,7 +33,7 @@ impl FsReadStreamHandle {
     /// Next chunk of bytes (ASCII-8BIT), or nil at end of stream.
     fn recv(&self) -> Result<Option<RString>, Error> {
         let inner = Arc::clone(&self.inner);
-        match block_on(async move { inner.lock().await.recv().await }).map_err(error::to_ruby)? {
+        match block_on(async move { inner.lock().await.recv().await })?.map_err(error::to_ruby)? {
             Some(bytes) => Ok(Some(ruby().str_from_slice(bytes.as_ref()))),
             None => Ok(None),
         }
@@ -63,7 +63,7 @@ impl FsWriteSinkHandle {
                 Some(sink) => Some(sink.write(&bytes).await),
                 None => None,
             }
-        });
+        })?;
         match result {
             Some(r) => r.map_err(error::to_ruby),
             None => Err(error::base_error("write to a closed FsWriteSink")),
@@ -73,19 +73,31 @@ impl FsWriteSinkHandle {
     /// Flush and close the sink. Idempotent.
     fn close(&self) -> Result<(), Error> {
         let inner = Arc::clone(&self.inner);
-        let taken = block_on(async move { inner.lock().await.take() });
-        match taken {
-            Some(sink) => block_on(sink.close()).map_err(error::to_ruby),
-            None => Ok(()),
-        }
+        // Take AND close in ONE `block_on`. `block_on` returns `Err` when an
+        // interrupt is delivered before it starts; as two calls, an interrupt
+        // between them would drop the sink the first one took without ever
+        // sending its EOF (the guest file is left unfinished, and the handle
+        // can no longer close it).
+        block_on(async move {
+            let taken = inner.lock().await.take();
+            match taken {
+                Some(sink) => sink.close().await,
+                None => Ok(()),
+            }
+        })?
+        .map_err(error::to_ruby)
     }
 }
 
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let rs = native.define_class("FsReadStream", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<FsReadStreamHandle>(ruby);
     rs.define_method("recv", method!(FsReadStreamHandle::recv, 0))?;
 
     let ws = native.define_class("FsWriteSink", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<FsWriteSinkHandle>(ruby);
     ws.define_method("write", method!(FsWriteSinkHandle::write, 1))?;
     ws.define_method("close", method!(FsWriteSinkHandle::close, 0))?;
     Ok(())

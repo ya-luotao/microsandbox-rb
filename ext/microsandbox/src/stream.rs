@@ -41,7 +41,7 @@ impl LogStream {
     fn recv(&self) -> Result<Option<RHash>, Error> {
         use futures::StreamExt;
         let inner = Arc::clone(&self.inner);
-        match block_on(async move { inner.lock().await.next().await }) {
+        match block_on(async move { inner.lock().await.next().await })? {
             Some(Ok(entry)) => Ok(Some(log_entry_to_hash(&entry))),
             Some(Err(e)) => Err(error::to_ruby(e)),
             None => Ok(None),
@@ -67,7 +67,7 @@ impl MetricsStream {
     fn recv(&self) -> Result<Option<RHash>, Error> {
         use futures::StreamExt;
         let inner = Arc::clone(&self.inner);
-        match block_on(async move { inner.lock().await.next().await }) {
+        match block_on(async move { inner.lock().await.next().await })? {
             Some(Ok(metrics)) => Ok(Some(metrics_to_hash(&metrics))),
             Some(Err(e)) => Err(error::to_ruby(e)),
             None => Ok(None),
@@ -77,9 +77,13 @@ impl MetricsStream {
 
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let logs = native.define_class("LogStream", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<LogStream>(ruby);
     logs.define_method("recv", method!(LogStream::recv, 0))?;
 
     let metrics = native.define_class("MetricsStream", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<MetricsStream>(ruby);
     metrics.define_method("recv", method!(MetricsStream::recv, 0))?;
 
     Ok(())

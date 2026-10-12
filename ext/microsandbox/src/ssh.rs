@@ -52,7 +52,7 @@ impl SshClient {
             let guard = inner.lock().await;
             let client = guard.as_ref().ok_or_else(consumed)?;
             client.exec_with(command, |b| b.tty(tty)).await
-        });
+        })?;
         Ok(ssh_output_to_hash(result.map_err(error::to_ruby)?))
     }
 
@@ -74,7 +74,7 @@ impl SshClient {
                     b
                 })
                 .await
-        });
+        })?;
         result.map_err(error::to_ruby)
     }
 
@@ -85,7 +85,7 @@ impl SshClient {
             let guard = inner.lock().await;
             let client = guard.as_ref().ok_or_else(consumed)?;
             client.sftp().await
-        });
+        })?;
         Ok(SftpClient::from_core(result.map_err(error::to_ruby)?))
     }
 
@@ -101,7 +101,7 @@ impl SshClient {
                 Some(c) => c.close().await,
                 None => Ok(()),
             }
-        });
+        })?;
         result.map_err(error::to_ruby)
     }
 }
@@ -144,7 +144,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.read(path).await.map_err(sftp_str)
-        });
+        })?;
         Ok(ruby().str_from_slice(&result.map_err(error::base_error)?))
     }
 
@@ -158,7 +158,7 @@ impl SftpClient {
             file.write_all(&bytes).await.map_err(sftp_str)?;
             file.shutdown().await.map_err(sftp_str)?;
             Ok(())
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -168,7 +168,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.create_dir(path).await.map_err(sftp_str)
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -178,7 +178,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.remove_file(path).await.map_err(sftp_str)
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -188,7 +188,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.remove_dir(path).await.map_err(sftp_str)
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -198,7 +198,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.rename(old_path, new_path).await.map_err(sftp_str)
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -208,7 +208,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.symlink(target, link_path).await.map_err(sftp_str)
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -218,7 +218,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.canonicalize(path).await.map_err(sftp_str)
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -228,7 +228,7 @@ impl SftpClient {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
             sftp.read_link(path).await.map_err(sftp_str)
-        });
+        })?;
         result.map_err(error::base_error)
     }
 
@@ -243,7 +243,7 @@ impl SftpClient {
                 Some(s) => s.close().await.map_err(sftp_str),
                 None => Ok(()),
             }
-        });
+        })?;
         result.map_err(error::base_error)
     }
 }
@@ -276,7 +276,7 @@ impl SshServer {
                 Some(s) => s.serve_connection(SshStdioStream::new()).await,
                 None => Err(consumed()),
             }
-        });
+        })?;
         result.map_err(error::to_ruby)
     }
 
@@ -285,19 +285,23 @@ impl SshServer {
         let inner = Arc::clone(&self.inner);
         block_on(async move {
             inner.lock().await.take();
-        });
+        })?;
         Ok(())
     }
 }
 
 pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     let client = native.define_class("SshClient", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<SshClient>(ruby);
     client.define_method("exec", method!(SshClient::exec, 2))?;
     client.define_method("attach", method!(SshClient::attach, 2))?;
     client.define_method("sftp", method!(SshClient::sftp, 0))?;
     client.define_method("close", method!(SshClient::close, 0))?;
 
     let sftp = native.define_class("SftpClient", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<SftpClient>(ruby);
     sftp.define_method("read", method!(SftpClient::read, 1))?;
     sftp.define_method("write", method!(SftpClient::write, 2))?;
     sftp.define_method("mkdir", method!(SftpClient::mkdir, 1))?;
@@ -310,6 +314,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     sftp.define_method("close", method!(SftpClient::close, 0))?;
 
     let server = native.define_class("SshServer", ruby.class_object())?;
+    // Resolve the wrapper class now, not on first use (see `preload_class`).
+    crate::runtime::preload_class::<SshServer>(ruby);
     server.define_method("serve_connection", method!(SshServer::serve_connection, 0))?;
     server.define_method("close", method!(SshServer::close, 0))?;
 
