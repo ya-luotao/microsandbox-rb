@@ -87,6 +87,19 @@ RSpec.describe "host paths are pinned at create time (no VM, no runtime)" do
       .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(File.join(ENV.fetch("MSB_HOME"), "snapshots", "snap"))}/)
   end
 
+  # A vsock host socket is not pinned because it can never be stored relative:
+  # the core refuses the route before the sandbox is persisted. (Anchoring it
+  # here instead could also push a short relative path over the Unix socket
+  # path limit.) If a future runtime starts accepting one, this fails and the
+  # route needs pinning like the paths above.
+  it "refuses a relative vsock host socket outright, for both socket types" do
+    [{"./agent.sock" => 5000}, [{host_socket: "agent.sock", port: 5000, socket_type: :dgram}]].each do |vsock|
+      expect { Microsandbox::Sandbox.create(name, image: here("rootfs"), vsock: vsock) }
+        .to raise_error(Microsandbox::InvalidConfigError, /vsock host path must be absolute/)
+      expect { Microsandbox::Sandbox.get(name) }.to raise_error(Microsandbox::SandboxNotFoundError)
+    end
+  end
+
   it "stores relative TLS certificate paths as absolute paths" do
     tls = persisted(
       image: here("rootfs"),

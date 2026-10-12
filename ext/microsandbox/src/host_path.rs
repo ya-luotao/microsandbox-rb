@@ -17,6 +17,10 @@
 //!   bind-mount root) and must not require the target to exist.
 //! - Only create-time input is resolved. A sandbox that was already persisted
 //!   with a relative path keeps it; nothing here rewrites saved state.
+//!
+//! A vsock `host_socket` is deliberately not routed through here: the core
+//! refuses a relative one outright ("vsock host path must be absolute") before
+//! anything is persisted, so there is no stored relative path to pin.
 
 use std::path::PathBuf;
 
