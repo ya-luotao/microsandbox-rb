@@ -55,8 +55,10 @@ module Microsandbox
 
   # A host-side filesystem view over a named volume, from {Volume.fs} or
   # {VolumeInfo#fs}. Reads and writes the volume's contents directly on the host,
-  # without booting a sandbox. All paths are relative to the volume root. Mirrors
-  # the `VolumeFs` of the official Python/Node SDKs.
+  # without booting a sandbox. All paths are relative to the volume root (a
+  # leading `/` is the volume root) and may not contain a `..` segment — every
+  # operation raises {FilesystemError} for one. Mirrors the `VolumeFs` of the
+  # official Python/Node SDKs.
   class VolumeFs
     def initialize(native)
       @native = native
@@ -65,13 +67,13 @@ module Microsandbox
     # Read a file as raw bytes (ASCII-8BIT).
     # @return [String]
     def read(path)
-      @native.read(path.to_s)
+      @native.read(contained(path))
     end
 
     # Read a file as a UTF-8 string.
     # @return [String]
     def read_text(path)
-      @native.read_text(path.to_s)
+      @native.read_text(contained(path))
     end
 
     # Write data to a file, creating parent directories as needed.
@@ -80,60 +82,75 @@ module Microsandbox
     # @return [nil]
     def write(path, data)
       bytes = Microsandbox.coerce_write_bytes(data)
-      @native.write(path.to_s, bytes)
+      @native.write(contained(path), bytes)
       nil
     end
 
     # List the entries of a directory.
     # @return [Array<FsEntry>]
     def list(path)
-      @native.list(path.to_s).map { |entry| FsEntry.new(entry) }
+      @native.list(contained(path)).map { |entry| FsEntry.new(entry) }
     end
 
     # Create a directory (and any missing parents).
     # @return [nil]
     def mkdir(path)
-      @native.mkdir(path.to_s)
+      @native.mkdir(contained(path))
       nil
     end
 
     # Remove a single file.
     # @return [nil]
     def remove_file(path)
-      @native.remove_file(path.to_s)
+      @native.remove_file(contained(path))
       nil
     end
 
     # Remove a directory recursively.
     # @return [nil]
     def remove_dir(path)
-      @native.remove_dir(path.to_s)
+      @native.remove_dir(contained(path))
       nil
     end
 
     # @return [Boolean] whether the path exists in the volume
     def exists?(path)
-      @native.exists(path.to_s)
+      @native.exists(contained(path))
     end
 
     # Copy a file within the volume.
     # @return [nil]
     def copy(src, dst)
-      @native.copy(src.to_s, dst.to_s)
+      @native.copy(contained(src), contained(dst))
       nil
     end
 
     # Rename/move a file or directory within the volume.
     # @return [nil]
     def rename(src, dst)
-      @native.rename(src.to_s, dst.to_s)
+      @native.rename(contained(src), contained(dst))
       nil
     end
 
     # Stat a path.
     # @return [FsMetadata]
     def stat(path)
-      FsMetadata.new(@native.stat(path.to_s))
+      FsMetadata.new(@native.stat(contained(path)))
+    end
+
+    private
+
+    # Volume paths are relative to the volume root and never need a `..`
+    # segment, so one is refused here with a clear message instead of being
+    # handed to the resolver. The native layer enforces the same rule; this
+    # check only exists so the error names the cause.
+    def contained(path)
+      s = path.to_s
+      if s.split("/").include?("..")
+        raise Microsandbox::FilesystemError,
+          "path traversal outside volume root (`..` segments are not allowed in volume paths)"
+      end
+      s
     end
   end
 

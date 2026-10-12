@@ -33,6 +33,14 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   behaviour: recreate it, or only ever start it from its original directory.
   Affects every earlier `microsandbox-rb` release; the upstream advisory does
   not list this gem.
+- **`Volume.fs` path validation hardened.** Every `VolumeFs` operation
+  (`read`, `read_text`, `write`, `list`, `mkdir`, `remove_file`, `remove_dir`,
+  `exists?`, `copy`, `rename`, `stat`) now refuses a path that contains a `..`
+  segment with `FilesystemError`, in the native layer as well as the Ruby
+  wrapper. Volume paths are relative to the volume root and never need one.
+  A path such as `"a/../b"` that used to be accepted must now be written as
+  `"b"`. Names that merely contain dots (`"..hidden"`, `"a..b"`) are fine.
+  Upgrade if you pass paths you did not construct yourself to `Volume.fs`.
 
 ### Changed
 

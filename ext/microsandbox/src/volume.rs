@@ -3,11 +3,12 @@
 //! Mirrors `sdk/python/src/volume.rs`. Static async CRUD over the volume store;
 //! results are returned as plain Ruby Hashes/Arrays.
 
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use magnus::{function, method, prelude::*, Error, RArray, RHash, RModule, RString, Ruby};
 use microsandbox::volume::VolumeHandle;
-use microsandbox::Backend;
+use microsandbox::{Backend, MicrosandboxError};
 
 use crate::conv;
 use crate::error;
@@ -104,6 +105,23 @@ fn remove(name: String) -> Result<(), Error> {
     block_on(microsandbox::Volume::remove(&name)).map_err(error::to_ruby)
 }
 
+/// Volume paths are relative to the volume root and never need a `..` segment,
+/// so one is refused before the path reaches the core's resolver (which keeps
+/// its own containment check). Enforced here rather than only in the Ruby
+/// wrapper because `Microsandbox::Native::VolumeFs` is callable directly.
+fn contained(path: &str) -> Result<&str, Error> {
+    if Path::new(path)
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(error::to_ruby(MicrosandboxError::SandboxFsOps(
+            "path traversal outside volume root (`..` segments are not allowed in volume paths)"
+                .into(),
+        )));
+    }
+    Ok(path)
+}
+
 /// A host-side filesystem view over a named volume — read/write its contents
 /// without a running sandbox. Mirrors the Python `VolumeFs` / Node `VolumeFs`.
 /// The core `VolumeFs<'a>` borrows the volume name, so (like the Python binding)
@@ -131,26 +149,30 @@ impl VolumeFs {
     }
 
     fn read(&self, path: String) -> Result<RString, Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        let bytes = block_on(fs.read(&path)).map_err(error::to_ruby)?;
+        let bytes = block_on(fs.read(path)).map_err(error::to_ruby)?;
         Ok(ruby().str_from_slice(bytes.as_ref()))
     }
 
     fn read_text(&self, path: String) -> Result<String, Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.read_to_string(&path)).map_err(error::to_ruby)
+        block_on(fs.read_to_string(path)).map_err(error::to_ruby)
     }
 
     fn write(&self, path: String, data: RString) -> Result<(), Error> {
         // Copy the bytes out while the GVL is held (GC.compact could move them).
         let bytes = unsafe { data.as_slice() }.to_vec();
+        let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.write(&path, &bytes)).map_err(error::to_ruby)
+        block_on(fs.write(path, &bytes)).map_err(error::to_ruby)
     }
 
     fn list(&self, path: String) -> Result<RArray, Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        let entries = block_on(fs.list(&path)).map_err(error::to_ruby)?;
+        let entries = block_on(fs.list(path)).map_err(error::to_ruby)?;
         let arr = ruby().ary_new();
         for entry in &entries {
             arr.push(fs_entry_to_hash(entry))?;
@@ -159,38 +181,47 @@ impl VolumeFs {
     }
 
     fn mkdir(&self, path: String) -> Result<(), Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.mkdir(&path)).map_err(error::to_ruby)
+        block_on(fs.mkdir(path)).map_err(error::to_ruby)
     }
 
     fn remove_file(&self, path: String) -> Result<(), Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.remove(&path)).map_err(error::to_ruby)
+        block_on(fs.remove(path)).map_err(error::to_ruby)
     }
 
     fn remove_dir(&self, path: String) -> Result<(), Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.remove_dir(&path)).map_err(error::to_ruby)
+        block_on(fs.remove_dir(path)).map_err(error::to_ruby)
     }
 
     fn exists(&self, path: String) -> Result<bool, Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        block_on(fs.exists(&path)).map_err(error::to_ruby)
+        block_on(fs.exists(path)).map_err(error::to_ruby)
     }
 
     fn copy(&self, from: String, to: String) -> Result<(), Error> {
+        let from = contained(&from)?;
+        let to = contained(&to)?;
         let fs = self.fs();
-        block_on(fs.copy(&from, &to)).map_err(error::to_ruby)
+        block_on(fs.copy(from, to)).map_err(error::to_ruby)
     }
 
     fn rename(&self, from: String, to: String) -> Result<(), Error> {
+        let from = contained(&from)?;
+        let to = contained(&to)?;
         let fs = self.fs();
-        block_on(fs.rename(&from, &to)).map_err(error::to_ruby)
+        block_on(fs.rename(from, to)).map_err(error::to_ruby)
     }
 
     fn stat(&self, path: String) -> Result<RHash, Error> {
+        let path = contained(&path)?;
         let fs = self.fs();
-        let meta = block_on(fs.stat(&path)).map_err(error::to_ruby)?;
+        let meta = block_on(fs.stat(path)).map_err(error::to_ruby)?;
         Ok(fs_metadata_to_hash(&meta))
     }
 }
