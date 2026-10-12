@@ -25,17 +25,55 @@ RSpec.describe "interrupted native calls", :fake_runtime do
 
   def rootfs = FakeRuntime.rootfs
 
-  def in_thread(&block)
+  # Run the block in a thread. When +ready+ is given — a Queue the block pushes
+  # `true` to once its setup is done — the thread also reports there when it
+  # ends, however it ends: an unexpected error is pushed (and re-raised), then
+  # a `:finished` marker. `await` can therefore never be left waiting on a
+  # worker that failed, or returned, before it signalled readiness.
+  def in_thread(ready = nil, &block)
     Thread.new do
       Thread.current.report_on_exception = false
-      block.call
+      begin
+        block.call
+      rescue Exception => e # standard:disable Lint/RescueException -- handed to the observer, then re-raised
+        ready&.push(e)
+        raise
+      ensure
+        ready&.push(:finished)
+      end
     end
+  end
+
+  # Bounded wait for a worker's readiness signal (see `in_thread`). Fails fast
+  # with the worker's own error when its setup raised.
+  def await(ready, what)
+    signal = begin
+      Timeout.timeout(10) { ready.pop }
+    rescue Timeout::Error
+      raise "#{what}: the worker did not signal readiness within 10s"
+    end
+    raise signal if signal.is_a?(Exception)
+    expect(signal).to be(true), "#{what}: the worker finished before signalling readiness"
   end
 
   # Thread#join with a hard bound; a thread still alive after it is hung or spinning.
   def finish(thread, what)
     expect(thread.join(10)).to be(thread), "#{what} did not finish within 10s (hung or spinning)"
     thread
+  end
+
+  # Run a child process to completion with a hard bound; a child still running
+  # after it is killed, not abandoned. Returns [stdout, stderr, status].
+  def run_child(env, *command, timeout: 60)
+    Open3.popen3(env, *command) do |stdin, stdout, stderr, waiter|
+      stdin.close
+      unless waiter.join(timeout)
+        Process.kill("KILL", waiter.pid)
+        waiter.join
+        raise "child process did not finish within #{timeout}s (killed): #{stderr.read}"
+      end
+      [stdout.read, stderr.read, waiter.value]
+    end
   end
 
   def without_gc
@@ -97,10 +135,10 @@ RSpec.describe "interrupted native calls", :fake_runtime do
       go = Queue.new
       native = nil
       pending_at_entry = nil
-      thread = in_thread do
+      thread = in_thread(ready) do
         Thread.handle_interrupt(RuntimeError => :never) do
           ready << true
-          go.pop
+          Timeout.timeout(10) { go.pop }
           pending_at_entry = Thread.pending_interrupt?
           native = FakeRuntime.create(name)
         end
@@ -108,7 +146,7 @@ RSpec.describe "interrupted native calls", :fake_runtime do
       rescue RuntimeError => e
         e.message
       end
-      ready.pop
+      await(ready, "masked create")
       thread.raise(RuntimeError, "queued before the call")
       go << true
       finish(thread, "masked create")
@@ -197,9 +235,7 @@ RSpec.describe "interrupted native calls", :fake_runtime do
         script = File.expand_path("../support/fake_runtime/sigint_create.rb", __dir__)
         env = {"MSB_HOME" => home, "MSB_PATH" => nil, "MSB_LIBKRUNFW_PATH" => nil,
                "FAKE_RELAY_LOG" => nil, "FAKE_RELAY_BOOT_DELAY" => slow}
-        out, err, status = Timeout.timeout(60) do
-          Open3.capture3(env, RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__), script, home, name)
-        end
+        out, err, status = run_child(env, RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__), script, home, name)
         expect(status).to be_success, "child failed: #{err}\n#{out}"
         report = JSON.parse(out.lines.last)
         expect(report["outcome"]).to eq("interrupt"), out
@@ -411,17 +447,20 @@ RSpec.describe "interrupted native calls", :fake_runtime do
       sink.write("payload")
       ready = Queue.new
       go = Queue.new
-      thread = in_thread do
+      thread = in_thread(ready) do
         Thread.handle_interrupt(RuntimeError => :on_blocking) do
           ready << true
-          Thread.pass until go.closed? # no blocking operation: the exception stays deferred
+          # No blocking operation while waiting: the exception stays deferred.
+          deadline = FakeRuntime.now + 10
+          Thread.pass until go.closed? || FakeRuntime.now > deadline
+          raise Timeout::Error, "the observer never released the worker" unless go.closed?
           sink.close
           :closed
         end
       rescue RuntimeError
         :interrupted
       end
-      ready.pop
+      await(ready, "deferred close")
       thread.raise(RuntimeError, "simulated interrupt")
       go.close
       finish(thread, "deferred close")
@@ -444,14 +483,14 @@ RSpec.describe "interrupted native calls", :fake_runtime do
       without_gc do
         session = Microsandbox::Sandbox.create_with_progress(name, image: rootfs)
         entered = Queue.new
-        thread = in_thread do
+        thread = in_thread(entered) do
           entered << true
           session.sandbox
           :returned
         rescue RuntimeError
           :interrupted
         end
-        entered.pop
+        await(entered, "PullSession#sandbox")
         pid = in_flight_relay(name)
         sleep 0.05 # the thread is now inside the native join of the create task
         thread.raise(RuntimeError, "simulated interrupt")
@@ -465,7 +504,7 @@ RSpec.describe "interrupted native calls", :fake_runtime do
     it "native result: hands the sandbox to Ruby, so GC drops it" do
       name = unique_sandbox_name("fr-pulln")
       entered = Queue.new
-      thread = in_thread do
+      thread = in_thread(entered) do
         session = Microsandbox::Native::Sandbox.create_with_progress(name, FakeRuntime.native_opts)
         entered << true
         session.result
@@ -473,7 +512,7 @@ RSpec.describe "interrupted native calls", :fake_runtime do
       rescue RuntimeError
         :interrupted
       end
-      entered.pop
+      await(entered, "PullSession#result")
       pid = in_flight_relay(name)
       sleep 0.05
       thread.raise(RuntimeError, "simulated interrupt")
