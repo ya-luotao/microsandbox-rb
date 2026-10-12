@@ -10,7 +10,7 @@ magnus + rb-sys native extension. Two layers:
 - `lib/microsandbox/` — idiomatic, **synchronous** Ruby API (the public surface).
 - `ext/microsandbox/src/` — magnus bindings over the async (tokio) core crate. The async core is
   bridged to sync Ruby via a shared blocking tokio runtime; the GVL is released
-  (`rb_thread_call_without_gvl`) during blocking calls. Built as `microsandbox_rb.{bundle,so}`.
+  (`rb_thread_call_without_gvl2`) during blocking calls. Built as `microsandbox_rb.{bundle,so}`.
 
 Plus a companion gem in its own subtree:
 
