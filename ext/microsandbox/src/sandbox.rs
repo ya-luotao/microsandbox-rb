@@ -2609,9 +2609,20 @@ impl PullSession {
     /// create task). Consumes the join handle, so it is callable only once.
     fn result(&self) -> Result<Sandbox, Error> {
         let join = Arc::clone(&self.join);
-        let taken = block_on(async move { join.lock().await.take() })?;
-        let handle = taken.ok_or_else(|| error::base_error("pull session result already taken"))?;
-        let inner = block_on(handle)?
+        // Take the join handle AND await it in ONE `block_on`. `block_on`
+        // returns `Err` when an interrupt is delivered before it starts; as two
+        // calls, an interrupt between them would drop the taken `JoinHandle`
+        // (which detaches the create task rather than cancelling it) and with
+        // it the only way to reach the sandbox that task boots.
+        let joined = block_on(async move {
+            let taken = join.lock().await.take();
+            match taken {
+                Some(handle) => Some(handle.await),
+                None => None,
+            }
+        })?;
+        let inner = joined
+            .ok_or_else(|| error::base_error("pull session result already taken"))?
             .map_err(|e| error::base_error(format!("sandbox creation task failed: {e}")))?
             .map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))

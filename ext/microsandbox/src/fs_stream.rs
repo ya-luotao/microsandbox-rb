@@ -73,11 +73,19 @@ impl FsWriteSinkHandle {
     /// Flush and close the sink. Idempotent.
     fn close(&self) -> Result<(), Error> {
         let inner = Arc::clone(&self.inner);
-        let taken = block_on(async move { inner.lock().await.take() })?;
-        match taken {
-            Some(sink) => block_on(sink.close())?.map_err(error::to_ruby),
-            None => Ok(()),
-        }
+        // Take AND close in ONE `block_on`. `block_on` returns `Err` when an
+        // interrupt is delivered before it starts; as two calls, an interrupt
+        // between them would drop the sink the first one took without ever
+        // sending its EOF (the guest file is left unfinished, and the handle
+        // can no longer close it).
+        block_on(async move {
+            let taken = inner.lock().await.take();
+            match taken {
+                Some(sink) => sink.close().await,
+                None => Ok(()),
+            }
+        })?
+        .map_err(error::to_ruby)
     }
 }
 

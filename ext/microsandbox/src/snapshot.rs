@@ -176,8 +176,14 @@ fn remove(name_or_path: String, force: bool) -> Result<(), Error> {
 /// "verified" (mismatches raise SnapshotIntegrityError), snapshots without
 /// recorded integrity report "not_recorded" with no algorithm/digest keys.
 fn verify(name_or_path: String) -> Result<RHash, Error> {
-    let snap = block_on(Snapshot::open(&name_or_path))?.map_err(error::to_ruby)?;
-    let report = block_on(snap.verify())?.map_err(error::to_ruby)?;
+    // Open AND verify in ONE `block_on`, so the opened snapshot never sits in
+    // this frame between two calls (`block_on` returns `Err` when an interrupt
+    // is delivered before it starts; one call leaves no such in-between state).
+    let report = block_on(async move {
+        let snap = Snapshot::open(&name_or_path).await?;
+        snap.verify().await
+    })?
+    .map_err(error::to_ruby)?;
     Ok(verify_report_to_hash(&report))
 }
 
