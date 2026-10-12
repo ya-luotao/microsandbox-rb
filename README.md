@@ -40,7 +40,7 @@ gem compiles the Rust extension, so the first install takes a few minutes.
 - Linux with KVM enabled, or macOS on Apple Silicon. Cloud-only users
   (`MSB_BACKEND=cloud`) need neither.
 - A stable Rust toolchain (1.91 or newer) on `PATH` to compile the source gem.
-  Precompiled extension gems require no Rust but are not yet auto-published; see
+  Precompiled extension gems are not published; see
   [docs/releasing.md](docs/releasing.md).
 - The `msb` runtime and `libkrunfw` firmware, from the companion gem above or
   downloaded on first use. Provision ahead of time (a Docker layer, an
@@ -170,7 +170,7 @@ See [docs/observability.md](docs/observability.md).
 | Runtime binaries gem, `msb` resolution order, backends, environment variables | [docs/runtime.md](docs/runtime.md) |
 | Error classes and stable codes | [docs/errors.md](docs/errors.md) |
 | Complete supported surface and what is not yet exposed | [docs/surface.md](docs/surface.md) |
-| Release process, precompiled and binaries gems | [docs/releasing.md](docs/releasing.md) |
+| Release process, release preflight, binaries gems | [docs/releasing.md](docs/releasing.md) |
 | Architecture: native extension, sync bridge, GVL, error mapping | [DESIGN.md](DESIGN.md) |
 | Companion runtime gem internals | [binaries/README.md](https://github.com/ya-luotao/microsandbox-rb/blob/main/binaries/README.md) |
 

@@ -61,7 +61,8 @@ jobs:
   # the from-gem build are never validated — a packaging regression (an omitted
   # source file, a stale/absent Cargo.lock or rust-toolchain.toml, a renamed
   # path) would reach RubyGems and break `gem install microsandbox-rb` (the
-  # default install for every non-fat-gem platform) with no pre-publish signal.
+  # install path on every platform: no precompiled gems are published) with no
+  # pre-publish signal.
   # No KVM/microVM boot, so it runs cheaply on a hosted runner.
   package:
     name: package (install built source gem + binaries gem)

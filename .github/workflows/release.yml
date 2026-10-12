@@ -1,41 +1,29 @@
 name: Release
 
-# Publishes the gem to RubyGems on a version tag (vX.Y.Z), or builds artifacts
-# only on manual dispatch (dry run). Produces:
-#   - precompiled, multi-ABI platform gems via rake-compiler-dock (oxidize-rb
-#     cross-gem-action): one fat gem per platform, covering Ruby 3.1–3.4
-#   - the pure source gem (fallback for unlisted platforms; needs a Rust toolchain)
+# Publishes the gems to RubyGems on a version tag (vX.Y.Z), or only builds the
+# artifacts on manual dispatch (nothing is published). Produces:
+#   - the source gem `microsandbox-rb` (compiles the Rust extension at install
+#     time via rb_sys, so it needs a Rust toolchain on the installing host)
+#   - the three companion `microsandbox-rb-binaries` platform gems
+#
+# Precompiled *extension* gems are not built or published: every platform
+# installs the source gem.
 #
 # The native extension depends on the microsandbox core crate via a pinned git
-# tag, so every build is self-contained (no adjacent checkout needed) — the
-# rake-compiler-dock containers fetch it from git.
+# tag, so every build is self-contained (no adjacent checkout needed).
 #
 # Publishing uses RubyGems Trusted Publishing (OIDC); configure the gem's trusted
 # publisher to this repo + workflow in the RubyGems UI before the first release.
 #
-# What a precompiled gem ships (and what it does NOT): the gem carries the
-# compiled Rust extension with the guest-side `agentd` baked in (the core's
-# filesystem build.rs downloads agentd by *target* arch via CARGO_CFG_TARGET_ARCH
-# and embeds it with include_bytes!, so it cross-compiles correctly). The gem
+# What the SDK gem ships (and what it does NOT): the extension it compiles
+# carries the guest-side `agentd` baked in (the core's filesystem build.rs
+# downloads agentd by *target* arch and embeds it with include_bytes!). The gem
 # does NOT carry the host-side `msb` runtime + `libkrunfw`: the SDK gem is
 # SDK-only. Those ship in the companion `microsandbox-rb-binaries` platform gems
 # (built by the `binaries-gems` job below from the upstream release, verified
 # against the checksums committed under binaries/checksums/, and published on
 # the same tag) — or, without that gem, are downloaded into ~/.microsandbox on
 # first use by `Microsandbox.ensure_runtime!` (by the *running* host's arch).
-#
-# Cross-compile reality check (corrects an earlier, pessimistic note here):
-#   - The SDK crate's `prebuilt` feature (host msb download at compile time) is
-#     off, so nothing host-arch-specific enters the build; libkrunfw is dlopen'd
-#     by msb at runtime and is never *linked* into the extension.
-#   - The genuine cross blockers are the *target* native libraries the extension
-#     links: libcap-ng on Linux (via the capng crate → msb_krun_devices) and the
-#     Hypervisor + Security system frameworks on macOS (HVF + Apple-native keyring).
-#     aarch64-linux therefore needs libcap-ng:arm64 (handled below via Debian
-#     multiarch); arm64-darwin needs osxcross to resolve those frameworks from the
-#     macOS SDK — that's the one platform still to confirm on first dispatch. If it
-#     can't link, move arm64-darwin to a native macos-14 runner job (which builds
-#     all 3.1–3.4 ABIs into one fat gem with no osxcross involved).
 
 on:
   push:
@@ -56,77 +44,6 @@ permissions:
   contents: read
 
 jobs:
-  # Precompiled per-platform gems — a UX optimization (users skip the Rust
-  # compile). Gated to manual `workflow_dispatch`: tag releases ship the source
-  # gem (which installs everywhere by compiling via rb_sys), while precompiled
-  # gems are built best-effort here for validation. They are NOT auto-published
-  # on tags yet, because a gem that *compiles but doesn't boot a microVM* would
-  # be served to users in preference to the source gem — and CI cannot boot a VM
-  # to prove it works (no nested virt). Validate a dispatched build by installing
-  # the artifact on each real platform, then promote it (see `publish` below).
-  #
-  # cross-compile prerequisites handled below:
-  #   - bundle install: rake/rb_sys/rake-compiler inside the dock container
-  #     (else Bundler::GemNotFound).
-  #   - libcap-ng: host package for x86_64-linux; the arm64 multiarch variant for
-  #     aarch64-linux (the extension links -lcap-ng for the *target* arch).
-  cross-gems:
-    name: gem (${{ matrix.platform }})
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - x86_64-linux
-          - aarch64-linux
-          - arm64-darwin
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
-        with:
-          ruby-version: "3.4"
-          bundler-cache: true
-      - name: Build precompiled gem
-        # v7 is the latest release of this action; pinned to its commit SHA.
-        uses: oxidize-rb/cross-gem-action@80f59339d90789841d772f412fe4a8b201a8cfa2 # v7
-        with:
-          platform: ${{ matrix.platform }}
-          ruby-versions: "3.1,3.2,3.3,3.4"
-          # The extension links libcap-ng on Linux targets (capng crate →
-          # msb_krun_devices), so the rake-compiler-dock container needs the dev
-          # package before the cross-build (else `cannot find -lcap-ng`). The
-          # Linux containers are Debian-based (apt); darwin needs nothing here
-          # (its frameworks come from the osxcross macOS SDK), so the apt guard
-          # keeps it from erroring.
-          #
-          # aarch64-linux is cross-compiled from an x86_64 container: the target
-          # linker (aarch64-linux-gnu) resolves -lcap-ng from the *arm64* sysroot,
-          # not the host package — so add the arch and install libcap-ng-dev:arm64.
-          # Debian's main mirror carries every arch, so multiarch fetches work
-          # without switching to ports.ubuntu.com.
-          setup: |
-            if command -v apt-get >/dev/null 2>&1; then
-              apt-get update && apt-get install -y libcap-ng-dev
-              case "${{ matrix.platform }}" in
-                aarch64-linux*)
-                  dpkg --add-architecture arm64
-                  apt-get update
-                  apt-get install -y libcap-ng-dev:arm64
-                  ;;
-              esac
-            fi
-            # The dock container runs `bundle exec rake native:<plat> gem`; install
-            # the bundle (rb_sys/rake/rake-compiler) first or it fails with
-            # Bundler::GemNotFound. Skip the dev group (rspec etc. aren't needed to build).
-            bundle config set --local without development
-            bundle install --jobs 4
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: gem-${{ matrix.platform }}
-          path: pkg/*.gem
-
   # The companion runtime gems: one `microsandbox-rb-binaries` gem per platform
   # (arm64-darwin, x86_64-linux-gnu, aarch64-linux-gnu), vendored from the
   # upstream release named by Microsandbox::Binaries::RUNTIME_VERSION and
@@ -254,8 +171,7 @@ jobs:
     #     companion failure could never block the SDK release.)
     # The companion gems are still PUSHED by `publish-binaries` below, after
     # this job: a companion push failure is its own red job once the SDK gem is
-    # live. cross-gems (precompiled extension gems) remain
-    # workflow_dispatch-only and are not part of the publish path.
+    # live.
     needs: [source-gem, binaries-gems, preflight]
     runs-on: ubuntu-latest
     # Real tag pushes only — never on a manual dry run.

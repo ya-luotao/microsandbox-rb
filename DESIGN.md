@@ -195,25 +195,13 @@ git. The override must never be committed — it would break container builds.
 
 * **Source gem**: compiles the extension via `extconf.rb` (rb-sys
   `create_rust_makefile`); requires a Rust toolchain (MSRV below).
-* **Precompiled platform gems**: built best-effort by the `cross-gems` job
-  (`.github/workflows/release.yml`) with `oxidize-rb/cross-gem-action`
-  (`rake-compiler-dock`) per `Gem::Platform`, shipping multi-ABI
-  `lib/microsandbox/<ruby_abi>/` native artifacts — the same model Node uses with
-  per-platform packages. End users then install with no Rust toolchain, and the
-  host runtime comes from the `microsandbox-rb-binaries` gem — or, without it, is
-  fetched on first use (see above). The guest `agentd` is baked into
-  the extension by *target* arch (`filesystem/build.rs` uses
-  `CARGO_CFG_TARGET_ARCH` + `include_bytes!`), so it cross-compiles correctly;
-  the real cross work is linking the *target* native libs — `libcap-ng` on Linux
-  (via Debian multiarch for `aarch64-linux`) and the Hypervisor + Security
-  frameworks on macOS (via osxcross; `arm64-darwin` is the platform still to
-  confirm — if osxcross can't link them, move it to a native `macos-14` runner).
-  The job is gated to `workflow_dispatch` and **not** auto-published on tags:
-  since CI can't boot a microVM to prove a built gem actually works, gems are
-  promoted to the publish path manually after per-platform validation. Published
-  to RubyGems via Trusted Publishing (OIDC). See [docs/releasing.md](docs/releasing.md).
+* **Precompiled platform gems**: not built or published. Every platform
+  installs the source gem, which compiles the extension via `rb_sys` at install
+  time; the host runtime comes from the `microsandbox-rb-binaries` gem — or,
+  without it, is fetched on first use (see above). The companion binaries gems
+  below are unaffected. See [docs/releasing.md](docs/releasing.md).
 * **Runtime binaries gems** (`microsandbox-rb-binaries`): a distinct artifact
-  from the precompiled *extension* gems above — no Ruby code beyond a small
+  from the SDK gem — no Ruby code beyond a small
   locator module, just the verified upstream `msb` + `libkrunfw` for one
   platform. CI's `binaries` job vendors and builds all three platforms on every
   run and smoke-tests the host one; the `package` job installs the source gem

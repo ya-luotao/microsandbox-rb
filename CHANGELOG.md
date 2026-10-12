@@ -18,6 +18,11 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   with plain `gem build`, every workflow action is pinned to a commit SHA
   (kept current by Dependabot), and CI checks `Cargo.lock` against the RustSec
   advisory database with `cargo deny`. See [docs/releasing.md](docs/releasing.md).
+- **The precompiled-extension release job is removed.** The manual-dispatch
+  `cross-gems` job never produced a gem. Precompiled extension gems are not
+  built or published; every platform installs the source gem (compiled via
+  `rb_sys`), exactly as before. The `microsandbox-rb-binaries` gems are
+  unaffected.
 
 ## [0.17.1] - 2026-10-12
 

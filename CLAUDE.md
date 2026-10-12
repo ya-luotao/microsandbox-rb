@@ -117,5 +117,4 @@ The SDK gem is pushed by `publish` (needs `source-gem`, `binaries-gems` AND `pre
 companions by a separate `publish-binaries` job that runs after it. So a companion BUILD failure
 blocks the SDK publish too (the two gems cannot drift apart on RubyGems), while a companion PUSH
 failure is its own red job after the SDK gem is live and does not block the GitHub Release
-(re-runs are idempotent). Precompiled *extension* platform gems are built only via manual `workflow_dispatch`
-and require per-platform validation before promotion; they do not auto-publish on tags.
+(re-runs are idempotent).

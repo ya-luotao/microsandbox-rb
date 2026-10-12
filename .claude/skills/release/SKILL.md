@@ -60,9 +60,6 @@ version with the user before pushing the tag.
      --latest --verify-tag` (use `--latest=false` for non-newest backfills, then
      `gh release edit <newest> --latest`).
 
-   Precompiled platform gems are NOT published by this tag flow — they require manual
-   `workflow_dispatch` and per-platform validation. Mention this if the user expected fat gems.
-
 Report what you changed and the tag you pushed, and link the user to the Actions run if `gh` is
 available (`gh run list --workflow=release.yml`). Confirm the GitHub Release was created
 (`gh release view vX.Y.Z`).

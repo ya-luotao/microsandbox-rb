@@ -61,27 +61,16 @@ the exceptions (advisories with no fixed release at the pinned runtime) are in
 
 ## Precompiled per-platform gems
 
-Precompiled *extension* gems are built best-effort by the `cross-gems` job,
-gated to manual `workflow_dispatch` so you can iterate
-(`gh workflow run release.yml`) without failing tag releases. They are not
-auto-published on tags yet: a gem that *compiles but can't boot a microVM*
-would be served to users ahead of the source gem, and CI can't boot a VM to
-prove otherwise — so promotion is manual after validating the artifact on each
-platform. A precompiled gem ships the compiled extension (with the guest
-`agentd` baked in by *target* arch); the host-side `msb` + `libkrunfw` runtime
-is **not** in it — that comes from the companion `microsandbox-rb-binaries`
-gem, or, when that isn't installed, is fetched into `~/.microsandbox` on first
-use by `Microsandbox.ensure_runtime!` (libkrunfw is `dlopen`'d by `msb` at
-runtime, never linked into the gem). The real cross-compile work is linking the
-*target* native libraries — `libcap-ng` on Linux (handled via Debian multiarch
-in the workflow) and the Hypervisor + Security frameworks on macOS (via
-osxcross; the one platform left to confirm). Until promoted, users install the
-source gem (which compiles via `rb_sys`).
+Precompiled *extension* gems are not built or published. Users install the
+source gem, which compiles the extension via `rb_sys` at install time (so a
+stable Rust toolchain is required on the installing host). The companion
+`microsandbox-rb-binaries` gems below are unaffected: they carry the host
+runtime, not the extension.
 
 ## Runtime binaries gems
 
 `microsandbox-rb-binaries` (source in `binaries/`) is a *separate* artifact from
-the precompiled extension gems above: it carries no Ruby extension, only the
+the SDK gem: it carries no Ruby extension, only the
 upstream `msb` + `libkrunfw` for one platform, verified against the release's
 published `checksums.sha256` when vendored. CI's `binaries` job vendors and
 builds all three (`arm64-darwin`, `x86_64-linux-gnu`, `aarch64-linux-gnu`) on
