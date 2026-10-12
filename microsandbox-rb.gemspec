@@ -50,6 +50,7 @@ Gem::Specification.new do |spec|
     "CHANGELOG.md",
     "docs/**/*.md",
     "DESIGN.md",
+    "SECURITY.md",
     "LICENSE"
   ]
   spec.require_paths = ["lib"]

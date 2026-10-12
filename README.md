@@ -61,13 +61,25 @@ disabling the first-use download.
 ```ruby
 require "microsandbox"
 
-Microsandbox::Sandbox.create("hello", image: "public.ecr.aws/docker/library/python:3-slim") do |sb|
+Microsandbox::Sandbox.create("hello", image: "public.ecr.aws/docker/library/python:3-slim",
+  ephemeral: true) do |sb|
   output = sb.exec("python", ["-c", "print('Hello, World!')"])
   puts output.stdout      # => "Hello, World!\n"
   puts output.success?    # => true
 end
-# the sandbox is stopped automatically when the block returns
+# the block form stops the sandbox when it returns; `ephemeral: true` also
+# removes it, so the name is free the next time this runs
 ```
+
+Without `ephemeral: true` a stopped sandbox stays in the catalog under its
+name (start it again with `Sandbox.start`, or delete it with `Sandbox.remove`),
+and creating another one with the same name raises `SandboxAlreadyExistsError`.
+See [docs/lifecycle.md](docs/lifecycle.md).
+
+Outside Bundler, write `require "microsandbox-rb"`: a different, unrelated gem
+named `microsandbox` also ships a `microsandbox.rb`, and plain
+`require "microsandbox"` loads whichever is found first. The two cannot be
+loaded in the same process.
 
 The examples pull from AWS's public Docker Library mirror because anonymous
 Docker Hub pulls are rate-limited; `image: "python"` works too when you aren't.
@@ -125,7 +137,7 @@ Microsandbox::Sandbox.create("agent", image: "public.ecr.aws/docker/library/pyth
               destination: Microsandbox::Destination.domain("api.example.com") }]),
   strict: true,
   proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"),
-  secrets: { "API_KEY" => { env: "HOST_API_KEY", allowed_hosts: ["api.example.com"] } }
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }]
 ) do |sb|
   # ...
 end
@@ -264,7 +276,9 @@ bundle exec rake compile
 ## Contributing
 
 Bug reports and pull requests are welcome on
-[GitHub](https://github.com/ya-luotao/microsandbox-rb/issues). Please include a
+[GitHub](https://github.com/ya-luotao/microsandbox-rb/issues). Report security
+problems privately — see [SECURITY.md](SECURITY.md), which also maps upstream
+advisories to the gem versions they affect. Please include a
 failing spec with bug reports where possible and keep pull requests focused on
 one change; PRs target `main`. When the public API changes, update
 `sig/microsandbox.rbs` and `CHANGELOG.md` in the same change, and run the local

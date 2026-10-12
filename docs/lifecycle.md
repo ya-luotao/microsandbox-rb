@@ -8,6 +8,19 @@ for sandboxes that already exist. The live object owns the coarse controls
 
 ## Create, stop, inspect
 
+Stopping is not removing. The block form **stops** the sandbox when the block
+returns; the stopped sandbox keeps its name, its saved configuration and its
+disk state in the catalog until you remove it, and creating another sandbox
+with the same name raises `SandboxAlreadyExistsError`. Three ways to finish:
+
+- `ephemeral: true` at create — removed as soon as it stops; right for one-off
+  work and for code that runs repeatedly under a fixed name.
+- `sb.destroy` (or `Sandbox.remove(name)` once stopped) — remove explicitly.
+- Leave it stopped and bring it back later with `Sandbox.start(name)`.
+
+Block forms used in a loop without one of the first two accumulate stopped
+sandboxes (and their disk usage) indefinitely.
+
 ```ruby
 # Block form — recommended; stops the sandbox automatically (even on error)
 Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|

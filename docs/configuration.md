@@ -92,17 +92,29 @@ Microsandbox::Sandbox.create("worker", image: "python",
 
 ## Secrets
 
-`secrets:` injects host-side secrets into the guest with multi-host / wildcard
-allow-lists, injection toggles, and a per-secret or sandbox-level violation
-policy. Specs are keyed by name; `env:`/`store:`/`value:` sources are mutually
-exclusive:
+`secrets:` gives the guest a placeholder and substitutes the real value only in
+requests to the hosts you allow, with multi-host / wildcard allow-lists,
+injection toggles, and a per-secret or sandbox-level violation policy. At
+create time it is an **Array of specs**: `env:` is the variable the guest sees
+(holding the placeholder), `value:` is the real secret, and `host:` / `hosts:` /
+`host_patterns:` is the allow-list.
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",
-  secrets: { "API_KEY" => { env: "HOST_API_KEY", allowed_hosts: ["api.example.com"] } })
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }])
+# inside the guest: $API_KEY is "$MSB_API_KEY"; the proxy swaps in the real
+# value for requests to api.example.com only
 ```
 
-Rotating an existing secret on a running sandbox is a live `modify` — see
+An inline `value:` is part of the sandbox's saved configuration: it is stored
+in cleartext in the local catalog under the runtime home (`~/.microsandbox` by
+default) until the sandbox is removed, and `SandboxHandle#config` returns it.
+Stopping a sandbox does not remove it. Use `ephemeral: true` for short-lived
+work, remove sandboxes you no longer need, and do not log `#config`.
+
+Rotating an existing secret on a running sandbox is a live `modify`, which
+takes a **different shape** — a Hash keyed by name, where `env:` names a *host*
+environment variable to read the new value from. See
 [observability.md](observability.md#live-modification-and-health).
 
 ## Volumes and mounts

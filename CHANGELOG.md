@@ -52,8 +52,29 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   (unsoundness fixes). `rkyv` and `rsa` have no compatible fixed release at
   the pinned runtime and are unchanged.
 
+### Added
+
+- `SECURITY.md`: how to report a vulnerability privately, and a table mapping
+  upstream microsandbox advisories to the `microsandbox-rb` versions they
+  affect (upstream advisories do not list this gem). Shipped in the gem.
+- `require "microsandbox-rb"` as an entry point named after the gem. Outside
+  Bundler, `require "microsandbox"` can resolve to the unrelated `microsandbox`
+  gem on RubyGems.
+
 ### Fixed
 
+- **Documentation examples that did not run.** The README quick start failed
+  on its second run (`SandboxAlreadyExistsError`; it now uses
+  `ephemeral: true`), and the README / configuration-guide `secrets:` example
+  used the `#modify` shape and raised `TypeError`. The observability and
+  errors guides named the wrong error class for the metrics startup window
+  (it is the base `Microsandbox::Error`, matched by message), and
+  `log_stream(follow: true)` was documented as ending when the sandbox stops
+  (it does not). The guides now also state that an inline secret `value:` is
+  stored in cleartext in the local catalog until the sandbox is removed, that
+  the block form stops but does not remove, that a runtime home belongs to one
+  runtime line (`MSB_HOME`), and list known issues at the pinned runtime
+  (including guest `fallocate` truncating bind-mounted files on macOS hosts).
 - **A rejected option no longer triggers a runtime download.** The first-use
   runtime check ran before most argument validation, so `Sandbox.create` with
   a bad option downloaded and installed `msb` before raising. It now runs

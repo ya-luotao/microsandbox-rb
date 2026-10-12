@@ -52,7 +52,7 @@ options) raises a plain `ArgumentError` before the native layer is reached.
 | `TlsError` | `tls-error` | Reserved for parity; not raised by the current native mapping |
 | `IoError` | `io-error` | Host-side I/O failure |
 | `MetricsDisabledError` | `metrics-disabled` | Metrics turned off for this sandbox |
-| `MetricsUnavailableError` | `metrics-unavailable` | No live metrics slot yet (transient right after boot) |
+| `MetricsUnavailableError` | `metrics-unavailable` | Reserved for parity; not raised at the pinned runtime. The transient "no live metrics slot" window right after boot raises the base `Microsandbox::Error` — match on the message |
 | `UnsupportedOperationError` | `unsupported-operation` | The runtime version does not support the operation |
 | `CloudHttpError` | `cloud-http` | Cloud backend HTTP failure |
 | `UnsupportedError` | `unsupported` | The selected backend does not implement the operation; carries `#operation` (e.g. `"sandbox.kill"`) and `#hint` |
