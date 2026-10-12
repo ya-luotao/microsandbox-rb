@@ -115,6 +115,6 @@ the tag equals the three version constants in the tagged commit, that commit is 
 pushed together; dry-run with `gh workflow run release.yml --ref main -f preflight_ref=vX.Y.Z`).
 The SDK gem is pushed by `publish` (needs `source-gem`, `binaries-gems` AND `preflight`); the
 companions by a separate `publish-binaries` job that runs after it. So a companion BUILD failure
-blocks the SDK publish too (the two gems cannot drift apart on RubyGems), while a companion PUSH
-failure is its own red job after the SDK gem is live and does not block the GitHub Release
-(re-runs are idempotent).
+blocks the SDK publish too, while a companion PUSH failure is its own red job after the SDK gem is
+live: it does not block the GitHub Release, but the release is incomplete until `publish-binaries`
+is re-run (re-runs are idempotent).

@@ -165,13 +165,14 @@ jobs:
     #   - `source-gem`: the gem being pushed;
     #   - `binaries-gems`: the three companion runtime gems BUILT (vendored,
     #     checksum-verified, packaged, smoke-run). A companion build failure
-    #     therefore blocks the SDK publish too — the two gems ship in lockstep,
-    #     and an SDK version on RubyGems with no matching companion gems is the
-    #     drift this prevents. (Before, this job needed only `source-gem` so a
-    #     companion failure could never block the SDK release.)
+    #     therefore blocks the SDK publish too: the two gems ship in lockstep,
+    #     so the SDK is not pushed when its companions could not even be built.
+    #     (Before, this job needed only `source-gem` so a companion failure
+    #     could never block the SDK release.)
     # The companion gems are still PUSHED by `publish-binaries` below, after
-    # this job: a companion push failure is its own red job once the SDK gem is
-    # live.
+    # this job. A companion push failure is its own red job once the SDK gem is
+    # live — the SDK version is then on RubyGems without its companions until
+    # `publish-binaries` is re-run.
     needs: [source-gem, binaries-gems, preflight]
     runs-on: ubuntu-latest
     # Real tag pushes only — never on a manual dry run.

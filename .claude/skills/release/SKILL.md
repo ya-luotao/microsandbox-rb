@@ -46,8 +46,10 @@ version with the user before pushing the tag.
    - `release preflight` gates everything: the tag must equal the three version constants in the
      tagged commit, the commit must be on `main`, and the `CI` push run for it must be green. It
      waits (up to 45 min) for that CI run, so publishing starts only after CI finishes — expect
-     the publish jobs to sit pending meanwhile. If it fails nothing was published: fix the cause
-     and re-run the job. Dry-run against an existing tag with
+     the publish jobs to sit pending meanwhile. If it fails nothing was published. Commit right
+     (CI flake): re-run CI for it until green, then re-run the failed Release run. Tag on the
+     wrong commit: delete the tag, fix, push the tag again (a new run) — never re-run the old run
+     after retagging, it still checks the old commit. Dry-run against an existing tag with
      `gh workflow run release.yml --ref main -f preflight_ref=vX.Y.Z`.
    - `source gem` + `publish to RubyGems` build the source gem and push it via Trusted Publishing
      (OIDC) — no API key. `publish` also needs the `binaries gems` build: a companion-gem build

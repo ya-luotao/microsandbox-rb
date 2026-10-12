@@ -41,8 +41,17 @@ Pushing `main` and the tag together is fine: the preflight **waits** for that
 CI run to appear and finish (polling every 30 s, up to 45 min —
 `PREFLIGHT_CI_WAIT_SECONDS` / `PREFLIGHT_CI_POLL_SECONDS`), so a release
 publishes only after CI, including the real-microVM integration lanes, is
-green. A failed or timed-out preflight leaves the tag unpublished; fix the
-cause (re-run the failed CI run, or move the tag) and re-run the job.
+green. A failed or timed-out preflight leaves the tag unpublished. How to
+recover depends on whether the tag has to move:
+
+- **The tagged commit is right** (CI flaked, or was still red): re-run the
+  `CI` run for that commit until it is green, then re-run the failed `Release`
+  run.
+- **The tag must point at a different commit** (wrong version constants, not
+  on `main`): delete the tag, fix the commit, and push the tag again — that
+  starts a new `Release` run. Never re-run the old run after retagging: a
+  re-run keeps the commit it was started for, so it checks the old commit
+  again and fails the same way.
 
 Dry-run it against an existing tag — nothing is published on a manual
 dispatch — or run the script locally from a full clone:
@@ -77,9 +86,9 @@ builds all three (`arm64-darwin`, `x86_64-linux-gnu`, `aarch64-linux-gnu`) on
 every run and smoke-tests the host one; `release.yml`'s `binaries-gems` job
 does the same on a tag and a separate `publish-binaries` job pushes them after
 the SDK gem is live. The SDK `publish` job needs `binaries-gems`, so a
-companion **build** failure blocks the SDK publish as well — the two gems
-cannot drift apart on RubyGems — while a companion **push** failure is its own
-red job once the SDK gem is live. They use their own RubyGems
+companion **build** failure blocks the SDK publish as well. A companion
+**push** failure is its own red job once the SDK gem is live: the release is
+then incomplete until `publish-binaries` is re-run. They use their own RubyGems
 trusted-publisher entry (same repo + workflow, gem name
 `microsandbox-rb-binaries`). To build them by hand:
 
