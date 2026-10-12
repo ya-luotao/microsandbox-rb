@@ -39,9 +39,10 @@ RSpec.describe "documentation contract" do
     headings = cl.scan(/^## \[([^\]]+)\]/).flatten
     refs = cl.scan(/^\[([^\]]+)\]: (\S+)/).to_h
 
-    # Release tags without the leading "v". The remote is asked first because
-    # CI checks out shallow, where `git tag` is empty; the local tag list is the
-    # fallback when the remote cannot be reached.
+    # Release tags without the leading "v": the remote's and the local ones
+    # together. The remote is asked because CI checks out shallow, where
+    # `git tag` is empty; the local list covers an unreachable remote, and an
+    # `origin` that is a fork or mirror holding only some of the tags.
     git_lines = lambda do |*args|
       io = IO.popen({"GIT_TERMINAL_PROMPT" => "0"}, ["git", *args], chdir: root, err: File::NULL)
       begin
@@ -56,7 +57,8 @@ RSpec.describe "documentation contract" do
     release_tags = lambda do
       remote = git_lines.call("ls-remote", "--tags", "origin")
         .filter_map { |line| line[%r{\trefs/tags/v([^\^]+)}, 1] }
-      (remote.empty? ? git_lines.call("tag").map { |t| t.delete_prefix("v") } : remote).uniq
+      local = git_lines.call("tag").map { |t| t.delete_prefix("v") }
+      remote | local
     end
 
     it "has a section for the current version (or it is still Unreleased)" do
