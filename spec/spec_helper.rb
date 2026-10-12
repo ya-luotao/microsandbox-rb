@@ -6,10 +6,15 @@
 # runtime this checkout pins) and inherits whatever backend the shell selects
 # (MSB_BACKEND / MSB_PROFILE → 13 failures). Integration runs keep the real
 # environment: they need the provisioned runtime and a short socket path.
+#
+# The home lives directly under /tmp, not Dir.tmpdir: the local backend derives
+# a Unix socket path from it and refuses to persist a sandbox when that path
+# would exceed the platform limit, which macOS's per-user temp directory does.
+# The offline specs read back what a failed create persisted.
 unless ENV["MICROSANDBOX_INTEGRATION"]
   require "tmpdir"
   require "fileutils"
-  unit_home = Dir.mktmpdir("msb-rb-unit-")
+  unit_home = Dir.mktmpdir("msb-rb-", File.directory?("/tmp") ? "/tmp" : nil)
   ENV["MSB_HOME"] = unit_home
   %w[MSB_BACKEND MSB_PROFILE MSB_API_URL MSB_API_KEY MSB_PATH MSB_LIBKRUNFW_PATH
     MICROSANDBOX_NO_AUTO_INSTALL].each { |name| ENV.delete(name) }

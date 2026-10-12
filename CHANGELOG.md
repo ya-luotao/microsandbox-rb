@@ -8,6 +8,32 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Security
+
+- **Relative host paths are pinned when a sandbox is created**
+  ([GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm),
+  high; fixed upstream in runtime `v0.7.6`, which this gem does not embed yet).
+  The embedded runtime stored a relative host path exactly as written and
+  resolved it against the working directory of whichever process later
+  started the sandbox, so restarting a sandbox from another directory mounted
+  a different host directory than the one originally intended. The native
+  layer now anchors every relative host path to the creating process's
+  directory before the configuration is persisted: bind and disk mount
+  sources in `volumes:`, a directory or disk-image `image:`, a `root_disk:`
+  image path, `Patch.copy_file` / `Patch.copy_dir` sources, the `tls:`
+  certificate paths, and a path-form `from_snapshot:`. Paths are anchored
+  without following symlinks and without requiring the target to exist, so a
+  symlinked bind-mount root is still refused unless
+  `follow_root_symlinks: true`. Absolute paths, named volumes, and OCI
+  references are unchanged, and on a cloud backend paths are forwarded as
+  written (they belong to the remote host).
+
+  **Existing sandboxes are not rewritten.** A sandbox created by an earlier
+  gem version with a relative path keeps that saved path and its old
+  behaviour: recreate it, or only ever start it from its original directory.
+  Affects every earlier `microsandbox-rb` release; the upstream advisory does
+  not list this gem.
+
 ### Changed
 
 - **README restructured** along the lines of a conventional Ruby SDK README:

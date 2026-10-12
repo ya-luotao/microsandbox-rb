@@ -7,6 +7,7 @@
 //! as a plain Ruby `Hash`/`Array`/`String` and shaped into value objects by the
 //! Ruby layer.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +40,7 @@ use tokio::task::JoinHandle;
 use crate::conv;
 use crate::error;
 use crate::exec::ExecHandle;
+use crate::host_path::{self, HostPaths};
 use crate::runtime::{block_on, ruby};
 use crate::stream::{LogStream, MetricsStream};
 
@@ -75,6 +77,9 @@ impl Sandbox {
     /// Shared by `create` (blocking) and `create_with_progress` (streaming pull).
     fn build_builder(name: String, opts: RHash) -> Result<SandboxBuilder, Error> {
         let mut b = microsandbox::Sandbox::builder(name);
+        // Relative host paths are anchored to the current directory here, once,
+        // before the core persists them (see host_path.rs).
+        let host_paths = HostPaths::for_default_backend();
 
         if let Some(v) = conv::opt_string(opts, "image")? {
             if let Some(fstype) = conv::opt_string(opts, "fstype")? {
@@ -83,13 +88,17 @@ impl Sandbox {
                 // image_with(disk().fstype()). (A bare `image` string otherwise
                 // auto-detects OCI vs disk by extension.) Errors in disk()/fstype()
                 // are captured on the builder and surface at create().
-                b = b.image_with(move |i| i.disk(v).fstype(fstype));
+                let path = host_paths.pin(v, "root disk image path")?;
+                b = b.image_with(move |i| i.disk(path).fstype(fstype));
             } else {
-                b = b.image(v);
+                b = match host_paths.pin_image(v)? {
+                    host_path::Image::Text(text) => b.image(text),
+                    host_path::Image::Path(path) => b.image(path),
+                };
             }
         }
         if let Some(v) = conv::opt_string(opts, "from_snapshot")? {
-            b = b.from_snapshot(v);
+            b = b.from_snapshot(host_paths.pin_snapshot(v)?);
         }
         if let Some(v) = conv::opt_u8(opts, "cpus")? {
             b = b.cpus(v);
@@ -208,27 +217,35 @@ impl Sandbox {
             // the per-mount opt-out. Valid for bind/named-directory mounts —
             // the core rejects it elsewhere at build().
             let follow_root_symlinks = conv::opt::<bool>(m, "follow_root_symlinks")?;
-            // bind/named/disk require a source; tmpfs must not have one.
-            match kind.as_str() {
-                "bind" | "named" | "disk" if source.is_some() => {}
-                "bind" | "named" | "disk" => {
+            // bind/named/disk require a source; tmpfs must not have one. A
+            // bind or disk source is a host path; a named source is a volume
+            // name and is never resolved.
+            let backing = match (kind.as_str(), source) {
+                ("bind", Some(host)) => {
+                    MountBacking::Bind(host_paths.pin(host, "bind mount host path")?)
+                }
+                ("disk", Some(host)) => {
+                    MountBacking::Disk(host_paths.pin(host, "disk mount host path")?)
+                }
+                ("named", Some(name)) => MountBacking::Named(name),
+                ("bind" | "named" | "disk", None) => {
                     return Err(error::base_error(format!(
                         "volume mount kind {kind:?} requires a source"
                     )))
                 }
-                "tmpfs" => {}
-                other => {
+                ("tmpfs", _) => MountBacking::Tmpfs,
+                (other, _) => {
                     return Err(error::base_error(format!(
                         "unknown volume mount kind {other:?} (expected bind/named/tmpfs/disk)"
                     )))
                 }
-            }
+            };
             b = b.volume(guest, move |mut mb| {
-                mb = match kind.as_str() {
-                    "named" => mb.named(source.unwrap()),
-                    "tmpfs" => mb.tmpfs(),
-                    "disk" => mb.disk(source.unwrap()),
-                    _ => mb.bind(source.unwrap()), // "bind"
+                mb = match backing {
+                    MountBacking::Named(name) => mb.named(name),
+                    MountBacking::Tmpfs => mb.tmpfs(),
+                    MountBacking::Disk(host) => mb.disk(host),
+                    MountBacking::Bind(host) => mb.bind(host),
                 };
                 if let Some(n) = size_mib {
                     mb = mb.size(n);
@@ -272,7 +289,7 @@ impl Sandbox {
         // patches: rootfs modifications applied before boot. The Ruby layer
         // normalizes each `Microsandbox::Patch.*` into a string-keyed Hash with
         // a `kind` discriminator; mirrors the Python binding's `apply_patch`.
-        for patch in parse_patches(opts)? {
+        for patch in parse_patches(opts, host_paths)? {
             b = b.add_patch(patch);
         }
         if let Some(net) = conv::opt_string(opts, "network")? {
@@ -326,7 +343,7 @@ impl Sandbox {
         // layer maps the deprecated `oci_upper_size:` kwarg to the managed kind
         // before it reaches the wire.
         if let Some(v) = conv::opt::<Value>(opts, "root_disk")? {
-            let spec = parse_root_disk(v)?;
+            let spec = parse_root_disk(v, host_paths)?;
             b = b.root_disk_with(move |d| spec.apply(d));
         }
         // Registry connection settings, for private / non-default registries:
@@ -374,7 +391,7 @@ impl Sandbox {
             .map(parse_dns)
             .transpose()?;
         let tls = conv::opt::<RHash>(opts, "tls")?
-            .map(parse_tls)
+            .map(|t| parse_tls(t, host_paths))
             .transpose()?;
         let ipv4_pool = conv::opt_string(opts, "ipv4_pool")?
             .map(|s| {
@@ -1217,7 +1234,7 @@ fn patch_bytes(h: RHash, key: &str) -> Result<Vec<u8>, Error> {
 /// Parse the `patches` option into core `Patch` operations. The Ruby layer
 /// normalizes each `Microsandbox::Patch.*` into a string-keyed Hash carrying a
 /// `kind` discriminator plus the variant-specific fields.
-fn parse_patches(opts: RHash) -> Result<Vec<Patch>, Error> {
+fn parse_patches(opts: RHash, host_paths: HostPaths) -> Result<Vec<Patch>, Error> {
     let mut out = Vec::new();
     for h in conv::opt_hash_vec(opts, "patches")? {
         let kind = patch_str(h, "kind")?;
@@ -1241,13 +1258,13 @@ fn parse_patches(opts: RHash) -> Result<Vec<Patch>, Error> {
                 content: patch_str(h, "content")?,
             },
             "copy_file" => Patch::CopyFile {
-                src: patch_str(h, "src")?.into(),
+                src: host_paths.pin(patch_str(h, "src")?, "patch source path")?,
                 dst: patch_str(h, "dst")?,
                 mode,
                 replace,
             },
             "copy_dir" => Patch::CopyDir {
-                src: patch_str(h, "src")?.into(),
+                src: host_paths.pin(patch_str(h, "src")?, "patch source path")?,
                 dst: patch_str(h, "dst")?,
                 replace,
             },
@@ -1584,20 +1601,25 @@ struct TlsSpec {
     verify_upstream: Option<bool>,
     intercepted_ports: Option<Vec<u16>>,
     block_quic: Option<bool>,
-    upstream_ca_cert: Option<String>,
-    intercept_ca_cert: Option<String>,
-    intercept_ca_key: Option<String>,
+    upstream_ca_cert: Option<PathBuf>,
+    intercept_ca_cert: Option<PathBuf>,
+    intercept_ca_key: Option<PathBuf>,
 }
 
-fn parse_tls(t: RHash) -> Result<TlsSpec, Error> {
+fn parse_tls(t: RHash, host_paths: HostPaths) -> Result<TlsSpec, Error> {
+    let pin = |key: &str, label: &str| {
+        conv::opt_string(t, key)?
+            .map(|path| host_paths.pin(path, label))
+            .transpose()
+    };
     Ok(TlsSpec {
         bypass: conv::opt_string_vec(t, "bypass")?,
         verify_upstream: conv::opt::<bool>(t, "verify_upstream")?,
         intercepted_ports: conv::opt::<Vec<u16>>(t, "intercepted_ports")?,
         block_quic: conv::opt::<bool>(t, "block_quic")?,
-        upstream_ca_cert: conv::opt_string(t, "upstream_ca_cert")?,
-        intercept_ca_cert: conv::opt_string(t, "intercept_ca_cert")?,
-        intercept_ca_key: conv::opt_string(t, "intercept_ca_key")?,
+        upstream_ca_cert: pin("upstream_ca_cert", "upstream CA certificate path")?,
+        intercept_ca_cert: pin("intercept_ca_cert", "interception CA certificate path")?,
+        intercept_ca_key: pin("intercept_ca_key", "interception CA key path")?,
     })
 }
 
@@ -1711,6 +1733,14 @@ fn network_profile_from_str(s: &str) -> Result<NetworkProfile, Error> {
     }
 }
 
+/// What backs a volume mount, with any host path already pinned.
+enum MountBacking {
+    Bind(PathBuf),
+    Disk(PathBuf),
+    Named(String),
+    Tmpfs,
+}
+
 /// Parsed `root_disk` create option. Integer shorthand = managed upper of N
 /// MiB (mirrors Python's `root_disk=8192` and the CLI bare-size form); Hash =
 /// explicit kind. Kind/field cross-validation (size on a disk image, etc.)
@@ -1726,7 +1756,7 @@ struct RootDiskSpec {
 enum RootDiskKindSpec {
     Managed,
     Tmpfs,
-    Disk(String),
+    Disk(PathBuf),
     Flat,
 }
 
@@ -1754,7 +1784,7 @@ impl RootDiskSpec {
     }
 }
 
-fn parse_root_disk(v: Value) -> Result<RootDiskSpec, Error> {
+fn parse_root_disk(v: Value, host_paths: HostPaths) -> Result<RootDiskSpec, Error> {
     if let Ok(mib) = u32::try_convert(v) {
         return Ok(RootDiskSpec {
             kind: RootDiskKindSpec::Managed,
@@ -1777,7 +1807,7 @@ fn parse_root_disk(v: Value) -> Result<RootDiskSpec, Error> {
             let Some(path) = conv::opt_string(h, "path")? else {
                 return Err(error::base_error("root_disk disk kind requires path:"));
             };
-            RootDiskKindSpec::Disk(path)
+            RootDiskKindSpec::Disk(host_paths.pin(path, "root disk image path")?)
         }
         Some("flat") => RootDiskKindSpec::Flat,
         Some(other) => {

@@ -129,4 +129,14 @@ named mount may pin the fallback guest owner for host files with `uid:`/`gid:`
 written from the host without booting a sandbox via `Volume.fs` /
 `VolumeInfo#fs`.
 
+A relative host path (`volumes: { "/data" => "./data" }`, `image: "./rootfs"`,
+a `root_disk:` image, a `Patch.copy_file` source, a `tls:` certificate, a
+path-form `from_snapshot:`) is resolved **once, when the sandbox is created**,
+against the creating process's working directory, and stored as an absolute
+path. Starting the sandbox later from another directory mounts the same host
+directory. Resolution does not follow symlinks. Sandboxes created by gem
+versions before `0.17.1` kept the relative path and resolved it again on every
+start ([GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm));
+recreate those. On a cloud backend, host paths are sent as written.
+
 Boot from a snapshot with `Sandbox.create(name, from_snapshot: "snap-name-or-path")`.

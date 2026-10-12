@@ -14,6 +14,7 @@ mod conv;
 mod error;
 mod exec;
 mod fs_stream;
+mod host_path;
 mod image;
 mod runtime;
 mod sandbox;
