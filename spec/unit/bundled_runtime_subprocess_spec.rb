@@ -42,10 +42,14 @@ RSpec.describe "bundled runtime activation (subprocess)" do
   end
 
   # Plain `ruby` outside Bundler (so `-I` is the only way the fake gem is found,
-  # like a real `gem install`), with MSB_PATH scrubbed unless given.
+  # like a real `gem install`), with MSB_PATH scrubbed unless given. GEM_HOME /
+  # GEM_PATH point at an empty directory so a real `microsandbox-rb-binaries`
+  # installed on the host cannot be activated instead of the fake one.
   def run_child(include_dir, code, env = {})
+    gems = File.join(include_dir, "empty-gem-home")
+    FileUtils.mkdir_p(gems)
     base = {"MSB_PATH" => nil, "RUBYOPT" => nil, "BUNDLE_GEMFILE" => nil, "BUNDLER_SETUP" => nil,
-            "MICROSANDBOX_NO_AUTO_INSTALL" => "1"}
+            "MICROSANDBOX_NO_AUTO_INSTALL" => "1", "GEM_HOME" => gems, "GEM_PATH" => gems}
     Open3.capture3(base.merge(env), RbConfig.ruby, "-I", lib_dir, "-I", File.join(include_dir, "lib"), "-e", code)
   end
 

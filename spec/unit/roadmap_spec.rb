@@ -139,7 +139,10 @@ RSpec.describe "streaming exec, images, volumes" do
 
   describe "Sandbox streaming + volume/snapshot option mapping" do
     let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil) }
-    before { allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native) }
+    before do
+      allow(Microsandbox).to receive(:ensure_runtime!)
+      allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
+    end
 
     it "normalizes volumes and from_snapshot into create options" do
       Microsandbox::Sandbox.create(
