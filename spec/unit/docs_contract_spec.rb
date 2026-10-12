@@ -27,11 +27,22 @@ RSpec.describe "documentation contract" do
     expect(offenders).to be_empty, "stale runtime-tag claims:\n  #{offenders.join("\n  ")}"
   end
 
-  # A release that forgets the README leaves the table one row short.
-  it "ends the README Versioning table with the current gem/runtime pair" do
+  describe "README Versioning table" do
     rows = read.call("README.md").scan(/^\| `(\d+\.\d+\.\d+)`\s*\| `(v[\d.]+)`/)
-    expect(rows.last).to eq([Microsandbox::VERSION, Microsandbox::RUNTIME_VERSION])
-    expect(read.call("README.md")).to include(%(Microsandbox::VERSION          # => "#{Microsandbox::VERSION}"))
+
+    # A release that forgets the README leaves the table one row short.
+    it "ends with the current gem/runtime pair" do
+      expect(rows.last).to eq([Microsandbox::VERSION, Microsandbox::RUNTIME_VERSION])
+      expect(read.call("README.md")).to include(%(Microsandbox::VERSION          # => "#{Microsandbox::VERSION}"))
+    end
+
+    # The table and the CHANGELOG are the two release histories a user reads;
+    # a version prepared but never released must not get a row in either.
+    it "lists only versions that have a CHANGELOG release heading" do
+      released = read.call("CHANGELOG.md").scan(/^## \[(\d+\.\d+\.\d+)\]/).flatten
+      unreleased = rows.map(&:first) - released
+      expect(unreleased).to be_empty, "README Versioning rows without a CHANGELOG release heading: #{unreleased.inspect}"
+    end
   end
 
   describe "CHANGELOG.md" do
@@ -39,26 +50,27 @@ RSpec.describe "documentation contract" do
     headings = cl.scan(/^## \[([^\]]+)\]/).flatten
     refs = cl.scan(/^\[([^\]]+)\]: (\S+)/).to_h
 
-    # Release tags without the leading "v", from up to three places: `origin`
-    # (CI checks out shallow, where `git tag` is empty), the local tag list
-    # (an unreachable remote), and the canonical repository that the link
-    # definitions above point at (an `origin` that is a fork or mirror holding
-    # only some of the tags). The canonical repository is asked only when the
-    # first two leave a release heading unaccounted for.
+    # The lines a git command printed, or nil when it failed or stalled: a
+    # remote that cannot be reached is not a remote without tags.
     git_lines = lambda do |*args|
       io = IO.popen({"GIT_TERMINAL_PROMPT" => "0"}, ["git", *args], chdir: root, err: File::NULL)
-      begin
+      out = begin
         Timeout.timeout(15) { io.read }
       rescue Timeout::Error
         Process.kill("KILL", io.pid)
-        ""
+        nil
       ensure
         io.close
-      end.lines(chomp: true)
+      end
+      out&.lines(chomp: true) if Process.last_status&.success?
     end
+    # Release tags of a remote without the leading "v", or nil when it did not
+    # answer.
     remote_tags = lambda do |remote|
-      git_lines.call("ls-remote", "--tags", remote).filter_map { |line| line[%r{\trefs/tags/v([^\^]+)}, 1] }
+      git_lines.call("ls-remote", "--tags", remote)&.filter_map { |line| line[%r{\trefs/tags/v([^\^]+)}, 1] }
     end
+    # The repository the link definitions point at: the one place that holds
+    # every release tag (`origin` may be a fork or mirror with only some).
     canonical = refs.values.filter_map { |url| url[%r{\A(\S+?)/compare/}, 1] }.uniq
 
     it "has a section for the current version (or it is still Unreleased)" do
@@ -76,11 +88,25 @@ RSpec.describe "documentation contract" do
 
     # A version prepared but never tagged must not keep a release heading: its
     # content shipped under the next tag.
+    #
+    # Tags come from the local list (CI checks out shallow, where it is empty),
+    # from `origin`, and, while a heading is still unaccounted for or `origin`
+    # did not answer, from the canonical repository. A local tag shows that a
+    # release exists; only a remote that answered can show that one is missing.
     it "does not present a never-tagged version as released" do
       released = headings - ["Unreleased", Microsandbox::VERSION]
-      tags = remote_tags.call("origin") | git_lines.call("tag").map { |t| t.delete_prefix("v") }
-      canonical.each { |url| tags |= remote_tags.call(url) } unless (released - tags).empty?
-      skip "no release tags visible: no remote reachable and no local tags" if tags.empty?
+      tags = git_lines.call("tag").to_a.map { |t| t.delete_prefix("v") }
+      answered = []
+      ["origin", *canonical].each do |remote|
+        break if answered.any? && (released - tags).empty?
+        found = remote_tags.call(remote) or next
+        answered << remote
+        tags |= found
+      end
+      skip "no remote reachable: local tags cannot show that a release was never tagged" if answered.empty?
+      if (released - tags).any? && canonical.any? && (canonical & answered).empty?
+        skip "canonical repository unreachable: `origin` may hold only some of the release tags"
+      end
       expect(released - tags).to be_empty
     end
   end
