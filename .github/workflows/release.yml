@@ -46,6 +46,11 @@ on:
         description: "Build artifacts but do not publish"
         type: boolean
         default: true
+      preflight_ref:
+        description: "tag to dry-run the release preflight against; nothing is published"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -126,7 +131,8 @@ jobs:
   # (arm64-darwin, x86_64-linux-gnu, aarch64-linux-gnu), vendored from the
   # upstream release named by Microsandbox::Binaries::RUNTIME_VERSION and
   # sha256-verified fail-closed against binaries/checksums/<tag>.sha256 (the live
-  # release file must agree). Builds on every run; only `publish` pushes. Their
+  # release file must agree). Builds on every run; only `publish-binaries`
+  # pushes, and a failure here blocks `publish` as well (see there). Their
   # RubyGems trusted publisher is a separate entry for the new gem name (same
   # repo + workflow), created as a *pending* publisher before the first push.
   binaries-gems:
@@ -175,17 +181,71 @@ jobs:
           name: gem-source
           path: pkg/*.gem
 
+  # The release gate. Nothing is pushed to RubyGems unless this passes:
+  #   - the tag is vX.Y.Z and the three lock-step version constants in the
+  #     tagged commit (Microsandbox::VERSION, the ext crate's [package] version,
+  #     Microsandbox::Binaries::VERSION) all equal X.Y.Z;
+  #   - the tagged commit is on main;
+  #   - the `CI` workflow's push run for that exact commit concluded `success`.
+  # The release SOP pushes main and the tag in one `git push`, so that CI run is
+  # usually still in progress (or not created yet) when this job starts: the
+  # script waits for it, bounded by PREFLIGHT_CI_WAIT_SECONDS (default 45 min,
+  # under this job's 60 min cap). A tag release therefore publishes only after
+  # CI — including the real-microVM integration lanes — has finished green.
+  #
+  # The logic lives in .github/scripts/release_preflight.sh so it can be run
+  # locally. Dry run against an existing tag, publishing nothing:
+  #   gh workflow run release.yml --ref main -f preflight_ref=vX.Y.Z
+  # (a dispatch without `preflight_ref` skips this job).
+  #
+  # This is a workflow-level gate, not a repository one: it does not stop a
+  # maintainer from editing the workflow. Branch protection / a protected
+  # `environment` on the trusted publisher are repository settings.
+  preflight:
+    name: release preflight
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.preflight_ref != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read # gh run list: find the CI run of the tagged commit
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # Never interpolated into the script text: passed through the environment.
+      PREFLIGHT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + all tags: the script resolves the tag and asks
+          # whether its commit is an ancestor of origin/main. (NOT
+          # fetch-tags:true — see the note in `github-release` below.)
+          fetch-depth: 0
+      # The version constants are read by requiring the two Ruby files.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: Release preflight
+        run: .github/scripts/release_preflight.sh "$PREFLIGHT_TAG"
+
   publish:
     name: publish to RubyGems
-    # On a tag push, only `source-gem` is needed here: this publishes the SDK
-    # source gem alone, exactly the pre-companion path. The companion runtime
-    # gems are pushed by `publish-binaries` below, which runs AFTER this job —
-    # a companion build or push failure is therefore its own red job and can
-    # never block the SDK release (a `needs` on `binaries-gems` here would skip
-    # this whole job when that build fails). cross-gems (precompiled extension
-    # gems) remain workflow_dispatch-only; once validated they can be promoted
-    # by re-adding `cross-gems` to `needs` and dropping its dispatch gate.
-    needs: [source-gem]
+    # Pushes the SDK source gem, and only when all three of these succeeded:
+    #   - `preflight`: the tag is a real, green release (see above);
+    #   - `source-gem`: the gem being pushed;
+    #   - `binaries-gems`: the three companion runtime gems BUILT (vendored,
+    #     checksum-verified, packaged, smoke-run). A companion build failure
+    #     therefore blocks the SDK publish too — the two gems ship in lockstep,
+    #     and an SDK version on RubyGems with no matching companion gems is the
+    #     drift this prevents. (Before, this job needed only `source-gem` so a
+    #     companion failure could never block the SDK release.)
+    # The companion gems are still PUSHED by `publish-binaries` below, after
+    # this job: a companion push failure is its own red job once the SDK gem is
+    # live. cross-gems (precompiled extension gems) remain
+    # workflow_dispatch-only and are not part of the publish path.
+    needs: [source-gem, binaries-gems, preflight]
     runs-on: ubuntu-latest
     # Real tag pushes only — never on a manual dry run.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -239,12 +299,14 @@ jobs:
   publish-binaries:
     name: publish binaries gems to RubyGems
     # The three companion runtime gems, pushed only once the SDK gem is live
-    # (`needs: publish`). Isolated on purpose: if `binaries-gems` failed this
-    # job is skipped, if a push fails (e.g. the trusted publisher for the new
-    # gem name not configured) only this job goes red — the SDK release and the
-    # GitHub Release (gated on `publish`) are unaffected. Same OIDC exchange:
-    # the companion gem has its own trusted-publisher entry for this workflow.
-    # Re-run is idempotent (see the push loop).
+    # (`needs: publish`, which itself needs `binaries-gems` and `preflight` —
+    # so a failed companion build or preflight skips BOTH publish jobs).
+    # Still its own job on purpose: if a push fails here (e.g. the trusted
+    # publisher for the companion gem name not configured) only this job goes
+    # red — the SDK gem is already live and the GitHub Release (gated on
+    # `publish`) is unaffected. Same OIDC exchange: the companion gem has its
+    # own trusted-publisher entry for this workflow. Re-run is idempotent (see
+    # the push loop).
     needs: [binaries-gems, publish]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

@@ -20,9 +20,40 @@ or credential setup is needed.
    runtime adoption, `::RUNTIME_VERSION`) in
    `binaries/lib/microsandbox/binaries.rb` — the companion gem ships in
    lockstep and the specs assert both. Update `CHANGELOG.md`.
-2. Push a `vX.Y.Z` tag. CI builds the **source gem** and pushes it to RubyGems
-   via `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no
+2. Push a `vX.Y.Z` tag. Once the [release preflight](#release-preflight)
+   passes, CI pushes the **source gem** to RubyGems via
+   `rubygems/configure-rubygems-credentials` (OIDC, `id-token: write`) — no
    `RUBYGEMS_API_KEY` secret required — then creates the GitHub Release.
+
+## Release preflight
+
+`release.yml`'s `preflight` job runs `.github/scripts/release_preflight.sh
+<tag>` and the `publish` job needs it, so nothing reaches RubyGems unless:
+
+- the tag is `vX.Y.Z` and the three version constants **in the tagged commit**
+  — `Microsandbox::VERSION`, `[package] version` in
+  `ext/microsandbox/Cargo.toml`, `Microsandbox::Binaries::VERSION` — all equal
+  `X.Y.Z`;
+- the tagged commit is on `main`;
+- the `CI` workflow's push run for that exact commit concluded `success`.
+
+Pushing `main` and the tag together is fine: the preflight **waits** for that
+CI run to appear and finish (polling every 30 s, up to 45 min —
+`PREFLIGHT_CI_WAIT_SECONDS` / `PREFLIGHT_CI_POLL_SECONDS`), so a release
+publishes only after CI, including the real-microVM integration lanes, is
+green. A failed or timed-out preflight leaves the tag unpublished; fix the
+cause (re-run the failed CI run, or move the tag) and re-run the job.
+
+Dry-run it against an existing tag — nothing is published on a manual
+dispatch — or run the script locally from a full clone:
+
+```bash
+gh workflow run release.yml --ref main -f preflight_ref=vX.Y.Z
+GH_TOKEN=$(gh auth token) .github/scripts/release_preflight.sh vX.Y.Z
+```
+
+It is a workflow-level gate; branch protection and a protected environment for
+the trusted publisher are separate repository settings.
 
 ## Precompiled per-platform gems
 
@@ -52,9 +83,12 @@ published `checksums.sha256` when vendored. CI's `binaries` job vendors and
 builds all three (`arm64-darwin`, `x86_64-linux-gnu`, `aarch64-linux-gnu`) on
 every run and smoke-tests the host one; `release.yml`'s `binaries-gems` job
 does the same on a tag and a separate `publish-binaries` job pushes them after
-the SDK gem is live (a companion failure is its own red job and never blocks
-the SDK release). They use their own RubyGems trusted-publisher entry (same
-repo + workflow, gem name `microsandbox-rb-binaries`). To build them by hand:
+the SDK gem is live. The SDK `publish` job needs `binaries-gems`, so a
+companion **build** failure blocks the SDK publish as well — the two gems
+cannot drift apart on RubyGems — while a companion **push** failure is its own
+red job once the SDK gem is live. They use their own RubyGems
+trusted-publisher entry (same repo + workflow, gem name
+`microsandbox-rb-binaries`). To build them by hand:
 
 ```bash
 rake -C binaries vendor[arm64-darwin]   # download + sha256-verify into binaries/vendor
