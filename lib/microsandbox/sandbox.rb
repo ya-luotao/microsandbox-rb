@@ -496,7 +496,10 @@ module Microsandbox
       def create(name, **kwargs, &block)
         opts = build_create_opts(**kwargs)
         Microsandbox.ensure_runtime!
-        sandbox = acquire { Native::Sandbox.create(name.to_s, opts) }
+        # Everything Ruby-level happens BEFORE `acquire`: its interrupt mask must
+        # cover only the native call plus the wrap, never caller-supplied code.
+        sandbox_name = name.to_s
+        sandbox = acquire { Native::Sandbox.create(sandbox_name, opts) }
         return sandbox unless block_given?
 
         begin
@@ -553,7 +556,8 @@ module Microsandbox
       def connect_or_create(name, **kwargs, &block)
         opts = build_create_opts(**kwargs)
         Microsandbox.ensure_runtime!
-        sandbox = acquire { Native::Sandbox.connect_or_create(name.to_s, opts) }
+        sandbox_name = name.to_s # outside the interrupt mask, like in {create}
+        sandbox = acquire { Native::Sandbox.connect_or_create(sandbox_name, opts) }
         return sandbox unless block_given?
 
         begin
@@ -604,7 +608,10 @@ module Microsandbox
       #   assigned. The mask covers only the uninterruptible native call plus
       #   the wrap, so it changes no observable timing; runtime provisioning
       #   ({Microsandbox.ensure_runtime!}) and the block forms' `yield` stay
-      #   outside it, with normal interrupt handling;
+      #   outside it, with normal interrupt handling. For the same reason the
+      #   block passed here must contain NOTHING but the native call: argument
+      #   conversion (`name.to_s`, option Hashes) is the caller's own code and
+      #   has to run before `acquire`, where it stays interruptible;
       # - the `ensure` plus the `acquired` flag — not `rescue Exception; raise` —
       #   is what also covers `Thread#kill`, which no `rescue` can catch.
       #
@@ -761,7 +768,9 @@ module Microsandbox
       # @return [Sandbox]
       def start(name, detached: false)
         Microsandbox.ensure_runtime!
-        acquire { Native::Sandbox.start(name.to_s, {"detached" => detached}) }
+        sandbox_name = name.to_s # outside the interrupt mask, like in {create}
+        opts = {"detached" => detached}
+        acquire { Native::Sandbox.start(sandbox_name, opts) }
       end
 
       # Fetch a controllable handle for a sandbox by name (running or not).
