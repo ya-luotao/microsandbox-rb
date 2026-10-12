@@ -253,7 +253,7 @@ constants against this gem's. Every release records its runtime in
 ```bash
 bin/setup                                  # bundle install + compile the native extension
 bundle exec rake compile                   # rebuild the extension (debug); compile:release for optimized
-bundle exec rake spec                      # unit specs (no runtime needed)
+bundle exec rake spec                      # unit + fake-runtime specs (no runtime needed)
 MICROSANDBOX_INTEGRATION=1 bundle exec rspec spec/integration   # boot real microVMs (KVM / Apple Silicon)
 bundle exec standardrb                     # Ruby lint
 cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml
