@@ -8,6 +8,14 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-12
+
+Gem-only security and hardening release; the embedded runtime stays at
+**`v0.6.18`**. Upgrading is recommended for everyone on `0.17.0` or earlier.
+Two fixes tighten input handling and can reject input that used to be
+accepted: `Volume.fs` paths containing a `..` segment, and
+`Microsandbox.runtime_path = nil`.
+
 ### Security
 
 - **Relative host paths are pinned when a sandbox is created**
@@ -35,13 +43,6 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   behaviour: recreate it, or only ever start it from its original directory.
   Affects every earlier `microsandbox-rb` release; the upstream advisory does
   not list this gem.
-- **`Volume.fs` path validation hardened.** Every `VolumeFs` operation
-  (`read`, `read_text`, `write`, `list`, `mkdir`, `remove_file`, `remove_dir`,
-  `exists?`, `copy`, `rename`, `stat`) now refuses a path that contains a `..`
-  segment with `FilesystemError`, in the native layer as well as the Ruby
-  wrapper. Volume paths are relative to the volume root and never need one.
-  A path such as `"a/../b"` that used to be accepted must now be written as
-  `"b"`. Names that merely contain dots (`"..hidden"`, `"a..b"`) are fine.
 - **Errors no longer repeat values that can be credentials.** A URL-style
   proxy address (`socks5://user:pass@host:port`) is refused by shape without
   being echoed; an `env:` / `labels:` / `scripts:` value that is not a Hash
@@ -117,10 +118,17 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ### Changed
 
+- **`Volume.fs` paths may not contain a `..` segment.** Every `VolumeFs` operation
+  (`read`, `read_text`, `write`, `list`, `mkdir`, `remove_file`, `remove_dir`,
+  `exists?`, `copy`, `rename`, `stat`) now refuses a path that contains a `..`
+  segment with `FilesystemError`, in the native layer as well as the Ruby
+  wrapper. Volume paths are relative to the volume root and never need one.
+  A path such as `"a/../b"` that used to be accepted must now be written as
+  `"b"`. Names that merely contain dots (`"..hidden"`, `"a..b"`) are fine.
 - **README restructured** along the lines of a conventional Ruby SDK README:
   badges, a Highlights list, a short install + quick start, a Documentation
   table, and a sourced comparison with the official `microsandbox` gem. The
-  detailed guides moved verbatim into `docs/` (`lifecycle`, `configuration`,
+  detailed guides moved into `docs/` (`lifecycle`, `configuration`,
   `execution`, `filesystem`, `observability`, `images`, `runtime`, `errors`,
   `surface`, `releasing`), which the gem now ships (`spec.files`), so the
   links resolve on rubygems.org and rubydoc.info. `docs/surface.md` replaces
@@ -1383,7 +1391,11 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.13.0...v0.14.0
 [0.9.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.1...v0.8.2
