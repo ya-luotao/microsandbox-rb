@@ -160,4 +160,14 @@ RSpec.describe "create request as serialized by the native layer" do
       expect(body["network"]).to eq("enabled" => true, "strict" => false)
     end
   end
+
+  # Host paths are anchored to the creating process's directory on the local
+  # backend only (see host_paths_spec.rb). On a cloud backend they name files
+  # on the remote host, so they must reach the API exactly as written.
+  describe "host paths on a cloud backend" do
+    it "forwards a relative bind source untouched" do
+      body = capture_create(volumes: {"/data" => "./data"})
+      expect(body.fetch("mounts")).to include(a_hash_including("guest" => "/data", "host" => "./data"))
+    end
+  end
 end

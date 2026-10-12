@@ -27,7 +27,7 @@ module Microsandbox
 
     # @return [Time, nil] last-modified time, if known
     def modified
-      @modified_ms && Time.at(@modified_ms / 1000.0)
+      Microsandbox.time_from_ms(@modified_ms)
     end
 
     def file? = @type == :file
@@ -64,12 +64,12 @@ module Microsandbox
 
     # @return [Time, nil] last-modified time, if known
     def modified
-      @modified_ms && Time.at(@modified_ms / 1000.0)
+      Microsandbox.time_from_ms(@modified_ms)
     end
 
     # @return [Time, nil] creation time, if known
     def created
-      @created_ms && Time.at(@created_ms / 1000.0)
+      Microsandbox.time_from_ms(@created_ms)
     end
 
     def inspect
@@ -188,11 +188,7 @@ module Microsandbox
       sink = FsWriteSink.new(@native.fs_write_stream(path.to_s))
       return sink unless block_given?
 
-      begin
-        yield sink
-      ensure
-        sink.close
-      end
+      Microsandbox.close_after(sink) { yield sink }
     end
   end
 

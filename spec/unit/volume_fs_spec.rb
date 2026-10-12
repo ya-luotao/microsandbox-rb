@@ -26,6 +26,12 @@ RSpec.describe Microsandbox::VolumeFs do
     expect(fs.stat("/d")).to be_a(Microsandbox::FsMetadata)
   end
 
+  it "refuses a `..` segment before calling the native layer" do
+    expect { fs.read("a/../b") }.to raise_error(Microsandbox::FilesystemError, /`\.\.` segments are not allowed/)
+    expect { fs.copy("a", "../b") }.to raise_error(Microsandbox::FilesystemError, /traversal/)
+    expect { fs.rename("..", "b") }.to raise_error(Microsandbox::FilesystemError, /traversal/)
+  end
+
   it "rejects non-String writes (no silent to_s)" do
     expect { fs.write("/a", 42) }.to raise_error(TypeError, /must be a String/)
   end

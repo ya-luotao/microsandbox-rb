@@ -23,8 +23,27 @@ and `sb.log_stream` (`LogStream` over `LogEntry`) — both single-pass, see
 [execution.md](execution.md#streams-are-single-pass).
 `Microsandbox.all_sandbox_metrics` reports every running sandbox at once.
 
-`MetricsDisabledError` / `MetricsUnavailableError` distinguish "metrics turned
-off for this sandbox" from "no live slot right now".
+`MetricsDisabledError` means metrics are turned off for the sandbox. The
+metrics slot goes live a moment *after* `create` returns; a call inside that
+window raises the base `Microsandbox::Error` with a message containing
+`no live metrics slot` (not `MetricsUnavailableError`, which the pinned runtime
+never raises). Retry on that message:
+
+```ruby
+metrics = begin
+  sb.metrics
+rescue Microsandbox::Error => e
+  raise unless e.message.include?("no live metrics slot")
+  sleep 0.1
+  retry
+end
+```
+
+`sb.log_stream(follow: true)` keeps waiting for new entries and **does not end
+when the sandbox stops** — the runtime follows the log file, not the sandbox —
+and the wait cannot be interrupted. A thread blocked in it also keeps the
+process from exiting normally. Read what exists with `sb.logs` or
+`sb.log_stream` (no `follow:`), or follow from a separate process you can kill.
 
 ## Live modification and health
 

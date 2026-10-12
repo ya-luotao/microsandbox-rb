@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "monitor"
+
 require_relative "microsandbox/version"
 
 # Load the compiled native extension. Precompiled platform gems stage the
@@ -47,6 +49,13 @@ require_relative "microsandbox/sandbox"
 #     puts sb.exec("python", ["-c", "print('Hello, World!')"]).stdout
 #   end
 module Microsandbox
+  # Serializes runtime provisioning within this process: {install}, {setup} and
+  # the first-use check in {ensure_runtime!}. The installer replaces files in
+  # place, so two threads racing through a first `Sandbox.create` must not both
+  # run it. A Monitor (re-entrant) because ensure_runtime! calls install.
+  RUNTIME_SETUP_LOCK = Monitor.new
+  private_constant :RUNTIME_SETUP_LOCK
+
   class << self
     # @return [String] the gem version
     def version
@@ -74,7 +83,7 @@ module Microsandbox
     # gem supplies the runtime.
     # @return [nil]
     def install
-      Native.install
+      RUNTIME_SETUP_LOCK.synchronize { Native.install }
       nil
     end
 
@@ -93,7 +102,7 @@ module Microsandbox
       opts["version"] = version.to_s if version
       opts["force"] = true if force
       opts["skip_verify"] = true if skip_verify
-      Native.setup(opts)
+      RUNTIME_SETUP_LOCK.synchronize { Native.setup(opts) }
       nil
     end
 
@@ -130,34 +139,38 @@ module Microsandbox
     # @return [nil]
     def ensure_runtime!
       return if @runtime_ready
-      # A cloud backend has no local msb/libkrunfw runtime to provision: skip the
-      # presence check and the first-use download entirely. Resolving the kind
-      # uses the same lazy env/profile/config ladder every operation already
-      # consults, so this adds no work for local hosts (the common case).
-      return if default_backend_kind == :cloud
-      # The binaries gem won the resolver: its vendored msb (and the libkrunfw
-      # beside it) are exactly the version this gem was built for, so there is
-      # nothing to verify or download. (If `MSB_PATH` overrides it, the user owns
-      # the runtime and we fall through to the existing behaviour.)
-      if bundled_runtime_active?
-        @runtime_ready = true
-        return
-      end
-      # Opted out: the caller manages the runtime out of band, so don't fetch,
-      # verify, or repair it here. Memoize the decision (the env var is stable for
-      # the process); the operation resolves `msb` itself and surfaces any problem.
-      if auto_install_disabled?
-        @runtime_ready = true
-        return
-      end
+      RUNTIME_SETUP_LOCK.synchronize do
+        # Re-check under the lock: another thread may have finished meanwhile.
+        return if @runtime_ready
+        # A cloud backend has no local msb/libkrunfw runtime to provision: skip the
+        # presence check and the first-use download entirely. Resolving the kind
+        # uses the same lazy env/profile/config ladder every operation already
+        # consults, so this adds no work for local hosts (the common case).
+        return if default_backend_kind == :cloud
+        # The binaries gem won the resolver: its vendored msb (and the libkrunfw
+        # beside it) are exactly the version this gem was built for, so there is
+        # nothing to verify or download. (If `MSB_PATH` overrides it, the user owns
+        # the runtime and we fall through to the existing behaviour.)
+        if bundled_runtime_active?
+          @runtime_ready = true
+          return
+        end
+        # Opted out: the caller manages the runtime out of band, so don't fetch,
+        # verify, or repair it here. Memoize the decision (the env var is stable for
+        # the process); the operation resolves `msb` itself and surfaces any problem.
+        if auto_install_disabled?
+          @runtime_ready = true
+          return
+        end
 
-      unless installed?
-        warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
-             "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip, " \
-             "or install the microsandbox-rb-binaries gem to ship it with your bundle)..."
+        unless installed?
+          warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
+               "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip, " \
+               "or install the microsandbox-rb-binaries gem to ship it with your bundle)..."
+        end
+        install
+        @runtime_ready = true
       end
-      install
-      @runtime_ready = true
       nil
     end
 
@@ -176,7 +189,9 @@ module Microsandbox
     # setter is a no-op — use `MSB_PATH` to override a bundled runtime.
     # @param path [String]
     # @return [void]
+    # @raise [ArgumentError] for nil or an empty path (the slot cannot be cleared)
     def runtime_path=(path)
+      require_runtime_path!(:runtime_path=, path)
       if @bundled_msb_path && path.to_s != @bundled_msb_path
         warn "[microsandbox] runtime_path= ignored: the microsandbox-rb-binaries gem already " \
              "claimed the set-once SDK slot (#{@bundled_msb_path}); set MSB_PATH to override it"
@@ -190,7 +205,9 @@ module Microsandbox
     # Mirrors {runtime_path=} for libkrunfw.
     # @param path [String]
     # @return [void]
+    # @raise [ArgumentError] for nil or an empty path (the slot cannot be cleared)
     def libkrunfw_path=(path)
+      require_runtime_path!(:libkrunfw_path=, path)
       Native.set_runtime_libkrunfw_path(path.to_s)
     end
 
@@ -270,6 +287,36 @@ module Microsandbox
     def coerce_write_bytes(data)
       String.try_convert(data) or
         raise TypeError, "data must be a String (got #{data.class})"
+    end
+
+    # A Time for an epoch-milliseconds Integer from the native layer, or nil.
+    # Integer arithmetic on purpose: `Time.at(ms / 1000.0)` goes through a
+    # Float and lands one millisecond low for about half of all timestamps.
+    # @api private
+    # @param ms [Integer, nil]
+    # @return [Time, nil]
+    def time_from_ms(ms)
+      ms && Time.at(ms.div(1000), ms % 1000, :millisecond)
+    end
+
+    # Run the block, then close +resource+ — the shared tail of the block forms
+    # that own a resource whose close can fail (a write sink flushes on close).
+    # If the block raised, its exception is the one the caller needs: a failure
+    # from the close that follows is dropped instead of replacing it. If the
+    # block finished (or left via break/throw), a close failure propagates.
+    # @api private
+    def close_after(resource)
+      raised = false
+      yield
+    rescue Exception # standard:disable Lint/RescueException -- re-raised unchanged
+      raised = true
+      raise
+    ensure
+      begin
+        resource.close
+      rescue
+        raise unless raised
+      end
     end
 
     private
@@ -358,12 +405,22 @@ module Microsandbox
     private_constant :TRUSTED_BINARIES_OWNERS
 
     # Name of the loaded gem whose files define Microsandbox::Binaries, or nil
-    # when it came from a bare load path.
+    # when it came from a bare load path. Gem roots can nest — a host project
+    # that is itself a gem, with its bundle installed under the project
+    # directory, is a prefix of every gem in that bundle — so the owner is the
+    # gem with the LONGEST matching root, not whichever one is listed first.
     def bundled_runtime_owner
       source = Binaries.method(:msb_path).source_location&.first
       return nil unless source
-      spec = Gem.loaded_specs.values.find { |s| source.start_with?(File.join(s.full_gem_path, "")) }
-      spec&.name
+      roots = Gem.loaded_specs.values.select { |s| source.start_with?(File.join(s.full_gem_path, "")) }
+      roots.max_by { |s| s.full_gem_path.length }&.name
+    end
+
+    # The runtime path slots are set-once in the core and have no "unset": nil
+    # or "" would be stored as an empty path for the rest of the process.
+    def require_runtime_path!(setter, path)
+      return unless path.nil? || path.to_s.empty?
+      raise ArgumentError, "#{setter} needs a non-empty path (the slot is set-once and cannot be cleared)"
     end
 
     # Whether the binaries gem's msb is what the resolver actually returns — i.e.

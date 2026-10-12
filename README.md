@@ -61,13 +61,25 @@ disabling the first-use download.
 ```ruby
 require "microsandbox"
 
-Microsandbox::Sandbox.create("hello", image: "public.ecr.aws/docker/library/python:3-slim") do |sb|
+Microsandbox::Sandbox.create("hello", image: "public.ecr.aws/docker/library/python:3-slim",
+  ephemeral: true) do |sb|
   output = sb.exec("python", ["-c", "print('Hello, World!')"])
   puts output.stdout      # => "Hello, World!\n"
   puts output.success?    # => true
 end
-# the sandbox is stopped automatically when the block returns
+# the block form stops the sandbox when it returns; `ephemeral: true` also
+# removes it, so the name is free the next time this runs
 ```
+
+Without `ephemeral: true` a stopped sandbox stays in the catalog under its
+name (start it again with `Sandbox.start`, or delete it with `Sandbox.remove`),
+and creating another one with the same name raises `SandboxAlreadyExistsError`.
+See [docs/lifecycle.md](docs/lifecycle.md).
+
+Outside Bundler, write `require "microsandbox-rb"`: the separate `microsandbox`
+gem on RubyGems also ships a `microsandbox.rb`, and plain
+`require "microsandbox"` loads whichever is found first. Both define a
+top-level `Microsandbox` module, so load only one of them in a process.
 
 The examples pull from AWS's public Docker Library mirror because anonymous
 Docker Hub pulls are rate-limited; `image: "python"` works too when you aren't.
@@ -125,7 +137,7 @@ Microsandbox::Sandbox.create("agent", image: "public.ecr.aws/docker/library/pyth
               destination: Microsandbox::Destination.domain("api.example.com") }]),
   strict: true,
   proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"),
-  secrets: { "API_KEY" => { env: "HOST_API_KEY", allowed_hosts: ["api.example.com"] } }
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }]
 ) do |sb|
   # ...
 end
@@ -197,7 +209,7 @@ share the upstream tag, but the numbers have diverged since and the gem version
 is **not** an indicator of the embedded runtime. Ask the build instead:
 
 ```ruby
-Microsandbox::VERSION          # => "0.17.0"  (the gem's own version)
+Microsandbox::VERSION          # => "0.17.1"  (the gem's own version)
 Microsandbox.runtime_version   # => "v0.6.18" (the embedded upstream runtime tag)
 ```
 
@@ -234,6 +246,7 @@ constants against this gem's. Every release records its runtime in
 | `0.15.0` | `v0.6.14` | adopts upstream `v0.6.10`–`v0.6.14` step by step: bind-mount correctness, guest bootstrap off the kernel command line, DNS pins for deferred domain allows, Linux glibc 2.28 baseline for the prebuilt runtime, legacy ext4 upper-disk resize, `msb_krun` 0.1.32. Parity: `ssh.open_client`/`prepare_server` accept `inactivity_timeout:` (seconds; `0` disables, `nil` inherits the 600s global default) |
 | `0.16.0` | `v0.6.16` | adopts upstream `v0.6.15`+`v0.6.16` step by step: mount fallback ownership, readonly-mount write-probe fix, log retrieval rerouted through the SDK backends, config overlaid by field presence, network-slot recycling. Parity: per-mount `uid:`/`gid:`, and the convergent lifecycle — `Sandbox.connect_or_create`, `#id`, `#wait_for_status`, `#restart`, `#destroy`, `SandboxHandle#connect_or_start`, `SandboxReplacedError` |
 | `0.17.0` | `v0.6.18` | adopts upstream `v0.6.17`+`v0.6.18` step by step: outbound SOCKS4/SOCKS5 proxies (SOCKS5 UDP + credentials), migration-order fix for databases last opened by a `v0.6.15` `msb`, security hardening — plain-HTTP `Host`/`:authority` now checked against domain-rule policies even in non-strict mode, plus fail-closed strict hostname mode. Parity: `proxy:` (`Microsandbox::OutboundProxy` / `SecretSource`), `strict:` |
+| `0.17.1` | `v0.6.18` | gem-only security and hardening release: relative host paths pinned at create time (GHSA-mcw9-9rf6-p4rm), `Volume.fs` path validation, `Cargo.lock` advisory updates, argument-guard and cleanup fixes, `SECURITY.md` |
 
 ## Development
 
@@ -264,7 +277,9 @@ bundle exec rake compile
 ## Contributing
 
 Bug reports and pull requests are welcome on
-[GitHub](https://github.com/ya-luotao/microsandbox-rb/issues). Please include a
+[GitHub](https://github.com/ya-luotao/microsandbox-rb/issues). Report security
+problems privately — see [SECURITY.md](SECURITY.md), which also maps upstream
+advisories to the gem versions they affect. Please include a
 failing spec with bug reports where possible and keep pull requests focused on
 one change; PRs target `main`. When the public API changes, update
 `sig/microsandbox.rbs` and `CHANGELOG.md` in the same change, and run the local

@@ -39,3 +39,7 @@ carries the guest-side detail. See [errors.md](errors.md).
 Named volumes can be read and written from the host without a running sandbox
 through `Microsandbox::Volume.fs(name)` / `VolumeInfo#fs` (a `VolumeFs`). See
 [configuration.md](configuration.md#volumes-and-mounts).
+
+Paths are relative to the volume root; a leading `/` is the volume root, not the
+host root. A path containing a `..` segment is refused with `FilesystemError` in
+every operation.

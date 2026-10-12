@@ -246,6 +246,14 @@ module Microsandbox
       if address.empty?
         raise ArgumentError, "proxy address must be a non-empty \"IP:port\" String (got \"\")"
       end
+      # A URL-style address (`socks5://user:pass@host:1080`) is never valid, and
+      # the core would quote it back in its error. Refuse it by shape, without
+      # echoing it, so the embedded credentials stay out of logs.
+      if address.match?(%r{@|://|\s})
+        raise ArgumentError,
+          "proxy address must be \"IP:port\" with no scheme, credentials or whitespace " \
+          "(pass SOCKS5 credentials as username:/password:)"
+      end
       # Same rules as the Python SDK's OutboundProxy.__post_init__; the address
       # itself is parsed by the core (which reports e.g. "invalid SOCKS5 proxy
       # address" as an InvalidConfigError at create time).

@@ -102,11 +102,48 @@ operations (create/start/stop/remove/get/list, one-shot exec, follow log
 streaming); unsupported operations raise `Microsandbox::UnsupportedError`
 (with `#operation` and `#hint`).
 
+## One runtime line per home
+
+The runtime home (`MSB_HOME`, default `~/.microsandbox`) belongs to one
+runtime line at a time. This gem embeds runtime `v0.6.18` and, on first use,
+installs that version of `msb` into the home — replacing a different version
+that is already there, including a newer `msb` installed by the official CLI.
+In the other direction, a `0.7.x` `msb` migrates the catalog to a newer schema
+the first time it opens it, after which every local call from this gem fails
+with `database schema is newer than this msb binary`. The migration is one-way.
+
+If the official CLI (or another SDK) on a different runtime line shares the
+machine, give this gem its own home:
+
+```sh
+export MSB_HOME="$HOME/.microsandbox-rb"
+```
+
+## Known issues at the pinned runtime
+
+These are fixed upstream in runtime releases this gem has not adopted yet. See
+[SECURITY.md](../SECURITY.md) for the security advisories.
+
+- **macOS hosts: guest `fallocate` can truncate a file on a bind mount or a
+  directory-backed named volume.** Preallocating a range that ends inside an
+  existing file shrinks the file to the end of that range, and the call
+  reports success. Fixed upstream in `v0.7.0`. Until then, keep data that
+  guest programs preallocate (databases, download tools) on the guest's OCI
+  root disk or a `disk:` volume, not on a host directory.
+- **`modify(secrets:)` adding the first secret** to a sandbox created without
+  any does not turn on TLS interception, so the value is not substituted.
+  Create the sandbox with at least one secret.
+- **`patches:`** resets the owner and mode of parent directories that already
+  exist in the image to `root:root 0755`. Write after boot with `sb.fs`, or
+  restore ownership yourself.
+
 ## Environment variables
 
 | Variable | Effect |
 |----------|--------|
 | `MSB_PATH` | Path to the `msb` runtime binary; outranks every other source, including the binaries gem |
+| `MSB_LIBKRUNFW_PATH` | Path to the `libkrunfw` shared library; outranks `Microsandbox.libkrunfw_path=` |
+| `MSB_HOME` | Runtime home: the catalog, image cache, sandboxes, volumes, snapshots, and the first-use runtime install. Default `~/.microsandbox` |
 | `MSB_BACKEND` | `local` or `cloud`; cloud additionally reads `MSB_API_URL` / `MSB_API_KEY` |
 | `MSB_PROFILE` | Select a named profile from the config file |
 | `MSB_CONFIG_PATH` | Override the `~/.microsandbox/config.json` location |

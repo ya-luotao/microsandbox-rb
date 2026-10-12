@@ -92,17 +92,29 @@ Microsandbox::Sandbox.create("worker", image: "python",
 
 ## Secrets
 
-`secrets:` injects host-side secrets into the guest with multi-host / wildcard
-allow-lists, injection toggles, and a per-secret or sandbox-level violation
-policy. Specs are keyed by name; `env:`/`store:`/`value:` sources are mutually
-exclusive:
+`secrets:` gives the guest a placeholder and substitutes the real value only in
+requests to the hosts you allow, with multi-host / wildcard allow-lists,
+injection toggles, and a per-secret or sandbox-level violation policy. At
+create time it is an **Array of specs**: `env:` is the variable the guest sees
+(holding the placeholder), `value:` is the real secret, and `host:` / `hosts:` /
+`host_patterns:` is the allow-list.
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",
-  secrets: { "API_KEY" => { env: "HOST_API_KEY", allowed_hosts: ["api.example.com"] } })
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }])
+# inside the guest: $API_KEY is "$MSB_API_KEY"; the proxy swaps in the real
+# value for requests to api.example.com only
 ```
 
-Rotating an existing secret on a running sandbox is a live `modify` — see
+An inline `value:` is part of the sandbox's saved configuration: it is stored
+in cleartext in the local catalog under the runtime home (`~/.microsandbox` by
+default) until the sandbox is removed, and `SandboxHandle#config` returns it.
+Stopping a sandbox does not remove it. Use `ephemeral: true` for short-lived
+work, remove sandboxes you no longer need, and do not log `#config`.
+
+Rotating an existing secret on a running sandbox is a live `modify`, which
+takes a **different shape** — a Hash keyed by name, where `env:` names a *host*
+environment variable to read the new value from. See
 [observability.md](observability.md#live-modification-and-health).
 
 ## Volumes and mounts
@@ -128,5 +140,15 @@ named mount may pin the fallback guest owner for host files with `uid:`/`gid:`
 (both required together, runtime `v0.6.15`). Named volumes can also be read and
 written from the host without booting a sandbox via `Volume.fs` /
 `VolumeInfo#fs`.
+
+A relative host path (`volumes: { "/data" => "./data" }`, `image: "./rootfs"`,
+a `root_disk:` image, a `Patch.copy_file` source, a `tls:` certificate, a
+path-form `from_snapshot:`) is resolved **once, when the sandbox is created**,
+against the creating process's working directory, and stored as an absolute
+path. Starting the sandbox later from another directory mounts the same host
+directory. Resolution does not follow symlinks. Sandboxes created by gem
+versions before `0.17.1` kept the relative path and resolved it again on every
+start ([GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm));
+recreate those. On a cloud backend, host paths are sent as written.
 
 Boot from a snapshot with `Sandbox.create(name, from_snapshot: "snap-name-or-path")`.

@@ -53,7 +53,7 @@ module Microsandbox
 
     # @return [Time] when this snapshot was captured
     def timestamp
-      Time.at(@timestamp_ms / 1000.0)
+      Microsandbox.time_from_ms(@timestamp_ms)
     end
 
     def inspect

@@ -178,11 +178,26 @@ RSpec.describe "Microsandbox runtime helpers" do
       expect(activate).to eq("/gems/binaries/vendor/bin/msb")
     end
 
+    # A host project that is itself a gem, with its bundle under the project
+    # directory, is a path prefix of the companion gem. Which spec comes first
+    # in Gem.loaded_specs depends on the project's name.
+    it "attributes the provider to the innermost gem root, whatever the spec order" do
+      stub_companion(fake_binaries)
+      inner = File.dirname(__FILE__)
+      host = instance_double(Gem::Specification, name: "host-app", full_gem_path: File.dirname(inner))
+      companion = instance_double(Gem::Specification, name: "microsandbox-rb-binaries", full_gem_path: inner)
+      [{"host-app" => host, "microsandbox-rb-binaries" => companion},
+        {"microsandbox-rb-binaries" => companion, "host-app" => host}].each do |specs|
+        allow(Gem).to receive(:loaded_specs).and_return(specs)
+        expect(activate).to eq("/gems/binaries/vendor/bin/msb")
+      end
+    end
+
     it "is activated once at load time, so the slot is claimed before any entry point runs" do
       # Not every msb-spawning entry point goes through ensure_runtime!, so the
       # claim cannot be lazy. Assert the load-time hook exists rather than
       # re-requiring the gem (the native extension cannot be loaded twice).
-      src = File.read(File.expand_path("../../lib/microsandbox.rb", __dir__))
+      src = File.read(File.expand_path("../../lib/microsandbox.rb", __dir__), encoding: "UTF-8")
       expect(src).to match(/^  send\(:activate_bundled_runtime!\)$/)
     end
   end
@@ -201,6 +216,16 @@ RSpec.describe "Microsandbox runtime helpers" do
       Microsandbox.runtime_path = "/custom/path/to/msb"
       expect(Microsandbox::Native).to have_received(:set_runtime_msb_path)
         .with("/custom/path/to/msb")
+    end
+
+    it "refuses nil and empty paths instead of writing an empty set-once slot" do
+      allow(Microsandbox::Native).to receive(:set_runtime_msb_path)
+      allow(Microsandbox::Native).to receive(:set_runtime_libkrunfw_path)
+      expect { Microsandbox.runtime_path = nil }.to raise_error(ArgumentError, /runtime_path= needs a non-empty path/)
+      expect { Microsandbox.runtime_path = "" }.to raise_error(ArgumentError)
+      expect { Microsandbox.libkrunfw_path = nil }.to raise_error(ArgumentError, /libkrunfw_path= needs a non-empty path/)
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_msb_path)
+      expect(Microsandbox::Native).not_to have_received(:set_runtime_libkrunfw_path)
     end
   end
 
@@ -249,11 +274,18 @@ RSpec.describe "Microsandbox runtime helpers" do
 
   describe ".ensure_runtime!" do
     # The memoized "ready" flag would leak across examples (and from a real
-    # source-built runtime on the dev box), so reset it around each one.
+    # source-built runtime on the dev box), so reset it around each one. The
+    # bundled-msb path is saved and restored rather than cleared: with the
+    # companion gem active (the CI bundled lane) clearing it would leave the
+    # rest of the suite believing no bundled runtime exists.
     around do |example|
+      bundled = Microsandbox.instance_variable_get(:@bundled_msb_path)
       Microsandbox.instance_variable_set(:@runtime_ready, nil)
+      Microsandbox.instance_variable_set(:@bundled_msb_path, nil)
       example.run
+    ensure
       Microsandbox.instance_variable_set(:@runtime_ready, nil)
+      Microsandbox.instance_variable_set(:@bundled_msb_path, bundled)
     end
 
     it "still runs the version-correcting installer when the runtime is present" do
@@ -309,8 +341,6 @@ RSpec.describe "Microsandbox runtime helpers" do
       expect(Microsandbox).not_to have_received(:installed?)
       expect(Microsandbox).not_to have_received(:install)
       expect(Microsandbox).not_to have_received(:warn)
-    ensure
-      Microsandbox.instance_variable_set(:@bundled_msb_path, nil)
     end
 
     it "still runs the installer when something outranks the bundled msb (e.g. MSB_PATH)" do
@@ -320,8 +350,6 @@ RSpec.describe "Microsandbox runtime helpers" do
       allow(Microsandbox).to receive(:install)
       Microsandbox.ensure_runtime!
       expect(Microsandbox).to have_received(:install).once
-    ensure
-      Microsandbox.instance_variable_set(:@bundled_msb_path, nil)
     end
 
     it "treats a resolver error as 'bundled runtime not active' rather than raising" do
@@ -331,8 +359,6 @@ RSpec.describe "Microsandbox runtime helpers" do
       allow(Microsandbox).to receive(:install)
       expect { Microsandbox.ensure_runtime! }.not_to raise_error
       expect(Microsandbox).to have_received(:install).once
-    ensure
-      Microsandbox.instance_variable_set(:@bundled_msb_path, nil)
     end
 
     it "skips the local-runtime check entirely under a cloud backend" do

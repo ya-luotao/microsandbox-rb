@@ -1,5 +1,26 @@
 # frozen_string_literal: true
 
+# Hermetic unit runs. Without this, `bundle exec rspec spec/unit` reads AND
+# WRITES the developer's real ~/.microsandbox (the roadmap_spec group performs
+# a real first-use install — it replaces bin/msb + lib/libkrunfw with the
+# runtime this checkout pins) and inherits whatever backend the shell selects
+# (MSB_BACKEND / MSB_PROFILE → 13 failures). Integration runs keep the real
+# environment: they need the provisioned runtime and a short socket path.
+#
+# The home lives directly under /tmp, not Dir.tmpdir: the local backend derives
+# a Unix socket path from it and refuses to persist a sandbox when that path
+# would exceed the platform limit, which macOS's per-user temp directory does.
+# The offline specs read back what a failed create persisted.
+unless ENV["MICROSANDBOX_INTEGRATION"]
+  require "tmpdir"
+  require "fileutils"
+  unit_home = Dir.mktmpdir("msb-rb-", File.directory?("/tmp") ? "/tmp" : nil)
+  ENV["MSB_HOME"] = unit_home
+  %w[MSB_BACKEND MSB_PROFILE MSB_API_URL MSB_API_KEY MSB_PATH MSB_LIBKRUNFW_PATH
+    MICROSANDBOX_NO_AUTO_INSTALL].each { |name| ENV.delete(name) }
+  at_exit { FileUtils.remove_entry(unit_home, true) }
+end
+
 require "microsandbox"
 require "rspec/retry"
 
@@ -31,6 +52,19 @@ RSpec.configure do |config|
     c.syntax = :expect
   end
   config.disable_monkey_patching!
+
+  # A unit example must never provision a runtime: that downloads ~27 MB from
+  # GitHub and rewrites MSB_HOME. Stub Microsandbox.ensure_runtime! (or
+  # .install) in the example instead; reaching the native installer is a bug.
+  config.before(:each) do |example|
+    next if example.metadata[:integration]
+    %i[install setup].each do |installer|
+      allow(Microsandbox::Native).to receive(installer) do
+        raise "unit example reached Microsandbox::Native.#{installer} — stub Microsandbox.ensure_runtime!"
+      end
+    end
+  end
+
   config.order = :random
   Kernel.srand config.seed
 

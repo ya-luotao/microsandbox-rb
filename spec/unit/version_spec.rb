@@ -23,7 +23,7 @@ RSpec.describe Microsandbox do
     # lock would ship a stale lock — and a --locked/strict-downstream build would
     # reject it. Guard the lock copy too (mirrors the runtime-tag guard below).
     it "agrees with the microsandbox_rb version in the committed Cargo.lock" do
-      lock = File.read(File.expand_path("../../Cargo.lock", __dir__))
+      lock = File.read(File.expand_path("../../Cargo.lock", __dir__), encoding: "UTF-8")
       locked = lock[/^name = "microsandbox_rb"\n(?:.*\n)*?version = "([^"]+)"/, 1]
       expect(locked).to eq(Microsandbox::VERSION)
     end
@@ -66,7 +66,7 @@ RSpec.describe Microsandbox do
     # `microsandbox-network`, `microsandbox-runtime`) share one tag: a bump that
     # misses one would otherwise compile two runtime versions into the ext.
     it "stays in sync with the upstream tag pinned in ext/microsandbox/Cargo.toml" do
-      cargo = File.read(File.expand_path("../../ext/microsandbox/Cargo.toml", __dir__))
+      cargo = File.read(File.expand_path("../../ext/microsandbox/Cargo.toml", __dir__), encoding: "UTF-8")
       tags = cargo.scan(/^microsandbox(?:-network|-runtime)?\s*=\s*\{[^}]*\btag\s*=\s*"([^"]+)"/).flatten
       expect(tags.size).to eq(3)
       expect(tags.uniq).to eq([Microsandbox::RUNTIME_VERSION])

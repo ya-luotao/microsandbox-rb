@@ -22,7 +22,7 @@ module Microsandbox
 
     # @return [Time] wall-clock capture time
     def timestamp
-      Time.at(@timestamp_ms / 1000.0)
+      Microsandbox.time_from_ms(@timestamp_ms)
     end
 
     # @return [String] the captured bytes decoded as UTF-8 (lossy — invalid byte

@@ -2,17 +2,20 @@
 
 module Microsandbox
   # A live stream of {LogEntry}s, returned by {Sandbox#log_stream}. Enumerable:
-  # iterate to consume entries as they are appended. With `follow: true` the
-  # iteration blocks for new entries until the sandbox stops; otherwise it ends
-  # once the historical log is drained.
+  # iterate to consume entries as they are appended. Without `follow:` the
+  # iteration ends once the historical log is drained. With `follow: true` it
+  # keeps waiting for new entries and does NOT end when the sandbox stops: the
+  # runtime follows the log file, not the sandbox, and there is no way to
+  # cancel the wait.
   #
   # @note **Single-pass, forward-only, single-consumer.** `each` drains a
   #   one-shot native channel, so it is *not* rewindable: a second `each` — or
   #   any `Enumerable` combinator after a partial drain (`to_a` twice, `count`
   #   then `each`, `first(n)` then `each`) — silently yields nothing. Iterate
   #   exactly once, from one thread. With `follow: true`, `each` blocks the
-  #   calling thread uninterruptibly until the sandbox stops (see DESIGN.md on
-  #   GVL release).
+  #   calling thread uninterruptibly and indefinitely (see DESIGN.md on GVL
+  #   release); a thread blocked there also keeps the process from exiting
+  #   normally, so follow from a process you are prepared to kill.
   #
   # @example
   #   sb.log_stream(follow: true).each { |entry| print entry.text }

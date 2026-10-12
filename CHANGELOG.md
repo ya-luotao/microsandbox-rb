@@ -8,12 +8,127 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-12
+
+Gem-only security and hardening release; the embedded runtime stays at
+**`v0.6.18`**. Upgrading is recommended for everyone on `0.17.0` or earlier.
+Two fixes tighten input handling and can reject input that used to be
+accepted: `Volume.fs` paths containing a `..` segment, and
+`Microsandbox.runtime_path = nil`.
+
+### Security
+
+- **Relative host paths are pinned when a sandbox is created**
+  ([GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm),
+  high; fixed upstream in runtime `v0.7.6`, which this gem does not embed yet).
+  The embedded runtime stored a relative host path exactly as written and
+  resolved it against the working directory of whichever process later
+  started the sandbox, so restarting a sandbox from another directory mounted
+  a different host directory than the one originally intended. The native
+  layer now anchors every relative host path to the creating process's
+  directory before the configuration is persisted: bind and disk mount
+  sources in `volumes:`, a directory or disk-image `image:`, a `root_disk:`
+  image path, `Patch.copy_file` / `Patch.copy_dir` sources, the `tls:`
+  certificate paths, and a path-form `from_snapshot:`. This covers sandboxes
+  created through the gem; the `msb` CLI the gem installs is unchanged, so use
+  absolute paths with it. Paths are anchored
+  without following symlinks and without requiring the target to exist, so a
+  symlinked bind-mount root is still refused unless
+  `follow_root_symlinks: true`. Absolute paths, named volumes, and OCI
+  references are unchanged, and on a cloud backend paths are forwarded as
+  written (they belong to the remote host).
+
+  **Existing sandboxes are not rewritten.** A sandbox created by an earlier
+  gem version with a relative path keeps that saved path and its old
+  behaviour: recreate it, or only ever start it from its original directory.
+  Affects every earlier `microsandbox-rb` release; the upstream advisory does
+  not list this gem.
+- **Errors no longer repeat values that can be credentials.** A URL-style
+  proxy address (`socks5://user:pass@host:port`) is refused by shape without
+  being echoed; an `env:` / `labels:` / `scripts:` value that is not a Hash
+  (or convertible to one, like `ENV`), a malformed patch, and a non-Hash
+  secret spec are reported by class name only.
+- **Dependencies with published advisories updated in `Cargo.lock`**:
+  `russh` 0.63.1 → 0.63.3 (GHSA-35g8-35p8-c8fw, SSH server side),
+  `rustls` 0.23.41 → 0.23.45 (RUSTSEC-2026-0285), `h2` 0.4.15 → 0.4.16
+  (RUSTSEC-2026-0258), plus `anyhow` 1.0.104 and `event-listener` 5.4.2
+  (unsoundness fixes). Those pulled in `aws-lc-rs` 1.18.1, `aws-lc-sys`
+  0.45.0, `rustls-webpki` 0.103.15, and `num-bigint` 0.5.1 in place of
+  `internal-russh-num-bigint`. `rkyv` and `rsa` have no compatible fixed
+  release at the pinned runtime and are unchanged.
+
+### Added
+
+- `SECURITY.md`: how to report a vulnerability privately, and a table mapping
+  upstream microsandbox advisories to the `microsandbox-rb` versions they
+  affect (upstream advisories do not list this gem). Shipped in the gem.
+- `require "microsandbox-rb"` as an entry point named after the gem. Outside
+  Bundler, `require "microsandbox"` can resolve to the unrelated `microsandbox`
+  gem on RubyGems.
+
+### Fixed
+
+- **Documentation examples that did not run.** The README quick start failed
+  on its second run (`SandboxAlreadyExistsError`; it now uses
+  `ephemeral: true`), and the README / configuration-guide `secrets:` example
+  used the `#modify` shape and raised `TypeError`. The observability and
+  errors guides named the wrong error class for the metrics startup window
+  (it is the base `Microsandbox::Error`, matched by message), and
+  `log_stream(follow: true)` was documented as ending when the sandbox stops
+  (it does not). The guides now also state that an inline secret `value:` is
+  stored in cleartext in the local catalog until the sandbox is removed, that
+  the block form stops but does not remove, that a runtime home belongs to one
+  runtime line (`MSB_HOME`), and list known issues at the pinned runtime
+  (including guest `fallocate` truncating bind-mounted files on macOS hosts).
+- **A rejected option no longer triggers a runtime download.** The first-use
+  runtime check ran before most argument validation, so `Sandbox.create` with
+  a bad option downloaded and installed `msb` before raising. It now runs
+  after the options are validated, in `create`, `connect_or_create` and
+  `create_with_progress`.
+- **First-use provisioning is serialized within a process.** Several threads
+  making their first `Sandbox.create` at once each ran the installer, which
+  replaces files in place. `Microsandbox.install`, `Microsandbox.setup` and
+  the first-use check now share one lock, and the check runs once.
+- **`Microsandbox.runtime_path = nil` / `libkrunfw_path = nil`** (or `""`)
+  raise `ArgumentError` instead of writing an empty path into the set-once
+  slot for the rest of the process.
+- **Companion gem detection no longer depends on the host project's name.**
+  When the host project is itself a gem with its bundle installed inside the
+  project directory, `microsandbox-rb-binaries` could be attributed to the
+  host project and ignored, depending on gem load order. The owner is now
+  the gem with the innermost matching root.
+- **`patches:` with `from_snapshot:`** raises `ArgumentError` up front. The
+  runtime rejects the pair only after claiming the sandbox name on disk,
+  which left an empty directory holding the name.
+- **Block forms keep the caller's exception.** `fs.write_stream { }`,
+  `ssh.open_client { }` and `client.sftp { }` closed in a bare `ensure`, so a
+  failing close replaced whatever the block had raised. The block's exception
+  now wins; a close failure is still raised when the block itself succeeded.
+- **`PullSession#sandbox`** re-raises the original create failure when called
+  again, instead of an unrelated "already taken" error.
+- **Timestamps are exact to the millisecond.** `Time.at(ms / 1000.0)` went
+  through a Float and reported one millisecond low for about half of all
+  values (`FsEntry#modified`, `FsMetadata#modified` / `#created`,
+  `LogEntry#timestamp`, `Metrics#timestamp`, and every `created_at` /
+  `updated_at` / `last_used_at` / `observed_at` reader).
+- **`secrets:` given as a `{ "NAME" => { ... } }` Hash** (the `#modify`
+  shape) raises a descriptive `ArgumentError` instead of `TypeError`; a single
+  bare spec Hash is accepted as a list of one, as is a single patch Hash for
+  `patches:`.
+
 ### Changed
 
+- **`Volume.fs` paths may not contain a `..` segment.** Every `VolumeFs` operation
+  (`read`, `read_text`, `write`, `list`, `mkdir`, `remove_file`, `remove_dir`,
+  `exists?`, `copy`, `rename`, `stat`) now refuses a path that contains a `..`
+  segment with `FilesystemError`, in the native layer as well as the Ruby
+  wrapper. Volume paths are relative to the volume root and never need one.
+  A path such as `"a/../b"` that used to be accepted must now be written as
+  `"b"`. Names that merely contain dots (`"..hidden"`, `"a..b"`) are fine.
 - **README restructured** along the lines of a conventional Ruby SDK README:
   badges, a Highlights list, a short install + quick start, a Documentation
   table, and a sourced comparison with the official `microsandbox` gem. The
-  detailed guides moved verbatim into `docs/` (`lifecycle`, `configuration`,
+  detailed guides moved into `docs/` (`lifecycle`, `configuration`,
   `execution`, `filesystem`, `observability`, `images`, `runtime`, `errors`,
   `surface`, `releasing`), which the gem now ships (`spec.files`), so the
   links resolve on rubygems.org and rubydoc.info. `docs/surface.md` replaces
@@ -1276,7 +1391,11 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.0...v0.17.1
+[0.17.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.13.0...v0.14.0
 [0.9.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.8.1...v0.8.2
