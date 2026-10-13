@@ -240,12 +240,14 @@ module Microsandbox
     # avoid calling {set_default_backend} inside the block (the restore on exit
     # would overwrite that change). Mirrors the official SDKs' scoped-backend helper.
     #
-    # The restore can fail in one situation: the block is left in a process
-    # forked while it was running, and the previous backend cannot be chosen
-    # again there (it came from the environment or config file, which no longer
-    # resolve). The temporary backend then stays selected. If the block itself
-    # raised, its exception is the one that propagates and the restore failure
-    # is only warned about; otherwise the restore failure is raised.
+    # The restore can fail in one situation: the previous backend belonged to a
+    # parent process (the block is left in a child forked while it was running,
+    # or it is a forked child's first use of the SDK) and cannot be chosen
+    # again there — it came from the environment or config file, which no
+    # longer resolve. The block's temporary selection then stays in effect. If
+    # the block itself raised, its exception is the one that propagates and the
+    # restore failure is only warned about; otherwise the restore failure is
+    # raised.
     #
     # @param kind ["local","cloud", Symbol]
     # @param url [String, nil]

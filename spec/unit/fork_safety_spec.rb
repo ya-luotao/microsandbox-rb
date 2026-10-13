@@ -158,6 +158,18 @@ RSpec.describe "fork safety (subprocess)" do
     expect(run[:steps]["child.kind"]).to include("ok" => true, "value" => "local")
   end
 
+  # The scope's TEMPORARY backend (a cloud profile) cannot be chosen again in
+  # the child, the one it restores can: leaving the block must not need the
+  # former. Taking over with it first used to fail the restore and leave the
+  # child raising the profile error on every call.
+  it "lets a child leave a scope whose temporary backend it cannot rebuild" do
+    run = run_probe("scope_selection_gone", root: root, probe: probe)
+    expect_clean(run)
+    expect(run[:steps]["parent.scoped"]).to include("ok" => true, "value" => "cloud")
+    expect(run[:steps]["child.kind"]).to include("ok" => true, "value" => "local")
+    expect_instant(run, "child.close", "child.list1", "parent.close", "parent.after")
+  end
+
   # The backend a parent-opened scope should restore cannot be chosen again in
   # the child, and the child leaves the block by raising: the block's exception
   # is the one that propagates, the restore failure is a warning, and the

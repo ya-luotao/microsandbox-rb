@@ -226,6 +226,36 @@ module ForkProbe
       end
       emit("parent.close", left)
       reap(pid) { step("parent.after") { volumes } }
+    end,
+
+    # The reverse: the TEMPORARY backend of a scope the parent opened (a cloud
+    # profile from the config file) cannot be chosen again in the child, while
+    # the backend the scope restores (ladder, local) can. Leaving the block
+    # must restore it all the same — the child never needs the temporary one.
+    "scope_selection_gone" => lambda do
+      config = File.join(ENV.fetch("MSB_HOME"), "config.json")
+      File.write(config, JSON.generate("profiles" => {"probe" => {
+        "backend" => "cloud", "url" => "https://cloud.invalid", "api_key_ref" => "inline:msb_live_probe"
+      }}))
+      step("parent.warm") { volumes }
+      pid = :unset
+      left = measure do
+        Microsandbox.with_backend(:cloud, profile: "probe") do
+          step("parent.scoped") { Microsandbox.default_backend_kind.to_s }
+          pid = fork
+          # The child loses the profile: its config file is somewhere else now.
+          ENV["MSB_CONFIG_PATH"] = File.join(ENV.fetch("MSB_HOME"), "no-such-config.json") if pid.nil?
+          true
+        end
+      end
+      if pid.nil?
+        ok = emit("child.close", left)
+        ok &= step("child.kind") { Microsandbox.default_backend_kind.to_s }
+        ok &= step("child.list1") { volumes }
+        exit(ok ? 0 : 1)
+      end
+      emit("parent.close", left)
+      reap(pid) { step("parent.after") { volumes } }
     end
   }.freeze
 end

@@ -176,11 +176,14 @@ pieces implement it, all keyed on the pid (`runtime::current_pid`):
   are the exception: they are about to replace the default anyway, so in a
   child they take over with the backend they were asked for and never rebuild
   the inherited selection — an explicit selection always gets a child out of
-  an inherited one that no longer resolves. Closing a scope always consumes
-  it: when the backend it should restore cannot be rebuilt in the child, the
-  temporary backend stays selected and the error is reported (by
-  `with_backend` as a warning when the block itself raised, so that the
-  block's exception is the one that propagates).
+  an inherited one that no longer resolves. Closing a scope works the same
+  way: a child whose first use of the backend is leaving a block its parent
+  entered takes over directly with what the scope restores, so it never needs
+  the scope's temporary backend (which it may be unable to rebuild). Closing a
+  scope always consumes it: when the backend it should restore cannot be
+  rebuilt in the child, the scope's temporary selection stays in effect and
+  the error is reported (by `with_backend` as a warning when the block itself
+  raised, so that the block's exception is the one that propagates).
 - **`ForkGuarded<T>`** (`runtime.rs`). The payload of every `#[magnus::wrap]`
   type sits in one, tagged with the creating pid. `get()` is the only way to
   it for anything that acts on the value, and in another process it returns

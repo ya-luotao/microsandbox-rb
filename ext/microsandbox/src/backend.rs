@@ -174,9 +174,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Make sure the core's default backend belongs to THIS process, rebuilding it
 /// after a fork. Every Ruby-facing entry that can reach the default backend
 /// runs this first: [`crate::runtime::block_on`] for the async operations, and
-/// each synchronous entry that reads the backend itself. (The two that are
-/// about to replace the default anyway — `set_default_backend` and
-/// `push_default_backend` — adopt with their own selection instead.)
+/// each synchronous entry that reads the backend itself. (The three that are
+/// about to replace the default anyway — `set_default_backend`,
+/// `push_default_backend` and `pop_default_backend` — adopt with the
+/// selection they install instead.)
 ///
 /// Runs only with the GVL held — never inside a future (see the locking note
 /// above).
@@ -191,8 +192,9 @@ pub fn ensure_this_process_backend() -> Result<(), Error> {
 /// parent process: install a backend built in this process and leak every
 /// inherited one.
 ///
-/// What gets installed is `replacement` when the caller is itself selecting a
-/// backend, and otherwise a rebuild of the inherited selection. The difference
+/// What gets installed is `replacement` when the caller itself determines the
+/// backend (a selection, or the restore of a scope), and otherwise a rebuild
+/// of the inherited selection. The difference
 /// matters when the inherited selection no longer resolves in the child (say
 /// the ladder now reads `MSB_BACKEND=cloud` without credentials): the rebuild
 /// fails, and keeps failing on every call, but an explicit selection must
@@ -341,32 +343,43 @@ fn push_default_backend(
 /// Close the scope opened by [`push_default_backend`]: restore the backend it
 /// saved.
 ///
-/// A pop consumes its token whether or not it succeeds. It can fail only in a
-/// forked child, where the saved backend is the parent's and has to be rebuilt
-/// from how it had been chosen: if that selection no longer resolves there,
-/// the scope is closed anyway and the temporary backend stays selected — a
-/// state the caller can describe and leave with `set_default_backend`, where a
-/// token nobody can retry (`with_backend` never hands it out) would not be.
+/// A pop consumes its token whether or not it succeeds. It can fail only when
+/// the backend to restore has to be rebuilt from how it had been chosen (the
+/// saved one was the parent's) and that selection does not resolve in this
+/// process. The scope is closed anyway and its temporary selection stays in
+/// effect: the temporary backend remains installed, or — in a child that has
+/// not yet built a backend of its own — is what the next call rebuilds. That
+/// is a state the caller can describe and leave with `set_default_backend`;
+/// a token nobody can retry (`with_backend` never hands it out) would not be.
 fn pop_default_backend(token: u32) -> Result<(), Error> {
-    // In a forked child whose first native call is this pop (the parent forked
-    // inside a `with_backend` block and the child now leaves it), this swaps
-    // the inherited default for a fresh build of the scoped backend and
-    // forgets the inherited `Arc`s, the one this scope saved included. The
-    // rebuild below then swaps again, to what the scope restores.
-    let adopted = ensure_this_process_backend();
     let cur = current_pid();
-
     // (The registry lock is not held while an exception is built.)
     let Some(scope) = lock(backend_scopes()).remove(&token) else {
-        adopted?;
         return Err(error::base_error("unknown backend scope token"));
     };
-    if let Err(e) = adopted {
-        // Not even the scoped backend could be rebuilt in this process, so
-        // everything in sight is still the parent's: leak what the scope
-        // saved, and report. The scoped selection stays the recorded one.
-        std::mem::forget(scope.previous);
-        return Err(e);
+
+    // A forked child whose first use of the backend is this pop (the parent
+    // forked inside a `with_backend` block and the child now leaves it) takes
+    // over with what the scope restores — directly, never by way of the
+    // scope's temporary backend, which the child may be unable to rebuild (a
+    // cloud profile that is gone there) and has no use for.
+    match adopt_backend(cur, Some(&scope.selection)) {
+        // Done: the restored selection is installed and recorded. The backend
+        // this scope had saved is the parent's; it left the registry above, so
+        // it is leaked here rather than by the adoption.
+        Ok(Some(_temporary)) => {
+            std::mem::forget(scope.previous);
+            return Ok(());
+        }
+        // This process already owns its backend: restore below.
+        Ok(None) => {}
+        // Nothing was changed (see `adopt_backend`), so everything in sight is
+        // still the parent's: leak what the scope saved, and report. The next
+        // call tries to take over with the temporary selection.
+        Err(e) => {
+            std::mem::forget(scope.previous);
+            return Err(error::to_ruby(e));
+        }
     }
 
     match scope.previous {
@@ -374,7 +387,7 @@ fn pop_default_backend(token: u32) -> Result<(), Error> {
         Some(previous) if scope.pid == cur => microsandbox::set_default_backend(previous),
         // No backend of this process's own was saved (see `Scope::previous`):
         // restore one built here from how the saved one had been chosen. On
-        // failure the temporary backend stays selected (see above). The
+        // failure the temporary backend stays installed (see above). The
         // default being replaced was built in this process and could be
         // dropped safely; it is forgotten all the same, so that no path of a
         // forked child ever drops a backend it might have inherited. That

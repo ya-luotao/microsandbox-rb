@@ -169,10 +169,13 @@ Things to know:
 - **Leaving a `with_backend` block in the child.** When the backend to
   restore was the parent's — the child was forked inside the block, or the
   block is the child's first use of the SDK — leaving the block installs a
-  backend chosen the way that one had been. If that choice no longer resolves
-  in the child, the block is closed anyway and the temporary backend stays
-  selected. `with_backend` then raises the configuration error — unless the
-  block itself raised, in which case the block's exception propagates and the
+  backend chosen the way that one had been. The block's own temporary backend
+  is not needed for that: if only it can no longer be chosen in the child (a
+  cloud profile that is gone there), leaving the block still restores the
+  previous backend. If the choice to restore no longer resolves in the child,
+  the block is closed anyway and its temporary selection stays in effect.
+  `with_backend` then raises the configuration error — unless the block
+  itself raised, in which case the block's exception propagates and the
   restore failure is reported as a warning.
 - **A child keeps the parent's sandboxes alive.** A child inherits the
   parent's open file descriptors, among them the pipe through which a sandbox
