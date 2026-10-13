@@ -42,8 +42,7 @@
 use std::ffi::c_void;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use magnus::{Error, Ruby, TypedData};
 use tokio::runtime::Runtime;
@@ -57,7 +56,14 @@ pub fn ruby() -> Ruby {
     Ruby::get().expect("microsandbox: not on a Ruby thread")
 }
 
-// The process-wide tokio runtime, guarded by the pid it was built under. A
+/// This process's id. The single `std::process::id()` call site: everything
+/// fork-aware in the extension (the runtime cell below, the backend generation
+/// in `backend.rs`, [`ForkGuarded`]) compares against this.
+pub fn current_pid() -> u32 {
+    std::process::id()
+}
+
+// The process-wide tokio runtime, tagged with the pid it was built under. A
 // multi-threaded runtime owns worker + I/O-driver threads, and `fork(2)` copies
 // ONLY the calling thread — so a child that inherits this runtime has a runtime
 // whose threads are gone: `block_on` can still drive the current thread, but the
@@ -65,16 +71,16 @@ pub fn ruby() -> Ruby {
 // connections stall/drop mid-use. This is hit in practice by forking job servers
 // (Solid Queue, Resque) and clustered web servers (Puma workers).
 //
-// Fix: store the runtime behind a leaked raw pointer tagged with the building
-// pid. If `runtime()` is called in a process whose pid differs (we forked), build
-// a FRESH runtime for this process and swap the pointer. The stale runtime is
-// LEAKED, never dropped — dropping a tokio runtime whose worker threads vanished
-// across fork can hang on the shutdown thread-join. One runtime is leaked per
-// process that uses the SDK (bounded; equivalent to the old set-once behavior in
-// the common no-fork case).
-static RUNTIME_PTR: AtomicPtr<Runtime> = AtomicPtr::new(std::ptr::null_mut());
-static RUNTIME_PID: AtomicU32 = AtomicU32::new(0);
-static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
+// The runtime and its pid live in ONE heap cell behind ONE atomic pointer, so a
+// reader sees either a whole cell or none: there is no window in which the
+// pointer is new and the pid old (or the reverse), and no mutex that a fork
+// could capture locked or that a panic could poison.
+struct RuntimeCell {
+    pid: u32,
+    rt: Runtime,
+}
+
+static RUNTIME: AtomicPtr<RuntimeCell> = AtomicPtr::new(std::ptr::null_mut());
 
 fn build_runtime() -> Runtime {
     tokio::runtime::Builder::new_multi_thread()
@@ -85,32 +91,48 @@ fn build_runtime() -> Runtime {
 }
 
 /// The multi-threaded tokio runtime for THIS process, built on first use and
-/// rebuilt after a `fork(2)` (fork-safe — see the note above).
+/// rebuilt after a `fork(2)` (see the note above).
 pub fn runtime() -> &'static Runtime {
-    let cur = std::process::id();
-    let ptr = RUNTIME_PTR.load(Ordering::Acquire);
-    if !ptr.is_null() && RUNTIME_PID.load(Ordering::Acquire) == cur {
-        // SAFETY: ptr was produced by Box::leak (valid for 'static) and matches
-        // this process's pid, so its runtime threads are live in this process.
-        return unsafe { &*ptr };
+    let cur = current_pid();
+    let mut observed = RUNTIME.load(Ordering::Acquire);
+    // SAFETY (every dereference below): a non-null pointer in `RUNTIME` came
+    // from `Box::into_raw` and is never freed once published, so it is valid
+    // for `'static`.
+    if let Some(cell) = unsafe { observed.as_ref() } {
+        if cell.pid == cur {
+            // Built in this process: its threads are alive here.
+            return &cell.rt;
+        }
     }
 
-    let _guard = RUNTIME_LOCK
-        .lock()
-        .expect("microsandbox: runtime lock poisoned");
-    // Re-check under the lock (another thread may have just built it).
-    let ptr = RUNTIME_PTR.load(Ordering::Acquire);
-    if !ptr.is_null() && RUNTIME_PID.load(Ordering::Acquire) == cur {
-        return unsafe { &*ptr };
+    // Slow path: no runtime yet, or the one we see was built by a parent
+    // process. Build ours and publish it with a compare-exchange.
+    let fresh = Box::into_raw(Box::new(RuntimeCell {
+        pid: cur,
+        rt: build_runtime(),
+    }));
+    loop {
+        match RUNTIME.compare_exchange(observed, fresh, Ordering::AcqRel, Ordering::Acquire) {
+            // Published. The cell we replaced (if any) belonged to a parent
+            // process and is LEAKED on purpose, never dropped: its worker
+            // threads did not survive the fork, and `Runtime`'s `Drop` joins
+            // them. One runtime is leaked per fork generation that uses the
+            // SDK.
+            Ok(_) => return unsafe { &(*fresh).rt },
+            Err(winner) => {
+                if let Some(cell) = unsafe { winner.as_ref() } {
+                    if cell.pid == cur {
+                        // Another thread of THIS process won the race. Our
+                        // cell was never published and its threads are alive
+                        // here, so dropping it is safe (and joins them).
+                        drop(unsafe { Box::from_raw(fresh) });
+                        return &cell.rt;
+                    }
+                }
+                observed = winner;
+            }
+        }
     }
-
-    // Build a fresh runtime for this process and publish it. The previous pointer
-    // (if any) belonged to a parent process and is intentionally leaked, not
-    // dropped (its threads are gone post-fork; Drop would block on join).
-    let rt: &'static Runtime = Box::leak(Box::new(build_runtime()));
-    RUNTIME_PTR.store(rt as *const Runtime as *mut Runtime, Ordering::Release);
-    RUNTIME_PID.store(cur, Ordering::Release);
-    rt
 }
 
 /// Resolve the Ruby class of a `#[magnus::wrap]` type now, at extension load.
