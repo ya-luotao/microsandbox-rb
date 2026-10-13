@@ -240,6 +240,13 @@ module Microsandbox
     # avoid calling {set_default_backend} inside the block (the restore on exit
     # would overwrite that change). Mirrors the official SDKs' scoped-backend helper.
     #
+    # The restore can fail in one situation: the block is left in a process
+    # forked while it was running, and the previous backend cannot be chosen
+    # again there (it came from the environment or config file, which no longer
+    # resolve). The temporary backend then stays selected. If the block itself
+    # raised, its exception is the one that propagates and the restore failure
+    # is only warned about; otherwise the restore failure is raised.
+    #
     # @param kind ["local","cloud", Symbol]
     # @param url [String, nil]
     # @param api_key [String, nil]
@@ -248,10 +255,20 @@ module Microsandbox
     # @return [Object] the block's return value
     def with_backend(kind, url: nil, api_key: nil, profile: nil)
       token = Native.push_default_backend(kind.to_s, url&.to_s, api_key&.to_s, profile&.to_s)
+      raised = false
       begin
         yield
+      rescue Exception # standard:disable Lint/RescueException -- only noted, re-raised at once
+        raised = true
+        raise
       ensure
-        Native.pop_default_backend(token)
+        begin
+          Native.pop_default_backend(token)
+        rescue Microsandbox::Error => e
+          # Never let the restore failure replace what the block raised.
+          raise unless raised
+          warn "microsandbox: with_backend could not restore the previous backend: #{e.message}"
+        end
       end
     end
 

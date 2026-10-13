@@ -116,6 +116,12 @@ was used — the environment and config file as the child sees them at that
 call. Everything addressed by name works in the child from then on:
 `Sandbox.create`/`get`/`list`/`start`, `Volume`, `Image`, `Snapshot`.
 
+If the parent's choice cannot be made again in the child (say the child's
+environment now selects the cloud backend without credentials), SDK calls
+there raise the configuration error until that is repaired. Selecting a
+backend in the child — `set_default_backend`, or entering `with_backend` —
+does not depend on the inherited choice and works regardless.
+
 ```ruby
 Microsandbox::Sandbox.list             # the parent has used the SDK
 
@@ -160,6 +166,14 @@ Things to know:
   block, so the child does not stop the parent's sandbox. An `ensure
   sandbox.stop` of your own raises it in the child; rescue it there, or run
   the cleanup only in the process that created the sandbox.
+- **Leaving a `with_backend` block in the child.** When the backend to
+  restore was the parent's — the child was forked inside the block, or the
+  block is the child's first use of the SDK — leaving the block installs a
+  backend chosen the way that one had been. If that choice no longer resolves
+  in the child, the block is closed anyway and the temporary backend stays
+  selected. `with_backend` then raises the configuration error — unless the
+  block itself raised, in which case the block's exception propagates and the
+  restore failure is reported as a warning.
 - **A child keeps the parent's sandboxes alive.** A child inherits the
   parent's open file descriptors, among them the pipe through which a sandbox
   notices that its owner is gone. If the parent exits while such a child is

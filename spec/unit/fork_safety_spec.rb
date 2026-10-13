@@ -146,4 +146,29 @@ RSpec.describe "fork safety (subprocess)" do
     expect_clean(run)
     expect_instant(run, "child.select", "child.list1", "parent.after")
   end
+
+  # The parent's backend came from the environment ladder, which the child has
+  # since broken (cloud selected, no credentials). Plain calls report that, and
+  # keep reporting it; an explicit selection gets the child out regardless.
+  it "lets a child select a backend when the inherited selection no longer resolves" do
+    run = run_probe("select_recovers", root: root, probe: probe)
+    expect_clean(run)
+    expect(run[:steps].fetch("child.broken")).to include("ok" => false, "error" => "Microsandbox::InvalidConfigError")
+    expect_instant(run, "child.select", "child.list1", "parent.after")
+    expect(run[:steps]["child.kind"]).to include("ok" => true, "value" => "local")
+  end
+
+  # The backend a parent-opened scope should restore cannot be chosen again in
+  # the child, and the child leaves the block by raising: the block's exception
+  # is the one that propagates, the restore failure is a warning, and the
+  # temporary backend stays selected (and usable).
+  it "keeps the block's exception when a child cannot restore the scope's backend" do
+    run = run_probe("scope_restore_fails", root: root, probe: probe)
+    expect_clean(run)
+    expect(run[:steps].fetch("child.block")).to include("ok" => false, "error" => "RuntimeError", "message" => "sentinel")
+    expect(run[:err]).to include("with_backend could not restore the previous backend: ")
+      .and include("MSB_BACKEND=cloud")
+    expect(run[:steps]["child.kind"]).to include("ok" => true, "value" => "local")
+    expect_instant(run, "child.list1", "parent.close", "parent.after")
+  end
 end

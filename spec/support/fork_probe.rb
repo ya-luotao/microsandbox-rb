@@ -178,6 +178,54 @@ module ForkProbe
         exit(ok ? 0 : 1)
       end
       reap(pid) { step("parent.after") { volumes } }
+    end,
+
+    # The way the parent's backend was chosen (the environment ladder) no
+    # longer resolves in the child. Plain calls fail there until that is
+    # repaired, but selecting a backend explicitly must not depend on it.
+    "select_recovers" => lambda do
+      step("parent.warm") { volumes }
+      pid = fork do
+        ENV["MSB_BACKEND"] = "cloud" # and no API key
+        ok = !step("child.broken") { volumes } # it must have raised
+        ok &= step("child.select") do
+          Microsandbox.set_default_backend(:local)
+          true
+        end
+        ok &= step("child.list1") { volumes }
+        ok &= step("child.kind") { Microsandbox.default_backend_kind.to_s }
+        exit(ok ? 0 : 1)
+      end
+      reap(pid) { step("parent.after") { volumes } }
+    end,
+
+    # The child leaves a with_backend block its parent opened by raising, and
+    # the backend the scope should restore (chosen by the ladder) cannot be
+    # chosen again in the child. The block's exception must win, and the
+    # temporary backend stays selected.
+    "scope_restore_fails" => lambda do
+      step("parent.warm") { volumes }
+      pid = :unset
+      left = measure do
+        Microsandbox.with_backend(:local) do
+          step("parent.scoped") { volumes }
+          pid = fork
+          if pid.nil?
+            ENV["MSB_BACKEND"] = "cloud" # and no API key
+            raise "sentinel"
+          end
+          true
+        end
+      end
+      if pid.nil?
+        emit("child.block", left)
+        ok = left[:error] == "RuntimeError" && left[:message] == "sentinel"
+        ok &= step("child.kind") { Microsandbox.default_backend_kind.to_s }
+        ok &= step("child.list1") { volumes }
+        exit(ok ? 0 : 1)
+      end
+      emit("parent.close", left)
+      reap(pid) { step("parent.after") { volumes } }
     end
   }.freeze
 end

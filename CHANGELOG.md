@@ -20,7 +20,11 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   fresh backend the same way the parent's was chosen (`set_default_backend`,
   an enclosing `with_backend`, or the environment) and leaks the inherited one
   instead of destroying it; a `with_backend` block entered before the fork can
-  be left in the child. The tokio runtime, already rebuilt after a fork, now
+  be left in the child, and selecting a backend there works even when the
+  inherited choice no longer resolves. If the backend such a block should
+  restore cannot be chosen again in the child, the temporary backend stays
+  selected and an exception raised by the block is no longer replaced by the
+  restore failure (which is warned about instead). The tokio runtime, already rebuilt after a fork, now
   keeps its pointer and pid in one atomic cell, without the mutex a fork could
   capture locked. See the new "Forking" section of
   [docs/runtime.md](docs/runtime.md#forking-puma-resque-solid-queue) for what

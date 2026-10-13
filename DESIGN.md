@@ -171,8 +171,16 @@ pieces implement it, all keyed on the pid (`runtime::current_pid`):
   can still be closed in the child: closing it installs a backend rebuilt from
   how the saved one had been chosen. For the ladder this means the child
   resolves it again, from its own environment, at its first native call; if
-  that fails, the call raises the configuration error and the next call tries
-  again.
+  that fails, the call raises the configuration error, nothing is changed, and
+  the next call tries again. `set_default_backend` and a `with_backend` push
+  are the exception: they are about to replace the default anyway, so in a
+  child they take over with the backend they were asked for and never rebuild
+  the inherited selection — an explicit selection always gets a child out of
+  an inherited one that no longer resolves. Closing a scope always consumes
+  it: when the backend it should restore cannot be rebuilt in the child, the
+  temporary backend stays selected and the error is reported (by
+  `with_backend` as a warning when the block itself raised, so that the
+  block's exception is the one that propagates).
 - **`ForkGuarded<T>`** (`runtime.rs`). The payload of every `#[magnus::wrap]`
   type sits in one, tagged with the creating pid. `get()` is the only way to
   it for anything that acts on the value, and in another process it returns
