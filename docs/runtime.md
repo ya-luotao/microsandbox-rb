@@ -104,6 +104,91 @@ operations (create/start/stop/remove/get/list, one-shot exec, follow log
 streaming); unsupported operations raise `Microsandbox::UnsupportedError`
 (with `#operation` and `#hint`).
 
+## Forking (Puma, Resque, Solid Queue)
+
+Forking a process that has already used the SDK is supported: preload the
+application, use the SDK in the master, fork workers, use it in the workers.
+The first SDK call in a child sets up its own runtime threads and its own
+backend (a new catalog connection pool, or a new HTTP client for the cloud
+backend), chosen the same way as the parent's: an explicit
+`set_default_backend`, an enclosing `with_backend` block, or — when neither
+was used — the environment and config file as the child sees them at that
+call. Everything addressed by name works in the child from then on:
+`Sandbox.create`/`get`/`list`/`start`, `Volume`, `Image`, `Snapshot`.
+
+If the parent's choice cannot be made again in the child (say the child's
+environment now selects the cloud backend without credentials), SDK calls
+there raise the configuration error until that is repaired. Selecting a
+backend in the child — `set_default_backend`, or entering `with_backend` —
+does not depend on the inherited choice and works regardless.
+
+```ruby
+Microsandbox::Sandbox.list             # the parent has used the SDK
+
+pid = fork do
+  Microsandbox::Sandbox.create("job-#{Process.pid}", image: "alpine") do |sb|
+    puts sb.exec("echo", ["hello from the worker"]).stdout
+  end
+end
+Process.wait(pid)
+```
+
+What does **not** cross a fork is an object created before it. A `Sandbox`,
+`SandboxHandle`, `ExecHandle`, `ExecStdin`, `PullSession`, log/metrics/file
+stream, `SshClient`/`SftpClient`/`SshServer`, `AgentClient` or `VolumeFs`
+belongs to the process that created it. In a forked child, any call that acts
+on one raises `Microsandbox::ForkedHandleError` (the message names both
+pids); the original keeps working in the parent. Reading `name` or `id` — and
+the snapshot fields of a `SandboxHandle` — still works, so a child can open
+its own handle:
+
+```ruby
+sandbox = Microsandbox::Sandbox.create("shared", image: "alpine")
+
+pid = fork do
+  begin
+    sandbox.exec("true")                 # the parent's handle
+  rescue Microsandbox::ForkedHandleError => e
+    warn e.message
+  end
+  mine = Microsandbox::Sandbox.get(sandbox.name).connect_or_start
+  puts mine.exec("echo", ["hello"]).stdout
+end
+Process.wait(pid)
+sandbox.stop
+```
+
+Things to know:
+
+- **Cleanup code inherited by the child.** The block forms
+  (`Sandbox.create(...) { }`, `connect_or_create`) swallow the
+  `ForkedHandleError` their teardown hits when a forked child leaves the
+  block, so the child does not stop the parent's sandbox. An `ensure
+  sandbox.stop` of your own raises it in the child; rescue it there, or run
+  the cleanup only in the process that created the sandbox.
+- **Leaving a `with_backend` block in the child.** When the backend to
+  restore was the parent's — the child was forked inside the block, or the
+  block is the child's first use of the SDK — leaving the block installs a
+  backend chosen the way that one had been. The block's own temporary backend
+  is not needed for that: if only it can no longer be chosen in the child (a
+  cloud profile that is gone there), leaving the block still restores the
+  previous backend. If the choice to restore no longer resolves in the child,
+  the block is closed anyway and its temporary selection stays in effect.
+  `with_backend` then raises the configuration error — unless the block
+  itself raised, in which case the block's exception propagates and the
+  restore failure is reported as a warning.
+- **A child keeps the parent's sandboxes alive.** A child inherits the
+  parent's open file descriptors, among them the pipe through which a sandbox
+  notices that its owner is gone. If the parent exits while such a child is
+  still running, the sandbox is not torn down until that child exits as well.
+  Fork before creating sandboxes, or create them in the children.
+- **Do not fork while another thread is inside an SDK call.** That thread
+  does not exist in the child, and a lock it held at that instant stays
+  locked there.
+- **Memory.** A child leaks, once, the native state it inherited (the
+  parent's runtime, backend and whichever inherited handles it collects)
+  instead of destroying it — destroying it is what used to crash.
+
 ## One runtime line per home
 
 The runtime home (`MSB_HOME`, default `~/.microsandbox`) belongs to one

@@ -102,6 +102,14 @@ module Microsandbox
   define_error(:CloudHttpError, "cloud-http")
   define_error(:UnsupportedError, "unsupported")
 
+  # Process model ------------------------------------------------------------
+  # A handle (a Sandbox, a SandboxHandle, an ExecHandle, a stream, an SSH or
+  # agent client, a VolumeFs, ...) was used in a process forked from the one
+  # that created it. Handles are bound to their creating process; a forked
+  # child opens its own (`Sandbox.get(name).connect`, `Volume.fs(name)`, ...).
+  # The message names both pids. Ruby-only: no other SDK has a counterpart.
+  define_error(:ForkedHandleError, "forked-handle")
+
   # As of runtime v0.6.8 the core keys Unsupported errors by a structured
   # (operation, reason) pair. The native layer renders both into the message
   # ("sandbox.kill is not supported by this backend: ...") and also attaches

@@ -108,6 +108,7 @@ fn set_runtime_libkrunfw_path(path: String) {
 /// no async) — runs on the Ruby thread; resolves the path from the local
 /// backend's config.
 fn resolved_msb_path() -> Result<String, Error> {
+    backend::ensure_this_process_backend()?;
     let backend = microsandbox::default_backend();
     // Shim-only entry point with no SDK `Operation` — report the Ruby-facing
     // name (`Microsandbox.runtime_path`), like Python's name-based local_only.

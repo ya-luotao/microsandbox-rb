@@ -57,6 +57,9 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 - **Registries** — `registry_auth`/`registry_insecure`/`registry_ca_certs` on
   `create`.
 - **Errors** — the typed hierarchy in [errors.md](errors.md).
+- **Process model** — the SDK may be used before and after `fork`; objects
+  created before a fork are refused in the child with `ForkedHandleError`
+  (see [runtime.md](runtime.md#forking-puma-resque-solid-queue)).
 
 Create options span resources (`cpus`/`memory`/`max_cpus`/`max_memory`),
 `env`/`workdir`/`labels`/`user`/`hostname`/`shell`, named `scripts`, the image

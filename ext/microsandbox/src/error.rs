@@ -202,3 +202,21 @@ pub fn base_error(message: impl Into<String>) -> Error {
         Err(_) => Error::new(magnus::exception::runtime_error(), message),
     }
 }
+
+/// `Microsandbox::ForkedHandleError`: a handle created in process `born` was
+/// used in process `cur`, a fork descendant (see `runtime::ForkGuarded`).
+/// `class` is the Ruby class users know the handle by.
+#[allow(deprecated)]
+pub fn forked_handle(class: &str, born: u32, cur: u32) -> Error {
+    let message = format!(
+        "{class} was created in process {born} and cannot be used in forked process {cur}; \
+         create a new handle after fork (the original keeps working in process {born})"
+    );
+    match Ruby::get() {
+        Ok(ruby) => match exception_class(&ruby, "ForkedHandleError") {
+            Some(class) => Error::new(class, message),
+            None => Error::new(ruby.exception_runtime_error(), message),
+        },
+        Err(_) => Error::new(magnus::exception::runtime_error(), message),
+    }
+}

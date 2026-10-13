@@ -82,5 +82,34 @@ RSpec.describe "Microsandbox backend routing" do
       expect { Microsandbox.with_backend(:cloud) { :never } }
         .to raise_error(Microsandbox::InvalidConfigError)
     end
+
+    # The restore can only fail in a forked child (spec/unit/fork_safety_spec.rb
+    # drives that for real); the native pop is stubbed here to pin which
+    # exception the caller sees.
+    context "when restoring the previous backend fails" do
+      before do
+        allow(Microsandbox::Native).to receive(:push_default_backend).and_return(7)
+        allow(Microsandbox::Native).to receive(:pop_default_backend).with(7)
+          .and_raise(Microsandbox::InvalidConfigError, "the saved selection no longer resolves")
+      end
+
+      it "keeps the block's exception and only warns about the restore" do
+        expect {
+          expect { Microsandbox.with_backend(:local) { raise ArgumentError, "boom" } }
+            .to raise_error(ArgumentError, "boom")
+        }.to output("microsandbox: with_backend could not restore the previous backend: " \
+                    "the saved selection no longer resolves\n").to_stderr
+      end
+
+      it "raises the restore failure when the block succeeded" do
+        expect { Microsandbox.with_backend(:local) { :fine } }
+          .to raise_error(Microsandbox::InvalidConfigError, "the saved selection no longer resolves")
+      end
+
+      it "raises the restore failure when the block is left with break" do
+        expect { Microsandbox.with_backend(:local) { break } }
+          .to raise_error(Microsandbox::InvalidConfigError)
+      end
+    end
   end
 end

@@ -18,14 +18,14 @@ use microsandbox::MicrosandboxResult;
 use tokio::sync::Mutex;
 
 use crate::error;
-use crate::runtime::block_on;
+use crate::runtime::{block_on, ForkGuarded};
 use crate::sandbox::{log_entry_to_hash, metrics_to_hash};
 
 type BoxStream<T> = Pin<Box<dyn Stream<Item = MicrosandboxResult<T>> + Send>>;
 
 #[magnus::wrap(class = "Microsandbox::Native::LogStream", free_immediately, size)]
 pub struct LogStream {
-    inner: Arc<Mutex<BoxStream<LogEntry>>>,
+    inner: ForkGuarded<Arc<Mutex<BoxStream<LogEntry>>>>,
 }
 
 impl LogStream {
@@ -33,14 +33,17 @@ impl LogStream {
         stream: impl Stream<Item = MicrosandboxResult<LogEntry>> + Send + 'static,
     ) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Box::pin(stream))),
+            inner: ForkGuarded::new(
+                "Microsandbox::LogStream",
+                Arc::new(Mutex::new(Box::pin(stream))),
+            ),
         }
     }
 
     /// Next log entry as a Hash, or nil when the stream ends.
     fn recv(&self) -> Result<Option<RHash>, Error> {
         use futures::StreamExt;
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         match block_on(async move { inner.lock().await.next().await })? {
             Some(Ok(entry)) => Ok(Some(log_entry_to_hash(&entry))),
             Some(Err(e)) => Err(error::to_ruby(e)),
@@ -51,7 +54,7 @@ impl LogStream {
 
 #[magnus::wrap(class = "Microsandbox::Native::MetricsStream", free_immediately, size)]
 pub struct MetricsStream {
-    inner: Arc<Mutex<BoxStream<SandboxMetrics>>>,
+    inner: ForkGuarded<Arc<Mutex<BoxStream<SandboxMetrics>>>>,
 }
 
 impl MetricsStream {
@@ -59,14 +62,17 @@ impl MetricsStream {
         stream: impl Stream<Item = MicrosandboxResult<SandboxMetrics>> + Send + 'static,
     ) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Box::pin(stream))),
+            inner: ForkGuarded::new(
+                "Microsandbox::MetricsStream",
+                Arc::new(Mutex::new(Box::pin(stream))),
+            ),
         }
     }
 
     /// Next metrics snapshot as a Hash, or nil when the stream ends.
     fn recv(&self) -> Result<Option<RHash>, Error> {
         use futures::StreamExt;
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         match block_on(async move { inner.lock().await.next().await })? {
             Some(Ok(metrics)) => Ok(Some(metrics_to_hash(&metrics))),
             Some(Err(e)) => Err(error::to_ruby(e)),

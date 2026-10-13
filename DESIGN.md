@@ -135,6 +135,104 @@ operation after the acquisition.
 extension, driving it with a fake `msb` (`spec/support/fake_runtime/`) whose
 log shows whether a sandbox was stopped, dropped, or left attached.
 
+### Fork safety
+
+`fork(2)` copies only the calling thread. A child of a process that has used
+the SDK therefore inherits native state whose threads are gone: the tokio
+runtime (workers, I/O driver), the core's process-wide default backend (each
+SQLite connection of a `LocalBackend` is served by its own worker thread; a
+`CloudBackend`'s pooled connections belong to the parent's runtime), and every
+wrapped handle built on top of them. Using that state hangs or crashes — the
+child's first catalog read used to wait out the pool's 30 s acquire timeout on
+Linux and die with `SIGTRAP` on macOS — and so does *destroying* it, because
+the destructors wake the same missing threads (on macOS, replacing an
+inherited `LocalBackend` was enough to kill the child). One rule covers all of
+it: **inherited native state is never used and never dropped in the child. It
+is leaked, once per fork, and replaced by state built in the child.** Three
+pieces implement it, all keyed on the pid (`runtime::current_pid`):
+
+- **Runtime cell** (`runtime.rs`). The runtime and the pid it was built under
+  live in one heap cell behind one `AtomicPtr`. `runtime()` returns the cell's
+  runtime when its pid is ours; otherwise it builds a new cell and publishes
+  it with a compare-exchange (a loser of that race in the same process drops
+  its own, never-published runtime). There is no mutex, so nothing can be
+  inherited locked or poisoned, and no window in which pointer and pid
+  disagree. A cell built by a parent process is leaked: `Runtime`'s `Drop`
+  joins worker threads that do not exist.
+- **Backend generation** (`backend.rs`). The binding records how the default
+  backend was chosen — the core's own ladder (environment, profile, config
+  file), or an explicit `set_default_backend`/`with_backend` selection — and
+  the pid it belongs to. `ensure_this_process_backend` runs, with the GVL
+  held, at the start of every `block_on` and of every synchronous entry that
+  reads the backend. In a process whose pid differs from the recorded one it
+  builds a fresh backend from the record, swaps it into the core and
+  `mem::forget`s the inherited one, along with the backends that open
+  `with_backend` scopes had saved for their restore. A scope the parent opened
+  can still be closed in the child: closing it installs a backend rebuilt from
+  how the saved one had been chosen. For the ladder this means the child
+  resolves it again, from its own environment, at its first native call; if
+  that fails, the call raises the configuration error, nothing is changed, and
+  the next call tries again. `set_default_backend` and a `with_backend` push
+  are the exception: they are about to replace the default anyway, so in a
+  child they take over with the backend they were asked for and never rebuild
+  the inherited selection — an explicit selection always gets a child out of
+  an inherited one that no longer resolves. Closing a scope works the same
+  way: a child whose first use of the backend is leaving a block its parent
+  entered takes over directly with what the scope restores, so it never needs
+  the scope's temporary backend (which it may be unable to rebuild). Closing a
+  scope always consumes it: when the backend it should restore cannot be
+  rebuilt in the child, the scope's temporary selection stays in effect and
+  the error is reported (by `with_backend` as a warning when the block itself
+  raised, so that the block's exception is the one that propagates).
+- **`ForkGuarded<T>`** (`runtime.rs`). The payload of every `#[magnus::wrap]`
+  type sits in one, tagged with the creating pid. `get()` is the only way to
+  it for anything that acts on the value, and in another process it returns
+  `Microsandbox::ForkedHandleError` (there is no `Deref`, so an unchecked
+  access does not compile). Its `Drop` runs the payload's destructor only in
+  the creating process; a child that garbage-collects an inherited handle —
+  at the latest when it exits, since Ruby frees every wrapped object then —
+  leaks it. Accessors that only copy plain data out of the value (`name`,
+  `id`, the `SandboxHandle` snapshot fields, `ExecHandle#id`) skip the check
+  through `peek()`, so a child can still read the name it needs to open a
+  handle of its own.
+
+What a child leaks is bounded: one runtime, the inherited default backend, the
+saved backend of each open scope, and each inherited handle it collects; plus
+one backend for each parent-opened scope it closes.
+
+The mutexes involved (`backend.rs`) are only taken with the GVL held, and
+nothing that runs under them calls into Ruby or releases the GVL — Ruby
+exceptions are built after they are released. A Ruby-level `fork` needs the
+GVL, so a child never inherits one of them locked.
+
+Limits, by design:
+
+- **Inherited file descriptors.** A child inherits the parent's open fds,
+  including the parent-watchdog pipe of every sandbox the parent created.
+  While such a child lives, the runtime sees no EOF on that pipe when the
+  parent exits, so the sandbox is not torn down until the child exits too.
+- **Ownership.** A sandbox created before the fork belongs to the parent. The
+  child cannot act on it through the inherited handle; it can open its own by
+  name, with the usual ownership rules.
+- **Threads mid-call.** A thread that is inside a native call when another
+  thread forks (the GVL is released there) may hold a lock in the core at
+  that instant — for example the read guard of the core's default-backend
+  `RwLock`, for the few instructions of an `Arc` clone — and the child's swap
+  then waits on that inherited lock forever. The binding cannot close this
+  window. Forking while another thread is inside a call is unsupported, as
+  with any threaded native library.
+- **Other libraries.** The SDK no longer touches inherited state; code that
+  reaches it some other way can still hang or trap.
+- **Pid reuse.** Process identity is the pid. A descendant that ends up with
+  the pid of an ancestor whose state it inherited without any SDK use in
+  between would be mistaken for that ancestor. This needs the pid counter to
+  wrap onto exactly that value.
+
+`spec/unit/fork_safety_spec.rb` (catalog only, no runtime),
+`spec/fake_runtime/fork_safety_spec.rb` (a live handle over the fake `msb`)
+and `spec/integration/fork_safety_spec.rb` (a real microVM) pin the behaviour;
+each forks from a probe process of its own.
+
 ## Error mapping
 
 The core returns one big `MicrosandboxError` enum. `error.rs` maps each variant

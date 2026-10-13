@@ -8,6 +8,41 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Forking a process that has used the SDK no longer hangs or kills the
+  child.** A forked child inherited the parent's default backend, whose SQLite
+  worker threads (local) or pooled connections (cloud) do not exist in it: the
+  child's first catalog call waited out a 30 s pool timeout on Linux and then
+  raised a plain `Microsandbox::Error`, and on macOS the child died with
+  `SIGTRAP` — as it did when it merely selected a backend, because destroying
+  the inherited one traps too. The first SDK call in a child now builds a
+  fresh backend the same way the parent's was chosen (`set_default_backend`,
+  an enclosing `with_backend`, or the environment) and leaks the inherited one
+  instead of destroying it; a `with_backend` block entered before the fork can
+  be left in the child, and selecting a backend there works even when the
+  inherited choice no longer resolves. If the backend such a block should
+  restore cannot be chosen again in the child, the block's temporary selection
+  stays in effect and an exception raised by the block is no longer replaced
+  by the restore failure (which is warned about instead). The tokio runtime, already rebuilt after a fork, now
+  keeps its pointer and pid in one atomic cell, without the mutex a fork could
+  capture locked. See the new "Forking" section of
+  [docs/runtime.md](docs/runtime.md#forking-puma-resque-solid-queue) for what
+  is supported and what is not.
+- A handle created before a fork (`Sandbox`, `SandboxHandle`, `ExecHandle`,
+  streams, SSH and agent clients, `VolumeFs`, ...) is refused in the child
+  with `ForkedHandleError` instead of being driven on the parent's dead
+  runtime, and a child that garbage-collects one — at the latest when it
+  exits — no longer runs its destructor. `Sandbox#owns_lifecycle?` is refused
+  the same way; `name`, `id` and the `SandboxHandle` snapshot fields stay
+  readable.
+
+### Added
+
+- `Microsandbox::ForkedHandleError` (`#code` `"forked-handle"`), raised when a
+  handle is used in a process forked from the one that created it. The message
+  names both pids.
+
 ## [0.17.2] - 2026-10-12
 
 Gem-only fix and release-pipeline hardening release; the embedded runtime

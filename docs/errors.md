@@ -56,6 +56,7 @@ options) raises a plain `ArgumentError` before the native layer is reached.
 | `UnsupportedOperationError` | `unsupported-operation` | The runtime version does not support the operation |
 | `CloudHttpError` | `cloud-http` | Cloud backend HTTP failure |
 | `UnsupportedError` | `unsupported` | The selected backend does not implement the operation; carries `#operation` (e.g. `"sandbox.kill"`) and `#hint` |
+| `ForkedHandleError` | `forked-handle` | A handle was used in a process forked from the one that created it; open a new one in the child (see [runtime.md](runtime.md#forking-puma-resque-solid-queue)) |
 
 The snapshot classes go beyond the Python SDK (which collapses them into its
 base error) and match the Go SDK's per-variant coverage, so callers can rescue
