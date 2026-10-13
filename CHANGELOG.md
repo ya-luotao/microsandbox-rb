@@ -8,6 +8,14 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-10-13
+
+Gem-only fix release; the embedded runtime stays at **`v0.6.18`**. A process
+forked after the SDK was used — a Puma, Resque or Solid Queue worker — used to
+hang for 30 s on Linux, or die with `SIGTRAP` on macOS, on its first SDK call.
+The child's first SDK call now builds a fresh backend, and a handle created
+before the fork raises the new `ForkedHandleError` there instead of being used.
+
 ### Fixed
 
 - **Forking a process that has used the SDK no longer hangs or kills the
@@ -1505,7 +1513,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.3...HEAD
+[0.17.3]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.16.0...v0.17.0
