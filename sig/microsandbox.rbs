@@ -64,6 +64,7 @@ module Microsandbox
   class MetricsUnavailableError < Error end
   class UnsupportedOperationError < Error end
   class CloudHttpError < Error end
+  class ForkedHandleError < Error end
   class UnsupportedError < Error
     def operation: () -> String?
     def hint: () -> String?

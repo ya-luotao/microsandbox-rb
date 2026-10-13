@@ -16,23 +16,23 @@ use microsandbox::sandbox::{FsReadStream, FsWriteSink};
 use tokio::sync::Mutex;
 
 use crate::error;
-use crate::runtime::{block_on, ruby};
+use crate::runtime::{block_on, ruby, ForkGuarded};
 
 #[magnus::wrap(class = "Microsandbox::Native::FsReadStream", free_immediately, size)]
 pub struct FsReadStreamHandle {
-    inner: Arc<Mutex<FsReadStream>>,
+    inner: ForkGuarded<Arc<Mutex<FsReadStream>>>,
 }
 
 impl FsReadStreamHandle {
     pub fn new(stream: FsReadStream) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(stream)),
+            inner: ForkGuarded::new("Microsandbox::FsReadStream", Arc::new(Mutex::new(stream))),
         }
     }
 
     /// Next chunk of bytes (ASCII-8BIT), or nil at end of stream.
     fn recv(&self) -> Result<Option<RString>, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         match block_on(async move { inner.lock().await.recv().await })?.map_err(error::to_ruby)? {
             Some(bytes) => Ok(Some(ruby().str_from_slice(bytes.as_ref()))),
             None => Ok(None),
@@ -42,13 +42,16 @@ impl FsReadStreamHandle {
 
 #[magnus::wrap(class = "Microsandbox::Native::FsWriteSink", free_immediately, size)]
 pub struct FsWriteSinkHandle {
-    inner: Arc<Mutex<Option<FsWriteSink>>>,
+    inner: ForkGuarded<Arc<Mutex<Option<FsWriteSink>>>>,
 }
 
 impl FsWriteSinkHandle {
     pub fn new(sink: FsWriteSink) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Some(sink))),
+            inner: ForkGuarded::new(
+                "Microsandbox::FsWriteSink",
+                Arc::new(Mutex::new(Some(sink))),
+            ),
         }
     }
 
@@ -56,7 +59,7 @@ impl FsWriteSinkHandle {
     fn write(&self, data: RString) -> Result<(), Error> {
         // Copy out while the GVL is held (GC.compact could move the buffer).
         let bytes = unsafe { data.as_slice() }.to_vec();
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result = block_on(async move {
             let guard = inner.lock().await;
             match guard.as_ref() {
@@ -72,7 +75,7 @@ impl FsWriteSinkHandle {
 
     /// Flush and close the sink. Idempotent.
     fn close(&self) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         // Take AND close in ONE `block_on`. `block_on` returns `Err` when an
         // interrupt is delivered before it starts; as two calls, an interrupt
         // between them would drop the sink the first one took without ever

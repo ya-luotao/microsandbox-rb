@@ -41,6 +41,7 @@
 
 use std::ffi::c_void;
 use std::future::Future;
+use std::mem::ManuallyDrop;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -132,6 +133,69 @@ pub fn runtime() -> &'static Runtime {
                 observed = winner;
             }
         }
+    }
+}
+
+/// The Rust payload of a wrapped Ruby object, bound to the process that
+/// created it.
+///
+/// A handle that crosses a `fork(2)` is useless in the child and dangerous to
+/// destroy there: it owns tasks, channels and connections of the parent's
+/// runtime, clones of the parent's backend, the parent-watchdog pipe of a
+/// sandbox. So every `#[magnus::wrap]` type keeps its payload in one of these:
+///
+/// * [`get`](Self::get) — the only way to the payload for anything that acts
+///   on it — fails with `Microsandbox::ForkedHandleError` in any process other
+///   than the one that built the value. `Deref` is deliberately not
+///   implemented: an access that skips the check should not compile.
+/// * `Drop` runs the payload's destructor only in that same process. A forked
+///   child that garbage-collects an inherited handle — at the latest when it
+///   exits: Ruby frees every `T_DATA` object in `rb_objspace_call_finalizer` —
+///   leaks it instead.
+pub struct ForkGuarded<T> {
+    pid: u32,
+    /// The Ruby class users know the handle by, for the error message.
+    class: &'static str,
+    inner: ManuallyDrop<T>,
+}
+
+impl<T> ForkGuarded<T> {
+    pub fn new(class: &'static str, inner: T) -> Self {
+        Self {
+            pid: current_pid(),
+            class,
+            inner: ManuallyDrop::new(inner),
+        }
+    }
+
+    /// The payload, or `ForkedHandleError` when this is not the process that
+    /// created it.
+    pub fn get(&self) -> Result<&T, Error> {
+        let cur = current_pid();
+        if self.pid == cur {
+            Ok(&self.inner)
+        } else {
+            Err(error::forked_handle(self.class, self.pid, cur))
+        }
+    }
+
+    /// The payload without the process check — ONLY for accessors that copy
+    /// plain data out of the value's own memory (a name, an id, a cached
+    /// status). Those stay readable in a forked child, which needs e.g. the
+    /// name to open its own handle. Never use this for anything that takes a
+    /// lock, touches a file descriptor, or reaches the runtime or the backend.
+    pub fn peek(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<T> Drop for ForkGuarded<T> {
+    fn drop(&mut self) {
+        if self.pid == current_pid() {
+            // SAFETY: dropped exactly once, here; `inner` is not used again.
+            unsafe { ManuallyDrop::drop(&mut self.inner) };
+        }
+        // Otherwise: inherited across a fork. Leak it (see the type docs).
     }
 }
 

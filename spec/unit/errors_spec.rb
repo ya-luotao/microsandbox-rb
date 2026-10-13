@@ -39,7 +39,8 @@ RSpec.describe "Microsandbox error hierarchy" do
     "MetricsUnavailableError" => "metrics-unavailable",
     "UnsupportedOperationError" => "unsupported-operation",
     "CloudHttpError" => "cloud-http",
-    "UnsupportedError" => "unsupported"
+    "UnsupportedError" => "unsupported",
+    "ForkedHandleError" => "forked-handle"
   }
 
   expected_codes.each do |name, code|

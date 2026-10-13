@@ -21,7 +21,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::error;
-use crate::runtime::{block_on, ruby};
+use crate::runtime::{block_on, ruby, ForkGuarded};
 
 /// A core error for a session whose value was already taken (closed). Built
 /// inside `block_on`, so it must be a plain Rust error, not a Ruby one.
@@ -35,19 +35,19 @@ fn consumed() -> MicrosandboxError {
 
 #[magnus::wrap(class = "Microsandbox::Native::SshClient", free_immediately, size)]
 pub struct SshClient {
-    inner: Arc<Mutex<Option<CoreSshClient>>>,
+    inner: ForkGuarded<Arc<Mutex<Option<CoreSshClient>>>>,
 }
 
 impl SshClient {
     pub fn from_core(inner: CoreSshClient) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Some(inner))),
+            inner: ForkGuarded::new("Microsandbox::SshClient", Arc::new(Mutex::new(Some(inner)))),
         }
     }
 
     /// Run a command over SSH and collect {status, stdout, stderr}.
     fn exec(&self, command: String, tty: bool) -> Result<RHash, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: MicrosandboxResult<SshOutput> = block_on(async move {
             let guard = inner.lock().await;
             let client = guard.as_ref().ok_or_else(consumed)?;
@@ -59,7 +59,7 @@ impl SshClient {
     /// Attach the local terminal to an interactive SSH shell; returns the exit
     /// status. Host-TTY coupled (raw mode); not meaningful without a real tty.
     fn attach(&self, term: Option<String>, detach_keys: Option<String>) -> Result<i32, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: MicrosandboxResult<i32> = block_on(async move {
             let guard = inner.lock().await;
             let client = guard.as_ref().ok_or_else(consumed)?;
@@ -80,7 +80,7 @@ impl SshClient {
 
     /// Open an SFTP session over this SSH connection.
     fn sftp(&self) -> Result<SftpClient, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: MicrosandboxResult<CoreSftp> = block_on(async move {
             let guard = inner.lock().await;
             let client = guard.as_ref().ok_or_else(consumed)?;
@@ -91,7 +91,7 @@ impl SshClient {
 
     /// Close the SSH client session. Idempotent.
     fn close(&self) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: MicrosandboxResult<()> = block_on(async move {
             let client = {
                 let mut guard = inner.lock().await;
@@ -122,7 +122,7 @@ fn ssh_output_to_hash(output: SshOutput) -> RHash {
 
 #[magnus::wrap(class = "Microsandbox::Native::SftpClient", free_immediately, size)]
 pub struct SftpClient {
-    inner: Arc<Mutex<Option<CoreSftp>>>,
+    inner: ForkGuarded<Arc<Mutex<Option<CoreSftp>>>>,
 }
 
 /// Format an SFTP-layer error as a plain string inside `block_on`; the Ruby
@@ -134,12 +134,15 @@ fn sftp_str(e: impl std::fmt::Display) -> String {
 impl SftpClient {
     pub fn from_core(inner: CoreSftp) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Some(inner))),
+            inner: ForkGuarded::new(
+                "Microsandbox::SftpClient",
+                Arc::new(Mutex::new(Some(inner))),
+            ),
         }
     }
 
     fn read(&self, path: String) -> Result<RString, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<Vec<u8>, String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -150,7 +153,7 @@ impl SftpClient {
 
     fn write(&self, path: String, data: RString) -> Result<(), Error> {
         let bytes = unsafe { data.as_slice() }.to_vec();
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<(), String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -163,7 +166,7 @@ impl SftpClient {
     }
 
     fn mkdir(&self, path: String) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<(), String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -173,7 +176,7 @@ impl SftpClient {
     }
 
     fn remove_file(&self, path: String) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<(), String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -183,7 +186,7 @@ impl SftpClient {
     }
 
     fn remove_dir(&self, path: String) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<(), String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -193,7 +196,7 @@ impl SftpClient {
     }
 
     fn rename(&self, old_path: String, new_path: String) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<(), String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -203,7 +206,7 @@ impl SftpClient {
     }
 
     fn symlink(&self, target: String, link_path: String) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<(), String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -213,7 +216,7 @@ impl SftpClient {
     }
 
     fn real_path(&self, path: String) -> Result<String, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<String, String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -223,7 +226,7 @@ impl SftpClient {
     }
 
     fn read_link(&self, path: String) -> Result<String, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<String, String> = block_on(async move {
             let guard = inner.lock().await;
             let sftp = guard.as_ref().ok_or_else(|| sftp_str("session closed"))?;
@@ -233,7 +236,7 @@ impl SftpClient {
     }
 
     fn close(&self) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: Result<(), String> = block_on(async move {
             let sftp = {
                 let mut guard = inner.lock().await;
@@ -254,19 +257,19 @@ impl SftpClient {
 
 #[magnus::wrap(class = "Microsandbox::Native::SshServer", free_immediately, size)]
 pub struct SshServer {
-    inner: Arc<Mutex<Option<CoreSshServer>>>,
+    inner: ForkGuarded<Arc<Mutex<Option<CoreSshServer>>>>,
 }
 
 impl SshServer {
     pub fn from_core(inner: CoreSshServer) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Some(inner))),
+            inner: ForkGuarded::new("Microsandbox::SshServer", Arc::new(Mutex::new(Some(inner)))),
         }
     }
 
     /// Serve one SSH connection over this process's stdin/stdout.
     fn serve_connection(&self) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let result: MicrosandboxResult<()> = block_on(async move {
             let server = {
                 let guard = inner.lock().await;
@@ -282,7 +285,7 @@ impl SshServer {
 
     /// Release the prepared server endpoint. Idempotent.
     fn close(&self) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         block_on(async move {
             inner.lock().await.take();
         })?;

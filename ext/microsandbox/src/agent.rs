@@ -14,7 +14,7 @@ use microsandbox::agent::AgentClient as CoreAgentClient;
 use microsandbox::{AgentBridge, BridgeFrame, MicrosandboxError};
 
 use crate::error;
-use crate::runtime::{block_on, ruby};
+use crate::runtime::{block_on, ruby, ForkGuarded};
 
 /// Map an agent-client error onto the Ruby exception hierarchy (via the core
 /// `MicrosandboxError::AgentClient` wrapper, exactly like the Python binding).
@@ -24,13 +24,13 @@ fn to_ruby_agent(err: microsandbox::AgentClientError) -> Error {
 
 #[magnus::wrap(class = "Microsandbox::Native::AgentClient", free_immediately, size)]
 pub struct AgentClient {
-    inner: Arc<AgentBridge>,
+    inner: ForkGuarded<Arc<AgentBridge>>,
 }
 
 impl AgentClient {
     fn from_bridge(bridge: AgentBridge) -> Self {
         Self {
-            inner: Arc::new(bridge),
+            inner: ForkGuarded::new("Microsandbox::AgentClient", Arc::new(bridge)),
         }
     }
 
@@ -74,7 +74,7 @@ impl AgentClient {
     /// Send one frame and await a single response frame ({id, flags, body}).
     fn request(&self, flags: u8, body: RString) -> Result<RHash, Error> {
         let body = unsafe { body.as_slice() }.to_vec();
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let frame =
             block_on(async move { inner.request(flags, body).await })?.map_err(to_ruby_agent)?;
         Ok(frame_to_hash(frame))
@@ -83,7 +83,7 @@ impl AgentClient {
     /// Open a streaming session; returns {id, handle}.
     fn stream_open(&self, flags: u8, body: RString) -> Result<RHash, Error> {
         let body = unsafe { body.as_slice() }.to_vec();
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let (id, handle) = block_on(async move { inner.stream_open(flags, body).await })?
             .map_err(to_ruby_agent)?;
         let hash = ruby().hash_new();
@@ -94,7 +94,7 @@ impl AgentClient {
 
     /// Pull the next frame from a stream; nil at end-of-stream.
     fn stream_next(&self, handle: u64) -> Result<Option<RHash>, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         let frame =
             block_on(async move { inner.stream_next(handle).await })?.map_err(to_ruby_agent)?;
         Ok(frame.map(frame_to_hash))
@@ -102,7 +102,7 @@ impl AgentClient {
 
     /// Close a stream handle. Idempotent.
     fn stream_close(&self, handle: u64) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         block_on(async move { inner.stream_close(handle).await })?;
         Ok(())
     }
@@ -110,19 +110,19 @@ impl AgentClient {
     /// Send a follow-up frame on an existing correlation id.
     fn send(&self, id: u32, flags: u8, body: RString) -> Result<(), Error> {
         let body = unsafe { body.as_slice() }.to_vec();
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         block_on(async move { inner.send(id, flags, body).await })?.map_err(to_ruby_agent)
     }
 
     /// Cached handshake `core.ready` frame body bytes (CBOR).
     fn ready_bytes(&self) -> Result<RString, Error> {
-        let bytes = self.inner.ready_bytes().map_err(to_ruby_agent)?;
+        let bytes = self.inner.get()?.ready_bytes().map_err(to_ruby_agent)?;
         Ok(ruby().str_from_slice(&bytes))
     }
 
     /// Close the connection. Idempotent.
     fn close(&self) -> Result<(), Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(self.inner.get()?);
         block_on(async move { inner.close().await })?;
         Ok(())
     }

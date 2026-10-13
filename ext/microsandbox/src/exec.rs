@@ -12,14 +12,20 @@ use magnus::{method, prelude::*, Error, RHash, RModule, RString, Ruby};
 use tokio::sync::Mutex;
 
 use crate::error;
-use crate::runtime::{block_on, ruby};
+use crate::runtime::{block_on, ruby, ForkGuarded};
 
 #[magnus::wrap(class = "Microsandbox::Native::ExecHandle", free_immediately, size)]
 pub struct ExecHandle {
-    inner: Arc<Mutex<microsandbox::ExecHandle>>,
+    inner: ForkGuarded<ExecParts>,
+    /// Plain data, readable in any process.
+    id: String,
+}
+
+/// Everything of an exec session that is bound to the creating process.
+struct ExecParts {
+    handle: Arc<Mutex<microsandbox::ExecHandle>>,
     control: microsandbox::ExecControl,
     stdin: std::sync::Mutex<Option<Arc<microsandbox::sandbox::exec::ExecSink>>>,
-    id: String,
 }
 
 impl ExecHandle {
@@ -29,9 +35,14 @@ impl ExecHandle {
         let control = handle.control();
         let stdin = handle.take_stdin().map(Arc::new);
         Self {
-            inner: Arc::new(Mutex::new(handle)),
-            control,
-            stdin: std::sync::Mutex::new(stdin),
+            inner: ForkGuarded::new(
+                "Microsandbox::ExecHandle",
+                ExecParts {
+                    handle: Arc::new(Mutex::new(handle)),
+                    control,
+                    stdin: std::sync::Mutex::new(stdin),
+                },
+            ),
             id,
         }
     }
@@ -42,14 +53,14 @@ impl ExecHandle {
 
     /// Next event as a Hash, or nil when the stream ends.
     fn recv(&self) -> Result<Option<RHash>, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(&self.inner.get()?.handle);
         let event = block_on(async move { inner.lock().await.recv().await })?;
         Ok(event.map(exec_event_to_hash))
     }
 
     /// Block until exit; returns {exit_code, success}.
     fn wait(&self) -> Result<RHash, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(&self.inner.get()?.handle);
         let status =
             block_on(async move { inner.lock().await.wait().await })?.map_err(error::to_ruby)?;
         let hash = ruby().hash_new();
@@ -60,46 +71,49 @@ impl ExecHandle {
 
     /// Drain the stream and return a collected exec-output Hash.
     fn collect(&self) -> Result<RHash, Error> {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::clone(&self.inner.get()?.handle);
         let output =
             block_on(async move { inner.lock().await.collect().await })?.map_err(error::to_ruby)?;
         crate::sandbox::exec_output_to_hash(output)
     }
 
     fn signal(&self, sig: i32) -> Result<(), Error> {
-        block_on(self.control.signal(sig))?.map_err(error::to_ruby)
+        block_on(self.inner.get()?.control.signal(sig))?.map_err(error::to_ruby)
     }
 
     fn kill(&self) -> Result<(), Error> {
-        block_on(self.control.kill())?.map_err(error::to_ruby)
+        block_on(self.inner.get()?.control.kill())?.map_err(error::to_ruby)
     }
 
     fn resize(&self, rows: u16, cols: u16) -> Result<(), Error> {
-        block_on(self.control.resize(rows, cols))?.map_err(error::to_ruby)
+        block_on(self.inner.get()?.control.resize(rows, cols))?.map_err(error::to_ruby)
     }
 
     /// The stdin sink (only the first call returns it; nil afterwards or if
     /// stdin was not piped).
-    fn take_stdin(&self) -> Option<ExecSink> {
-        let mut guard = self.stdin.lock().expect("exec stdin mutex poisoned");
-        guard.take().map(|sink| ExecSink { inner: sink })
+    fn take_stdin(&self) -> Result<Option<ExecSink>, Error> {
+        let parts = self.inner.get()?;
+        let mut guard = parts.stdin.lock().expect("exec stdin mutex poisoned");
+        Ok(guard.take().map(|sink| ExecSink {
+            inner: ForkGuarded::new("Microsandbox::ExecStdin", sink),
+        }))
     }
 }
 
 #[magnus::wrap(class = "Microsandbox::Native::ExecSink", free_immediately, size)]
 pub struct ExecSink {
-    inner: Arc<microsandbox::sandbox::exec::ExecSink>,
+    inner: ForkGuarded<Arc<microsandbox::sandbox::exec::ExecSink>>,
 }
 
 impl ExecSink {
     fn write(&self, data: RString) -> Result<(), Error> {
         // Copy out while holding the GVL (see sandbox::fs_write for the rationale).
         let bytes = unsafe { data.as_slice() }.to_vec();
-        block_on(self.inner.write(&bytes))?.map_err(error::to_ruby)
+        block_on(self.inner.get()?.write(&bytes))?.map_err(error::to_ruby)
     }
 
     fn close(&self) -> Result<(), Error> {
-        block_on(self.inner.close())?.map_err(error::to_ruby)
+        block_on(self.inner.get()?.close())?.map_err(error::to_ruby)
     }
 }
 
