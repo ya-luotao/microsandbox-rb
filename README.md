@@ -167,7 +167,7 @@ See [docs/observability.md](docs/observability.md).
 | Guest filesystem, streaming reads/writes, host copies | [docs/filesystem.md](docs/filesystem.md) |
 | Metrics, logs, `ping`/`touch`, live `modify` plans | [docs/observability.md](docs/observability.md) |
 | Image cache, private registries, snapshots | [docs/images.md](docs/images.md) |
-| Runtime binaries gem, `msb` resolution order, backends, environment variables | [docs/runtime.md](docs/runtime.md) |
+| Runtime binaries gem, `msb` resolution order, backends, forking, environment variables | [docs/runtime.md](docs/runtime.md) |
 | Error classes and stable codes | [docs/errors.md](docs/errors.md) |
 | Complete supported surface and what is not yet exposed | [docs/surface.md](docs/surface.md) |
 | Release process, release preflight, binaries gems | [docs/releasing.md](docs/releasing.md) |
