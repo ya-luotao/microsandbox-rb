@@ -323,12 +323,17 @@ where
 
 /// Drive a future to completion on the shared runtime with the GVL released.
 ///
-/// `Err` means the future was never polled (see [`nogvl`]); propagate it with
-/// `?` before looking at the future's own output:
+/// `Err` means the future was never polled (see [`nogvl`], and the fork check
+/// below); propagate it with `?` before looking at the future's own output:
 /// `block_on(fut)?.map_err(error::to_ruby)?`.
 pub fn block_on<F>(fut: F) -> Result<F::Output, Error>
 where
     F: Future,
 {
+    // Many core operations resolve the process-wide default backend while they
+    // run. After a fork that backend is the parent's; replace it now, while we
+    // still hold the GVL (the check takes a mutex and may build a Ruby
+    // exception — neither is allowed once the GVL is released).
+    crate::backend::ensure_this_process_backend()?;
     nogvl(|| runtime().block_on(fut))
 }

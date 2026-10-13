@@ -140,10 +140,13 @@ fn list_dir(dir: String) -> Result<RArray, Error> {
 fn reindex(dir: Option<String>) -> Result<u64, Error> {
     let dir: PathBuf = match dir {
         Some(d) => PathBuf::from(d),
-        None => microsandbox::default_backend()
-            .as_local()
-            .map(|l| l.snapshots_dir())
-            .unwrap_or_else(|| PathBuf::from(".")),
+        None => {
+            crate::backend::ensure_this_process_backend()?;
+            microsandbox::default_backend()
+                .as_local()
+                .map(|l| l.snapshots_dir())
+                .unwrap_or_else(|| PathBuf::from("."))
+        }
     };
     let n = block_on(Snapshot::reindex(&dir))?.map_err(error::to_ruby)?;
     Ok(n as u64)

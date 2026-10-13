@@ -60,6 +60,9 @@ impl AgentClient {
 
     /// Resolve a sandbox's agent relay socket path without connecting.
     fn socket_path(name: String) -> Result<String, Error> {
+        // Synchronous, and the core derives the path from the default
+        // backend's config.
+        crate::backend::ensure_this_process_backend()?;
         let path = CoreAgentClient::socket_path(&name).map_err(error::to_ruby)?;
         Ok(path.to_string_lossy().into_owned())
     }

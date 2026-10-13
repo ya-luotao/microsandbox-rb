@@ -138,6 +138,7 @@ impl VolumeFs {
     /// trait, which yields precise per-operation `Unsupported` errors on
     /// backends that can't serve it — no local-only downcast needed here.
     fn for_volume(name: String) -> Result<VolumeFs, Error> {
+        crate::backend::ensure_this_process_backend()?;
         Ok(VolumeFs {
             backend: microsandbox::default_backend(),
             name,

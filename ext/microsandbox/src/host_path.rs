@@ -47,10 +47,11 @@ pub struct HostPaths {
 
 impl HostPaths {
     /// Capture which backend the create call is about to dispatch to.
-    pub fn for_default_backend() -> Self {
-        Self {
+    pub fn for_default_backend() -> Result<Self, Error> {
+        crate::backend::ensure_this_process_backend()?;
+        Ok(Self {
             local: matches!(microsandbox::default_backend().kind(), BackendKind::Local),
-        }
+        })
     }
 
     /// Anchor a relative host path to the current directory. Absolute paths

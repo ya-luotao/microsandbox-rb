@@ -76,10 +76,13 @@ impl Sandbox {
     /// Build a configured `SandboxBuilder` from a string-keyed options Hash.
     /// Shared by `create` (blocking) and `create_with_progress` (streaming pull).
     fn build_builder(name: String, opts: RHash) -> Result<SandboxBuilder, Error> {
+        // `Sandbox::builder` reads the default backend synchronously (it
+        // overlays the local backend's global config), before any `block_on`.
+        crate::backend::ensure_this_process_backend()?;
         let mut b = microsandbox::Sandbox::builder(name);
         // Relative host paths are anchored to the current directory here, once,
         // before the core persists them (see host_path.rs).
-        let host_paths = HostPaths::for_default_backend();
+        let host_paths = HostPaths::for_default_backend()?;
 
         if let Some(v) = conv::opt_string(opts, "image")? {
             if let Some(fstype) = conv::opt_string(opts, "fstype")? {
