@@ -195,6 +195,19 @@ RSpec.describe "fork safety (subprocess)" do
   # that served it (see WireCapture::KeepAliveCloudApi), so the examples assert
   # on which connection, with which API key, each process was answered.
   describe "with a cloud backend" do
+    # macOS only: building an HTTP client in a forked child kills the child,
+    # inside the system frameworks, before any request is made (DESIGN.md,
+    # "Fork safety", "Limits, by design"). Linux runs these examples.
+    before do
+      if RbConfig::CONFIG["host_os"].include?("darwin")
+        skip "macOS: a forked child (without exec) cannot use the system frameworks behind " \
+          "network and credential work — reqwest's client build runs the SystemConfiguration " \
+          "proxy lookup (SCDynamicStoreCopyProxies), the registry-credential lookup reads the " \
+          "Keychain — and the child dies (SIGSEGV/SIGABRT). See DESIGN.md, Fork safety, " \
+          "\"Limits, by design\" (macOS system frameworks)"
+      end
+    end
+
     # The probe's environment: the fake API's URL, and no ambient proxy
     # (reqwest reads the proxy variables whenever a client is built, in the
     # child too), so loopback is reached directly.
