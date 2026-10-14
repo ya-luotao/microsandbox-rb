@@ -16,14 +16,14 @@
 //! matching Python and Node.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use magnus::{function, prelude::*, Error, RModule, Ruby};
 use microsandbox::{Backend, MicrosandboxError, Operation};
 
 use crate::error;
-use crate::runtime::{block_on, current_pid};
+use crate::runtime::{block_on, ProcessIdentity};
 
 /// Resolve the ambient default backend, requiring it to be local.
 ///
@@ -99,7 +99,7 @@ fn build_backend(
 }
 
 //--------------------------------------------------------------------------------------------------
-// Fork safety: the backend generation
+// Fork safety: the backend record
 //--------------------------------------------------------------------------------------------------
 //
 // `fork(2)` copies only the calling thread. A child of a process that used the
@@ -114,7 +114,7 @@ fn build_backend(
 // So the child never touches what it inherited: the first native call after a
 // fork builds a fresh backend the same way the inherited one was chosen and
 // swaps it in, and every inherited `Arc` is `mem::forget`-ed — leaked once per
-// fork generation — instead of dropped.
+// forked process — instead of dropped.
 //
 // Locking. The three mutexes below are only ever taken on a Ruby thread that
 // holds the GVL, and nothing that runs while one is held calls into Ruby or
@@ -158,9 +158,11 @@ impl Selection {
 
 static SELECTION: Mutex<Selection> = Mutex::new(Selection::Ladder);
 
-/// The pid of the process whose default backend the core currently holds.
-/// 0 = no native operation has touched the backend in this process lineage.
-static BACKEND_PID: AtomicU32 = AtomicU32::new(0);
+/// The identity of the process whose default backend the core currently holds
+/// ([`ProcessIdentity::to_bits`]: pid and fork generation in one word, so it
+/// is read and written whole). 0 = no native operation has touched the
+/// backend in this process lineage.
+static BACKEND_OWNER: AtomicU64 = AtomicU64::new(0);
 
 static REBUILD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -183,7 +185,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// above).
 pub fn ensure_this_process_backend() -> Result<(), Error> {
     // The Ruby exception is built here, after the locks are released.
-    adopt_backend(current_pid(), None)
+    adopt_backend(ProcessIdentity::current(), None)
         .map(|_| ())
         .map_err(error::to_ruby)
 }
@@ -204,23 +206,24 @@ pub fn ensure_this_process_backend() -> Result<(), Error> {
 /// Returns `Some(inherited selection)` when `replacement` was installed here
 /// (the caller has nothing left to install), `None` when the caller proceeds
 /// as in any process that already owns its backend. On an error nothing has
-/// changed, `BACKEND_PID` included, so the next call tries again.
+/// changed, `BACKEND_OWNER` included, so the next call tries again.
 fn adopt_backend(
-    cur: u32,
+    cur: ProcessIdentity,
     replacement: Option<&Selection>,
 ) -> Result<Option<Selection>, MicrosandboxError> {
-    if BACKEND_PID.load(Ordering::Acquire) == cur {
+    let cur_bits = cur.to_bits();
+    if BACKEND_OWNER.load(Ordering::Acquire) == cur_bits {
         return Ok(None);
     }
     let _rebuild = lock(&REBUILD_LOCK);
-    let seen = BACKEND_PID.load(Ordering::Acquire);
-    if seen == cur {
+    let seen = BACKEND_OWNER.load(Ordering::Acquire);
+    if seen == cur_bits {
         return Ok(None);
     }
     if seen == 0 {
         // Nothing was inherited; the core resolves its default lazily, in this
         // process, on first use.
-        BACKEND_PID.store(cur, Ordering::Release);
+        BACKEND_OWNER.store(cur_bits, Ordering::Release);
         return Ok(None);
     }
 
@@ -233,14 +236,14 @@ fn adopt_backend(
     // The inherited default must never be dropped (see above).
     std::mem::forget(microsandbox::swap_default_backend(fresh));
     // Neither may the backends that open `with_backend` scopes saved for their
-    // restore. The entries themselves stay — pid and selection — so a scope
+    // restore. The entries themselves stay — owner and selection — so a scope
     // the parent opened can still be closed here (see `pop_default_backend`).
     for scope in lock(backend_scopes()).values_mut() {
         std::mem::forget(scope.previous.take());
     }
     let inherited =
         replacement.map(|selection| std::mem::replace(&mut *lock(&SELECTION), selection.clone()));
-    BACKEND_PID.store(cur, Ordering::Release);
+    BACKEND_OWNER.store(cur_bits, Ordering::Release);
     Ok(inherited)
 }
 
@@ -261,7 +264,7 @@ fn set_default_backend(
     // A forked child that starts by selecting a backend: the inherited default
     // is forgotten and this selection installed in its place, without ever
     // rebuilding the inherited one.
-    if adopt_backend(current_pid(), Some(&selection))
+    if adopt_backend(ProcessIdentity::current(), Some(&selection))
         .map_err(error::to_ruby)?
         .is_some()
     {
@@ -283,7 +286,7 @@ static BACKEND_SCOPES: OnceLock<Mutex<HashMap<u32, Scope>>> = OnceLock::new();
 /// What an open `with_backend` scope restores when it closes.
 struct Scope {
     /// The process that opened the scope.
-    pid: u32,
+    owner: ProcessIdentity,
     /// The backend that was the default before the push, kept to be put back
     /// by a pop in the same process. `None` when there is no such backend of
     /// this process's own: a forked child took it out to leak it, or the push
@@ -308,7 +311,7 @@ fn push_default_backend(
     api_key: Option<String>,
     profile: Option<String>,
 ) -> Result<u32, Error> {
-    let cur = current_pid();
+    let cur = ProcessIdentity::current();
     let selection = Selection::Explicit {
         kind,
         url,
@@ -332,7 +335,7 @@ fn push_default_backend(
     lock(backend_scopes()).insert(
         token,
         Scope {
-            pid: cur,
+            owner: cur,
             previous,
             selection: before,
         },
@@ -352,7 +355,7 @@ fn push_default_backend(
 /// is a state the caller can describe and leave with `set_default_backend`;
 /// a token nobody can retry (`with_backend` never hands it out) would not be.
 fn pop_default_backend(token: u32) -> Result<(), Error> {
-    let cur = current_pid();
+    let cur = ProcessIdentity::current();
     // (The registry lock is not held while an exception is built.)
     let Some(scope) = lock(backend_scopes()).remove(&token) else {
         return Err(error::base_error("unknown backend scope token"));
@@ -384,7 +387,7 @@ fn pop_default_backend(token: u32) -> Result<(), Error> {
 
     match scope.previous {
         // Opened and closed in the same process: put the saved backend back.
-        Some(previous) if scope.pid == cur => microsandbox::set_default_backend(previous),
+        Some(previous) if scope.owner == cur => microsandbox::set_default_backend(previous),
         // No backend of this process's own was saved (see `Scope::previous`):
         // restore one built here from how the saved one had been chosen. On
         // failure the temporary backend stays installed (see above). The
@@ -393,8 +396,9 @@ fn pop_default_backend(token: u32) -> Result<(), Error> {
         // forked child ever drops a backend it might have inherited. That
         // leaks at most one backend per scope closed this way.
         previous => {
-            // `None` unless the pid of the process that opened the scope was
-            // reused; an inherited `Arc` is leaked either way.
+            // Always `None` here: a process that is not the scope's opener
+            // took the saved backend out when it adopted (`adopt_backend`).
+            // An inherited `Arc` would be leaked either way.
             std::mem::forget(previous);
             let fresh = scope.selection.build().map_err(error::to_ruby)?;
             std::mem::forget(microsandbox::swap_default_backend(fresh));

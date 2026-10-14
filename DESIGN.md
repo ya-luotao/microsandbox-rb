@@ -164,27 +164,62 @@ Linux and die with `SIGTRAP` on macOS — and so does *destroying* it, because
 the destructors wake the same missing threads (on macOS, replacing an
 inherited `LocalBackend` was enough to kill the child). One rule covers all of
 it: **inherited native state is never used and never dropped in the child. It
-is leaked, once per fork, and replaced by state built in the child.** Three
-pieces implement it, all keyed on the pid (`runtime::current_pid`):
+is leaked, once per fork, and replaced by state built in the child.**
 
-- **Runtime cell** (`runtime.rs`). The runtime and the pid it was built under
-  live in one heap cell behind one `AtomicPtr`. `runtime()` returns the cell's
-  runtime when its pid is ours; otherwise it builds a new cell and publishes
-  it with a compare-exchange (a loser of that race in the same process drops
-  its own, never-published runtime). There is no mutex, so nothing can be
-  inherited locked or poisoned, and no window in which pointer and pid
-  disagree. A cell built by a parent process is leaked: `Runtime`'s `Drop`
-  joins worker threads that do not exist.
-- **Backend generation** (`backend.rs`). The binding records how the default
+That needs a reliable answer to "was this built by the process I am?". The
+binding's answer is a **process identity** (`runtime::ProcessIdentity`): the
+pid together with a *fork generation*. At extension load the binding
+registers a `pthread_atfork` child handler whose only work is one atomic
+increment of a counter; the child inherits its parent's counter as plain
+memory, and the handler, running in the child before `fork` returns there,
+makes it one higher. `Kernel#fork` calls libc's `fork`, which runs atfork
+handlers on Linux and macOS, so a child, grandchild, … of the loading process
+has generation 1, 2, …, whatever its pid. Everything the binding builds is
+tagged with the identity of the process that built it, and two identities
+are equal only when both halves are:
+
+- the generation tells apart a descendant that was handed an ancestor's pid
+  again by the kernel (the pid counter wrapped onto exactly that value)
+  without any SDK call in between — pid alone would take it for the
+  ancestor;
+- the pid tells apart a process created without running atfork handlers
+  (`vfork`, a raw `clone`), whose generation equals its parent's.
+
+The handler is async-signal-safe (a lock-free atomic add, no allocation, no
+lock, no Ruby), as a child handler must be; `Relaxed` ordering suffices
+because the forked child is single-threaded until it starts threads, which
+see the counter through the spawn's own synchronization. Handlers cannot be
+unregistered, and Ruby never unloads an extension, so the handler stays
+valid for the life of the process. Should registration fail (`ENOMEM`), the
+generation stays 0 and the identity is effectively the pid alone.
+Three spec-only diagnostics on `Native` expose it: `fork_generation` returns
+the counter, and `fork_identity_equal` / `fork_identity_guard` run the real
+comparisons (`==`, the packed backend word, a handle's ownership check) on
+identities a spec chooses — the only way to pin that both halves decide,
+since a real fork changes both and pid reuse cannot be staged
+(`spec/unit/fork_identity_spec.rb`).
+
+Three pieces use the identity:
+
+- **Runtime cell** (`runtime.rs`). The runtime and the identity of the process
+  that built it live in one heap cell behind one `AtomicPtr`. `runtime()`
+  returns the cell's runtime when that identity is ours; otherwise it builds a
+  new cell and publishes it with a compare-exchange (a loser of that race in
+  the same process drops its own, never-published runtime). There is no mutex,
+  so nothing can be inherited locked or poisoned, and no window in which
+  pointer and identity disagree. A cell built by a parent process is leaked:
+  `Runtime`'s `Drop` joins worker threads that do not exist.
+- **Backend record** (`backend.rs`). The binding records how the default
   backend was chosen — the core's own ladder (environment, profile, config
   file), or an explicit `set_default_backend`/`with_backend` selection — and
-  the pid it belongs to. `ensure_this_process_backend` runs, with the GVL
-  held, at the start of every `block_on` and of every synchronous entry that
-  reads the backend. The one exception is the runtime installer
+  the identity of the process it belongs to (one `AtomicU64`, pid and
+  generation, written and read whole). `ensure_this_process_backend` runs,
+  with the GVL held, at the start of every `block_on` and of every synchronous
+  entry that reads the backend. The one exception is the runtime installer
   (`Native.install`, `Native.setup`): it never reads the backend, so it runs
   through `block_on_runtime_install`, which skips the check, and a child that
   installs leaves the record alone for its first call that does use the
-  backend. In a process whose pid differs from the recorded one it
+  backend. In a process whose identity differs from the recorded one it
   builds a fresh backend from the record, swaps it into the core and
   `mem::forget`s the inherited one, along with the backends that open
   `with_backend` scopes had saved for their restore. A scope the parent opened
@@ -205,16 +240,18 @@ pieces implement it, all keyed on the pid (`runtime::current_pid`):
   the error is reported (by `with_backend` as a warning when the block itself
   raised, so that the block's exception is the one that propagates).
 - **`ForkGuarded<T>`** (`runtime.rs`). The payload of every `#[magnus::wrap]`
-  type sits in one, tagged with the creating pid. `get()` is the only way to
-  it for anything that acts on the value, and in another process it returns
-  `Microsandbox::ForkedHandleError` (there is no `Deref`, so an unchecked
-  access does not compile). Its `Drop` runs the payload's destructor only in
-  the creating process; a child that garbage-collects an inherited handle —
-  at the latest when it exits, since Ruby frees every wrapped object then —
-  leaks it. Accessors that only copy plain data out of the value (`name`,
-  `id`, the `SandboxHandle` snapshot fields, `ExecHandle#id`) skip the check
-  through `peek()`, so a child can still read the name it needs to open a
-  handle of its own.
+  type sits in one, tagged with the identity of the creating process. `get()`
+  is the only way to it for anything that acts on the value, and in another
+  process it returns `Microsandbox::ForkedHandleError` (there is no `Deref`,
+  so an unchecked access does not compile). The message names the creating pid
+  and the current one; when they are equal — a reused pid — it says so rather
+  than naming the same pid twice as two processes. Its `Drop` runs the
+  payload's destructor only in the creating process; a child that
+  garbage-collects an inherited handle — at the latest when it exits, since
+  Ruby frees every wrapped object then — leaks it. Accessors that only copy
+  plain data out of the value (`name`, `id`, the `SandboxHandle` snapshot
+  fields, `ExecHandle#id`) skip the check through `peek()`, so a child can
+  still read the name it needs to open a handle of its own.
 
 What a child leaks is bounded: one runtime; once it uses the backend, the
 inherited default backend and the saved backend of each open scope; each
@@ -276,10 +313,13 @@ Limits, by design:
   was not forked — the parent before it forks, or a fresh one
   (`Process.spawn`, or `fork` followed by `exec`) — for example, pull the
   images the workers need in the master before forking them.
-- **Pid reuse.** Process identity is the pid. A descendant that ends up with
-  the pid of an ancestor whose state it inherited without any SDK use in
-  between would be mistaken for that ancestor. This needs the pid counter to
-  wrap onto exactly that value.
+- **Forks that skip atfork handlers.** A process created with `vfork` or a
+  raw `clone` keeps its parent's generation, so only its pid identifies it.
+  Ruby itself never forks that way — `Kernel#fork` runs the handlers, and
+  `spawn`/`system` `exec` at once, which discards all of this state — so
+  mistaking such a process for its ancestor needs a native library that
+  clones without the handlers and then runs Ruby, together with exact pid
+  reuse.
 
 `spec/unit/fork_safety_spec.rb` (catalog only, no runtime),
 `spec/fake_runtime/fork_safety_spec.rb` (a live handle over the fake `msb`)

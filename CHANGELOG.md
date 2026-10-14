@@ -31,6 +31,16 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   the backend alone; the child's first call that uses it takes it over, as
   before.
 
+- **Fork safety no longer identifies a process by its pid alone.** A forked
+  process that the kernel had given the pid of an ancestor whose SDK state it
+  inherited (the pid counter wrapped onto exactly that value, with no SDK call
+  in between) was taken for that ancestor: it would have used the inherited
+  runtime, backend and handles instead of rebuilding them or raising
+  `ForkedHandleError`. The extension now counts forks with a `pthread_atfork`
+  child handler and identifies a process by its pid and that count together.
+  `ForkedHandleError`'s message no longer names one pid as two processes when
+  the pids are equal.
+
 ### Docs
 
 - **Known limitation: on macOS a forked child must not build network
