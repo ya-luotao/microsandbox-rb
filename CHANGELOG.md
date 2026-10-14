@@ -8,6 +8,18 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fork safety no longer identifies a process by its pid alone.** A forked
+  process that the kernel had given the pid of an ancestor whose SDK state it
+  inherited (the pid counter wrapped onto exactly that value, with no SDK call
+  in between) was taken for that ancestor: it would have used the inherited
+  runtime, backend and handles instead of rebuilding them or raising
+  `ForkedHandleError`. The extension now counts forks with a `pthread_atfork`
+  child handler and identifies a process by its pid and that count together.
+  `ForkedHandleError`'s message no longer names one pid as two processes when
+  the pids are equal.
+
 ## [0.17.3] - 2026-10-13
 
 Gem-only fix release; the embedded runtime stays at **`v0.6.18`**. A process

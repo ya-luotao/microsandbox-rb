@@ -31,6 +31,10 @@ magnus = { version = "0.9", features = ["rb-sys"] }
 # lock-step with magnus's own rb-sys.
 rb-sys = "0.9"
 
+# `pthread_atfork`, for the fork generation (runtime::ProcessIdentity). Already
+# in the dependency graph; listed so the binding can call it directly.
+libc = "0.2"
+
 # The microsandbox core runtime, wrapped via FFI exactly like the official
 # Python (pyo3) and Node (napi) SDKs. Pinned to the matching upstream tag so the
 # gem is self-contained and buildable anywhere (CI, release containers, end-user

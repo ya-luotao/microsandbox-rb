@@ -137,8 +137,8 @@ What does **not** cross a fork is an object created before it. A `Sandbox`,
 `SandboxHandle`, `ExecHandle`, `ExecStdin`, `PullSession`, log/metrics/file
 stream, `SshClient`/`SftpClient`/`SshServer`, `AgentClient` or `VolumeFs`
 belongs to the process that created it. In a forked child, any call that acts
-on one raises `Microsandbox::ForkedHandleError` (the message names both
-pids); the original keeps working in the parent. Reading `name` or `id` — and
+on one raises `Microsandbox::ForkedHandleError` (the message names the
+pids involved); the original keeps working in the parent. Reading `name` or `id` — and
 the snapshot fields of a `SandboxHandle` — still works, so a child can open
 its own handle:
 

@@ -43,7 +43,7 @@ use std::ffi::c_void;
 use std::future::Future;
 use std::mem::ManuallyDrop;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use magnus::{Error, Ruby, TypedData};
 use tokio::runtime::Runtime;
@@ -57,14 +57,98 @@ pub fn ruby() -> Ruby {
     Ruby::get().expect("microsandbox: not on a Ruby thread")
 }
 
-/// This process's id. The single `std::process::id()` call site: everything
-/// fork-aware in the extension (the runtime cell below, the backend generation
-/// in `backend.rs`, [`ForkGuarded`]) compares against this.
-pub fn current_pid() -> u32 {
-    std::process::id()
+//--------------------------------------------------------------------------------------------------
+// Process identity
+//--------------------------------------------------------------------------------------------------
+
+/// Which process this is, for fork safety: the pid plus a fork generation.
+///
+/// Everything fork-aware in the extension — the runtime cell below, the
+/// backend record in `backend.rs`, [`ForkGuarded`] — tags what it builds with
+/// the identity of the process that built it and compares that against
+/// [`ProcessIdentity::current`] before use. Both halves are compared:
+///
+/// * The pid alone is not enough. A descendant can end up with the pid of an
+///   ancestor whose state it inherited, if the pid counter wraps onto exactly
+///   that value and no SDK call happened in between; it would then pass for
+///   that ancestor.
+/// * The generation alone is not enough either. It counts the `fork`s that
+///   ran this library's atfork child handler, and a process can be created
+///   without running it — `vfork`, a raw `clone` — in which case only the pid
+///   tells the child apart.
+///
+/// Every `fork(2)` that runs atfork handlers (which `Kernel#fork` /
+/// `Process.fork` always do: Ruby calls libc's `fork`) gives the child a
+/// generation one higher than its parent's, so parent and child differ even
+/// when their pids are equal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    generation: u32,
 }
 
-// The process-wide tokio runtime, tagged with the pid it was built under. A
+/// How many `fork`s, counted from the process that loaded the extension, led
+/// to this process. Incremented only by [`on_fork_child`], in a child, and
+/// inherited (as plain memory) by every child. 32 bits: it would take four
+/// billion nested forks in one lineage to wrap, and a wrap matters only if
+/// the pid matches as well.
+static FORK_GENERATION: AtomicU32 = AtomicU32::new(0);
+
+/// The `pthread_atfork` child handler. It runs in the new child before `fork`
+/// returns there, while the child is single-threaded, and must be
+/// async-signal-safe: one lock-free atomic add, nothing else (no allocation,
+/// no lock, no Ruby). `Relaxed` is enough: the only thread that exists to read
+/// the counter is this one, and threads started later see it through the
+/// spawn's own synchronization. The parent never changes its counter.
+extern "C" fn on_fork_child() {
+    FORK_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Register [`on_fork_child`]. Called once, from the extension's init.
+///
+/// Ruby never unloads (`dlclose`s) an extension, so the handler's code stays
+/// mapped for the life of the process, as `pthread_atfork` requires — handlers
+/// cannot be unregistered. If registration fails (`ENOMEM`), the generation
+/// stays 0 and identity degrades to the pid alone, which is how the extension
+/// behaved before the generation existed; that is not worth refusing to load
+/// over. Platforms without `pthread_atfork` (the gem ships for macOS and
+/// Linux only) get the same pid-only identity.
+pub fn register_fork_handler() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[cfg(unix)]
+        // SAFETY: `on_fork_child` is an `extern "C" fn()` that stays valid for
+        // the life of the process (see above) and is async-signal-safe.
+        unsafe {
+            let _ = libc::pthread_atfork(None, None, Some(on_fork_child));
+        }
+    });
+}
+
+impl ProcessIdentity {
+    /// This process's identity. The single `std::process::id()` call site.
+    pub fn current() -> Self {
+        Self {
+            pid: std::process::id(),
+            generation: FORK_GENERATION.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The fork generation, for `Native.fork_generation` (a diagnostic the
+    /// fork specs read; not part of the Ruby API).
+    pub fn generation(self) -> u32 {
+        self.generation
+    }
+
+    /// Both halves in one word, for a lock-free atomic record. `0` is never a
+    /// real identity (no user process has pid 0), so it can mean "none".
+    pub fn to_bits(self) -> u64 {
+        (u64::from(self.pid) << 32) | u64::from(self.generation)
+    }
+}
+
+// The process-wide tokio runtime, tagged with the identity of the process it
+// was built under (see `ProcessIdentity`). A
 // multi-threaded runtime owns worker + I/O-driver threads, and `fork(2)` copies
 // ONLY the calling thread — so a child that inherits this runtime has a runtime
 // whose threads are gone: `block_on` can still drive the current thread, but the
@@ -72,12 +156,12 @@ pub fn current_pid() -> u32 {
 // connections stall/drop mid-use. This is hit in practice by forking job servers
 // (Solid Queue, Resque) and clustered web servers (Puma workers).
 //
-// The runtime and its pid live in ONE heap cell behind ONE atomic pointer, so a
-// reader sees either a whole cell or none: there is no window in which the
-// pointer is new and the pid old (or the reverse), and no mutex that a fork
-// could capture locked or that a panic could poison.
+// The runtime and its process identity live in ONE heap cell behind ONE atomic
+// pointer, so a reader sees either a whole cell or none: there is no window in
+// which the pointer is new and the identity old (or the reverse), and no mutex
+// that a fork could capture locked or that a panic could poison.
 struct RuntimeCell {
-    pid: u32,
+    owner: ProcessIdentity,
     rt: Runtime,
 }
 
@@ -94,13 +178,13 @@ fn build_runtime() -> Runtime {
 /// The multi-threaded tokio runtime for THIS process, built on first use and
 /// rebuilt after a `fork(2)` (see the note above).
 pub fn runtime() -> &'static Runtime {
-    let cur = current_pid();
+    let cur = ProcessIdentity::current();
     let mut observed = RUNTIME.load(Ordering::Acquire);
     // SAFETY (every dereference below): a non-null pointer in `RUNTIME` came
     // from `Box::into_raw` and is never freed once published, so it is valid
     // for `'static`.
     if let Some(cell) = unsafe { observed.as_ref() } {
-        if cell.pid == cur {
+        if cell.owner == cur {
             // Built in this process: its threads are alive here.
             return &cell.rt;
         }
@@ -109,7 +193,7 @@ pub fn runtime() -> &'static Runtime {
     // Slow path: no runtime yet, or the one we see was built by a parent
     // process. Build ours and publish it with a compare-exchange.
     let fresh = Box::into_raw(Box::new(RuntimeCell {
-        pid: cur,
+        owner: cur,
         rt: build_runtime(),
     }));
     loop {
@@ -117,12 +201,12 @@ pub fn runtime() -> &'static Runtime {
             // Published. The cell we replaced (if any) belonged to a parent
             // process and is LEAKED on purpose, never dropped: its worker
             // threads did not survive the fork, and `Runtime`'s `Drop` joins
-            // them. One runtime is leaked per fork generation that uses the
+            // them. One runtime is leaked per forked process that uses the
             // SDK.
             Ok(_) => return unsafe { &(*fresh).rt },
             Err(winner) => {
                 if let Some(cell) = unsafe { winner.as_ref() } {
-                    if cell.pid == cur {
+                    if cell.owner == cur {
                         // Another thread of THIS process won the race. Our
                         // cell was never published and its threads are alive
                         // here, so dropping it is safe (and joins them).
@@ -153,7 +237,7 @@ pub fn runtime() -> &'static Runtime {
 ///   exits: Ruby frees every `T_DATA` object in `rb_objspace_call_finalizer` —
 ///   leaks it instead.
 pub struct ForkGuarded<T> {
-    pid: u32,
+    owner: ProcessIdentity,
     /// The Ruby class users know the handle by, for the error message.
     class: &'static str,
     inner: ManuallyDrop<T>,
@@ -162,7 +246,7 @@ pub struct ForkGuarded<T> {
 impl<T> ForkGuarded<T> {
     pub fn new(class: &'static str, inner: T) -> Self {
         Self {
-            pid: current_pid(),
+            owner: ProcessIdentity::current(),
             class,
             inner: ManuallyDrop::new(inner),
         }
@@ -171,11 +255,11 @@ impl<T> ForkGuarded<T> {
     /// The payload, or `ForkedHandleError` when this is not the process that
     /// created it.
     pub fn get(&self) -> Result<&T, Error> {
-        let cur = current_pid();
-        if self.pid == cur {
+        let cur = ProcessIdentity::current();
+        if self.owner == cur {
             Ok(&self.inner)
         } else {
-            Err(error::forked_handle(self.class, self.pid, cur))
+            Err(error::forked_handle(self.class, self.owner.pid, cur.pid))
         }
     }
 
@@ -191,7 +275,7 @@ impl<T> ForkGuarded<T> {
 
 impl<T> Drop for ForkGuarded<T> {
     fn drop(&mut self) {
-        if self.pid == current_pid() {
+        if self.owner == ProcessIdentity::current() {
             // SAFETY: dropped exactly once, here; `inner` is not used again.
             unsafe { ManuallyDrop::drop(&mut self.inner) };
         }

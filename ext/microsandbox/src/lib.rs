@@ -119,10 +119,22 @@ fn resolved_msb_path() -> Result<String, Error> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// This process's fork generation (see `runtime::ProcessIdentity`): how many
+/// `fork`s led from the process that loaded the extension to this one. A
+/// diagnostic for the fork specs, not part of the Ruby API (nothing in
+/// `lib/` calls it, and `Native` is the extension's internal namespace).
+fn fork_generation() -> u32 {
+    runtime::ProcessIdentity::current().generation()
+}
+
 /// magnus entry point. RubyGems loads this via `require "microsandbox/microsandbox_rb"`,
 /// which calls `Init_microsandbox_rb` (matching the cdylib `[lib] name`).
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
+    // Before anything can fork: from here on every fork's child gets a fork
+    // generation one higher than its parent's (see `runtime::ProcessIdentity`).
+    runtime::register_fork_handler();
+
     let module = ruby.define_module("Microsandbox")?;
     let native = module.define_module("Native")?;
 
@@ -137,6 +149,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     )?;
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
     native.define_singleton_method("all_sandbox_metrics", function!(all_sandbox_metrics, 0))?;
+    native.define_singleton_method("fork_generation", function!(fork_generation, 0))?;
 
     backend::define(ruby, &native)?;
     sandbox::define(ruby, &native)?;

@@ -203,15 +203,26 @@ pub fn base_error(message: impl Into<String>) -> Error {
     }
 }
 
-/// `Microsandbox::ForkedHandleError`: a handle created in process `born` was
-/// used in process `cur`, a fork descendant (see `runtime::ForkGuarded`).
-/// `class` is the Ruby class users know the handle by.
+/// `Microsandbox::ForkedHandleError`: a handle created in the process with pid
+/// `born` was used in a fork descendant with pid `cur` (see
+/// `runtime::ForkGuarded`). `class` is the Ruby class users know the handle
+/// by. The two pids are equal when the descendant was given its ancestor's
+/// pid again (they differ in fork generation, which is not shown): that
+/// ancestor has exited, so the message must not claim two processes or point
+/// at the original.
 #[allow(deprecated)]
 pub fn forked_handle(class: &str, born: u32, cur: u32) -> Error {
-    let message = format!(
-        "{class} was created in process {born} and cannot be used in forked process {cur}; \
-         create a new handle after fork (the original keeps working in process {born})"
-    );
+    let message = if born == cur {
+        format!(
+            "{class} was created in an earlier process that also had pid {born} and cannot be \
+             used in this forked process; create a new handle after fork"
+        )
+    } else {
+        format!(
+            "{class} was created in process {born} and cannot be used in forked process {cur}; \
+             create a new handle after fork (the original keeps working in process {born})"
+        )
+    };
     match Ruby::get() {
         Ok(ruby) => match exception_class(&ruby, "ForkedHandleError") {
             Some(class) => Error::new(class, message),
