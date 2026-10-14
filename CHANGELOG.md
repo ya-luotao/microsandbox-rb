@@ -22,6 +22,19 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   leaves one it merely connected to running.
   Behaviour of `Sandbox` itself is unchanged.
 
+### Docs
+
+- **Known limitation: on macOS a forked child must not build network
+  clients.** A child forked (without `exec`) from a Ruby process on macOS
+  crashes — `SIGSEGV` or `SIGABRT`, which cannot be rescued — when the SDK
+  builds an HTTP client or reads the Keychain there: any cloud backend use,
+  `Sandbox.create` with an image not yet cached (or `pull_policy: :always`),
+  `Image.load`, and runtime install/setup. The macOS system frameworks behind
+  the proxy lookup and the Keychain are not usable after `fork`. Do that work
+  in the parent before forking, or in a process started with `Process.spawn`.
+  On Linux the cloud backend works in a forked child; new fork specs cover it
+  there (they are skipped on macOS). See [runtime.md](docs/runtime.md#macos-no-network-clients-in-a-forked-child).
+
 ## [0.17.3] - 2026-10-13
 
 Gem-only fix release; the embedded runtime stays at **`v0.6.18`**. A process

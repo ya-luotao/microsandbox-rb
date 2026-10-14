@@ -239,6 +239,38 @@ Limits, by design:
   with any threaded native library.
 - **Other libraries.** The SDK no longer touches inherited state; code that
   reaches it some other way can still hang or trap.
+- **macOS system frameworks.** On macOS a forked child that has not called
+  `exec` cannot use the system frameworks the core reaches for network and
+  credential work: CoreFoundation and libobjc are not fork-safe, and the
+  child dies — `SIGSEGV`, or `SIGABRT` from libobjc's fork check — inside the
+  framework. It is a crash, not an exception; nothing can rescue it. Two such
+  calls sit on SDK paths. Every HTTP client the core builds (reqwest, with the
+  `system-proxy` feature that the core crate enables; a downstream crate
+  cannot turn a Cargo feature off) looks up the system proxy settings through
+  SystemConfiguration (`SCDynamicStoreCopyProxies`) while it is built; and a
+  pull without explicit `registry_auth:` first looks for registry credentials
+  in the Keychain (`keyring`). So in a forked child on macOS, each of these
+  kills the child:
+  - any use of a cloud backend, however it is chosen (`set_default_backend`,
+    `with_backend`, `MSB_BACKEND`/`MSB_API_KEY`, a profile) — the child's
+    rebuild of the backend described above builds a client;
+  - `Sandbox.create` with an image that is not in the image cache yet, or
+    with `pull_policy: :always` (the Keychain lookup, then the registry
+    client; with `registry_auth:` only the latter);
+  - `Image.load` (it builds a registry client even for a local archive);
+  - runtime provisioning: `Microsandbox.install`, `Microsandbox.setup`, and
+    the first-use install in `ensure_runtime!`.
+
+  Whether the parent used the SDK makes no difference: a child of a parent
+  that only required the gem dies the same way, and
+  `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` does not prevent it. Calls that
+  stay on the local catalog and runtime are unaffected, including
+  `Sandbox.create` with an image already in the cache. On Linux the cloud
+  case is exercised by `spec/unit/fork_safety_spec.rb` and works (those
+  examples are skipped on macOS). On macOS, do this work in a process that
+  was not forked — the parent before it forks, or a fresh one
+  (`Process.spawn`, or `fork` followed by `exec`) — for example, pull the
+  images the workers need in the master before forking them.
 - **Pid reuse.** Process identity is the pid. A descendant that ends up with
   the pid of an ancestor whose state it inherited without any SDK use in
   between would be mistaken for that ancestor. This needs the pid counter to
