@@ -26,11 +26,11 @@ RSpec.describe "fork safety (subprocess)" do
   # Run one probe scenario; returns {steps: {name => line}, status:, out:, err:}.
   # The probe (and whatever it forked) is killed after 20 s: on Linux that, not
   # a crash, is what the unfixed extension looks like.
-  def run_probe(scenario, root:, probe:, deadline: 20)
+  def run_probe(scenario, root:, probe:, deadline: 20, env: {})
     home = Dir.mktmpdir("msb-fork-", File.directory?("/tmp") ? "/tmp" : nil)
     out_r, out_w = IO.pipe
     err_r, err_w = IO.pipe
-    env = {"MSB_HOME" => home, "MICROSANDBOX_NO_AUTO_INSTALL" => "1"}
+    env = {"MSB_HOME" => home, "MICROSANDBOX_NO_AUTO_INSTALL" => "1"}.merge(env)
     pid = Process.spawn(env, RbConfig.ruby, "-I", File.join(root, "lib"), probe, scenario,
       out: out_w, err: err_w, pgroup: true)
     out_w.close
@@ -77,6 +77,47 @@ RSpec.describe "fork safety (subprocess)" do
       step = run[:steps].fetch(name) { raise "probe never reported #{name}\n#{describe_run(run)}" }
       expect(step).to include("ok" => true), describe_run(run)
       expect(step["elapsed"]).to be < instant, "#{name} took #{step["elapsed"]}s"
+    end
+  end
+
+  # `install` / `setup` never use the backend, so in a forked child they must
+  # not take the inherited one over: the child's next call that does use it is
+  # still the one that adopts. See installer_child in the probe: the call that
+  # adopts resolves the environment ladder as it is then, and a broken one
+  # makes that call fail. The runtime is already in place (the installer
+  # downloads nothing), and every proxy points at a closed port in case it
+  # tried to.
+  describe "the runtime installer in a forked child" do
+    let(:no_download) do
+      %w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy].to_h { |name| [name, "http://127.0.0.1:9"] }
+        .merge("NO_PROXY" => nil, "no_proxy" => nil)
+    end
+
+    def expect_installer_left_backend_alone(run)
+      expect_clean(run)
+      expect_instant(run, "parent.warm", "child.install", "child.list1", "parent.after")
+      # The installer did not adopt: the first catalog read after it did, with
+      # the broken environment, and failed; the next one recovered.
+      expect(run[:steps].fetch("child.adopts")).to include("ok" => false, "error" => "Microsandbox::InvalidConfigError")
+    end
+
+    {
+      "install" => %w[install_then_env_breaks install_env_broken],
+      "setup" => %w[setup_then_env_breaks setup_env_broken]
+    }.each do |call, (then_breaks, broken)|
+      it "#{call} does not take the backend over before the environment breaks" do
+        expect_installer_left_backend_alone(run_probe(then_breaks, root: root, probe: probe, env: no_download))
+      end
+
+      it "#{call} works while the inherited selection does not resolve" do
+        expect_installer_left_backend_alone(run_probe(broken, root: root, probe: probe, env: no_download))
+      end
+    end
+
+    it "lets a child install after its parent did" do
+      run = run_probe("install_in_both", root: root, probe: probe, env: no_download)
+      expect_clean(run)
+      expect_instant(run, "parent.install", "parent.warm", "child.install", "child.list1", "parent.after")
     end
   end
 
