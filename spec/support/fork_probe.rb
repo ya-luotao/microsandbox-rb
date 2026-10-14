@@ -164,6 +164,54 @@ module ForkProbe
       reap(pid)
     end,
 
+    # The fork generation (Native.fork_generation, a diagnostic) goes up by
+    # one in every child forked through Ruby's fork, and only there.
+    "generations" => lambda do
+      generation = -> { Microsandbox::Native.fork_generation }
+      step("parent.gen") { generation.call }
+      pid = fork do
+        ok = step("child.gen") { generation.call }
+        grandchild = fork do
+          ok = step("grandchild.gen") { generation.call }
+          exit(ok ? 0 : 1)
+        end
+        _, status = Process.wait2(grandchild)
+        puts JSON.generate(step: "grandchild.status", ok: status.success?, exit: status.exitstatus, signal: status.termsig)
+        ok &= step("child.gen_after") { generation.call }
+        exit((ok && status.success?) ? 0 : 1)
+      end
+      reap(pid) { step("parent.gen_after") { generation.call } }
+    end,
+
+    # A grandchild whose parent (the probe's child) made no SDK call at all:
+    # everything it inherited is two forks old, and it must still refuse the
+    # inherited handle, build its own runtime and backend, and survive
+    # collecting the handle.
+    "grandchild_untouched" => lambda do
+      name = "fork-probe-#{Process.pid}"
+      step("parent.create") { Microsandbox::Volume.create(name).name }
+      fs = Microsandbox::Volume.fs(name)
+      step("parent.write") { fs.write("hello.txt", "from the parent") }
+      pid = fork do
+        # No SDK call in this process.
+        grandchild = fork do
+          ok = !step("grandchild.inherited") { fs.list("").size } # it must have raised
+          ok &= step("grandchild.own_fs") { Microsandbox::Volume.fs(name).read_text("hello.txt") }
+          ok &= step("grandchild.list") { volumes }
+          fs = nil
+          ok &= step("grandchild.gc") do
+            GC.start
+            true
+          end
+          exit(ok ? 0 : 1)
+        end
+        _, status = Process.wait2(grandchild)
+        puts JSON.generate(step: "grandchild.status", ok: status.success?, exit: status.exitstatus, signal: status.termsig)
+        exit(status.success? ? 0 : 1)
+      end
+      reap(pid) { step("parent.after") { fs.read_text("hello.txt") } }
+    end,
+
     # The child's first native call selects a backend. Replacing the default
     # is what used to destroy the inherited one.
     "select_first" => lambda do

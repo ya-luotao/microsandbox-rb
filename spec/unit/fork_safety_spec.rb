@@ -141,6 +141,42 @@ RSpec.describe "fork safety (subprocess)" do
     expect_instant(run, "child.list1", "grandchild.list1", "grandchild.list2")
   end
 
+  # Process identity is the pid plus a fork generation that an atfork handler
+  # bumps in every child, so a descendant that got an ancestor's pid back
+  # still differs from it. Pid reuse cannot be staged on demand; these pin
+  # the mechanism.
+  it "gives every forked child the next fork generation" do
+    run = run_probe("generations", root: root, probe: probe)
+    expect_clean(run)
+    expect(run[:steps].fetch("grandchild.status")).to include("ok" => true, "exit" => 0, "signal" => nil)
+    gen = %w[parent.gen child.gen grandchild.gen child.gen_after parent.gen_after].to_h do |name|
+      step = run[:steps].fetch(name) { raise "probe never reported #{name}\n#{describe_run(run)}" }
+      expect(step).to include("ok" => true), describe_run(run)
+      [name, step["value"]]
+    end
+    base = gen["parent.gen"]
+    expect(base).to be_a(Integer)
+    expect(gen).to eq("parent.gen" => base, "child.gen" => base + 1, "grandchild.gen" => base + 2,
+      "child.gen_after" => base + 1, "parent.gen_after" => base)
+  end
+
+  it "refuses an inherited handle in a grandchild whose parent never used the SDK" do
+    run = run_probe("grandchild_untouched", root: root, probe: probe)
+    expect_clean(run)
+    expect(run[:steps].fetch("grandchild.status")).to include("ok" => true, "exit" => 0, "signal" => nil)
+
+    refused = run[:steps].fetch("grandchild.inherited")
+    parent_pid = run[:steps].fetch("parent.create")["pid"]
+    expect(refused).to include("ok" => false, "error" => "Microsandbox::ForkedHandleError")
+    expect(refused["message"]).to include("Microsandbox::VolumeFs")
+      .and include("created in process #{parent_pid}")
+      .and include("forked process #{refused["pid"]}")
+
+    expect_instant(run, "grandchild.own_fs", "grandchild.list", "grandchild.gc", "parent.after")
+    expect(run[:steps]["grandchild.own_fs"]["value"]).to eq("from the parent")
+    expect(run[:steps]["parent.after"]["value"]).to eq("from the parent")
+  end
+
   it "lets a child start by selecting a backend" do
     run = run_probe("select_first", root: root, probe: probe)
     expect_clean(run)
