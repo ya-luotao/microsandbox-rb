@@ -105,13 +105,27 @@ reached once the result is a Ruby object. What happens to it then:
 
 - **`Sandbox.create`, `Sandbox.connect_or_create`, `Sandbox.start`, and
   `PullSession#sandbox`** mask interrupts (`Thread.handle_interrupt(Object =>
-  :never)`) around the native call plus the wrap, and an `ensure` **stops the
-  sandbox** when an exception or a kill cuts in before the caller has the
-  object — but only a sandbox the call owns (`Sandbox#owns_lifecycle?`, the
-  same predicate as `connect_or_create`'s block form): one that was already
-  running for someone else is left running. A `SIGINT` cannot be masked this
-  way; it can arrive before the wrapper is assigned, and then the next case
-  applies.
+  :never)`) around the native call only, so the bare `Native::Sandbox` is
+  bound to a local before a queued exception or kill can land; an `ensure`
+  then **stops the sandbox** when one cuts in before the caller has the
+  object — but only a sandbox the call owns (`owns_lifecycle`, the same
+  predicate as `connect_or_create`'s block form): one that was already
+  running for someone else is left running. The Ruby wrapper is constructed
+  *after* the mask, with normal interrupt handling, because `new` runs a
+  subclass's `initialize`: a constructor that blocks or runs long must not
+  hold a `Timeout.timeout` or `Thread#kill` back until it returns. So the
+  cleanup works on the native handle (its `owns_lifecycle` and `stop`), never
+  on the wrapper, and covers the window from the native handle's assignment
+  through the wrapper's construction: an interrupt delivered as the mask ends
+  (before `new` runs), one delivered inside a subclass's `initialize`, and an
+  exception that `initialize` raises itself. That cleanup is best-effort, not
+  a guarantee for every lost return: a *further* interrupt that arrives during
+  the cleanup itself, before the native `stop` has started, or one delivered
+  at the method's final return boundary, after the wrapper has been handed
+  off but before the caller has assigned it, leaves the teardown to GC (as it
+  did before construction moved out of the mask). A `SIGINT` cannot be masked
+  this way; it can arrive before the native handle is assigned, and then the
+  next case applies.
 - **Every other wrapper** (`ExecHandle`, streams, SSH clients, write sinks, …)
   and every plain result simply becomes garbage; GC frees the wrapper and the
   Rust value's `Drop` closes the session or connection.
@@ -129,7 +143,9 @@ for the thread's next blocking operation. The four acquisition methods are
 the exception: their own `Object => :never` mask sits on top of the caller's,
 so a deferred exception is not raised at the native call's entry there — the
 sandbox is returned and the exception is delivered at the next blocking
-operation after the acquisition.
+operation after the acquisition. (If that blocking operation is inside a
+subclass's `initialize`, the caller does not have the object yet, so the
+sandbox is stopped as above.)
 
 `spec/fake_runtime/interrupt_safety_spec.rb` pins all of this against the real
 extension, driving it with a fake `msb` (`spec/support/fake_runtime/`) whose
