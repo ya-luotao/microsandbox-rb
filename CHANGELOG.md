@@ -10,6 +10,27 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ### Fixed
 
+- **A `Sandbox` subclass's `initialize` no longer runs with interrupts
+  masked.** `Sandbox.create`, `.connect_or_create` and `.start` (and
+  `PullSession#sandbox`) hold a queued `Thread#raise`/`Timeout`/`Thread#kill`
+  back only while the native call runs; the wrapper is now built after that,
+  so a subclass whose constructor blocks or runs long no longer delays a
+  `Timeout.timeout` or `Thread#kill` until the constructor returns. The
+  best-effort interrupt cleanup moved to the native handle with it: an
+  interrupt that lands before or during `initialize`, or an exception
+  `initialize` raises, still stops the sandbox when the call owns it and
+  leaves one it merely connected to running.
+  Behaviour of `Sandbox` itself is unchanged.
+
+- **`Microsandbox.install` and `Microsandbox.setup` no longer take over the
+  backend in a forked child.** They went through the same entry as every
+  other native call, so in a child they first rebuilt the backend inherited
+  from the parent — which they never use — and failed with the configuration
+  error when the parent's selection no longer resolved in the child (say its
+  environment selected the cloud backend without an API key). They now leave
+  the backend alone; the child's first call that uses it takes it over, as
+  before.
+
 - **Fork safety no longer identifies a process by its pid alone.** A forked
   process that the kernel had given the pid of an ancestor whose SDK state it
   inherited (the pid counter wrapped onto exactly that value, with no SDK call
@@ -19,6 +40,19 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   child handler and identifies a process by its pid and that count together.
   `ForkedHandleError`'s message no longer names one pid as two processes when
   the pids are equal.
+
+### Docs
+
+- **Known limitation: on macOS a forked child must not build network
+  clients.** A child forked (without `exec`) from a Ruby process on macOS
+  crashes — `SIGSEGV` or `SIGABRT`, which cannot be rescued — when the SDK
+  builds an HTTP client or reads the Keychain there: any cloud backend use,
+  `Sandbox.create` with an image not yet cached (or `pull_policy: :always`),
+  `Image.load`, and runtime install/setup. The macOS system frameworks behind
+  the proxy lookup and the Keychain are not usable after `fork`. Do that work
+  in the parent before forking, or in a process started with `Process.spawn`.
+  On Linux the cloud backend works in a forked child; new fork specs cover it
+  there (they are skipped on macOS). See [runtime.md](docs/runtime.md#macos-no-network-clients-in-a-forked-child).
 
 ## [0.17.3] - 2026-10-13
 

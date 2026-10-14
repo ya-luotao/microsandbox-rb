@@ -50,11 +50,15 @@ use tokio::runtime::Runtime;
 
 use crate::error;
 
-/// The current Ruby handle. Safe to call from any bound method or value
-/// conversion: we always hold the GVL there (conversions run after `block_on`
-/// returns and re-acquires it).
+/// The current Ruby handle. Safe to call from any bound method, value
+/// conversion or error construction (`error::*`): we always hold the GVL there
+/// (both run after `block_on` returns and re-acquires it).
+///
+/// Panics when the calling thread does not hold the GVL (a `nogvl` callback, a
+/// tokio worker): `Ruby::get` checks that in release builds too, so a misplaced
+/// call fails loudly instead of touching Ruby without the lock.
 pub fn ruby() -> Ruby {
-    Ruby::get().expect("microsandbox: not on a Ruby thread")
+    Ruby::get().expect("microsandbox: not on a Ruby thread holding the GVL")
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -503,6 +507,9 @@ where
 /// `Err` means the future was never polled (see [`nogvl`], and the fork check
 /// below); propagate it with `?` before looking at the future's own output:
 /// `block_on(fut)?.map_err(error::to_ruby)?`.
+///
+/// Every native call goes through this, with one deliberate exception: the
+/// runtime installer, see [`block_on_runtime_install`].
 pub fn block_on<F>(fut: F) -> Result<F::Output, Error>
 where
     F: Future,
@@ -512,5 +519,31 @@ where
     // still hold the GVL (the check takes a mutex and may build a Ruby
     // exception — neither is allowed once the GVL is released).
     crate::backend::ensure_this_process_backend()?;
+    nogvl(|| runtime().block_on(fut))
+}
+
+/// [`block_on`] without its backend check, for the runtime installer ONLY:
+/// `Native.install` and `Native.setup` (`microsandbox::setup`).
+///
+/// The check at the top of [`block_on`] is deliberate and stays there: it is
+/// what makes every other native call safe after a fork. This entry is not a
+/// cheaper alternative to it. It exists because the installer never touches
+/// the default backend or the catalog — `Setup::install` creates the
+/// `bin`/`lib` directories, runs the installed `msb --version`, copies a CI
+/// build or downloads and unpacks the release bundle, and checks that the two
+/// files exist, all under the base directory it resolves from `MSB_HOME` —
+/// so in a forked child the check would only rebuild (and leak) a backend
+/// nothing uses, or fail the install when the inherited backend selection no
+/// longer resolves there. Skipping it leaves the backend record as it was:
+/// the child's next call that does reach the backend is the one that takes
+/// it over.
+///
+/// Before adding a caller, trace its core path and confirm it never reaches
+/// `microsandbox::default_backend()` (directly or through a `Sandbox`,
+/// `Volume`, `Image`, `Snapshot` or agent function that resolves it).
+pub fn block_on_runtime_install<F>(fut: F) -> Result<F::Output, Error>
+where
+    F: Future,
+{
     nogvl(|| runtime().block_on(fut))
 }

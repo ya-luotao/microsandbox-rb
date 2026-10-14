@@ -105,13 +105,27 @@ reached once the result is a Ruby object. What happens to it then:
 
 - **`Sandbox.create`, `Sandbox.connect_or_create`, `Sandbox.start`, and
   `PullSession#sandbox`** mask interrupts (`Thread.handle_interrupt(Object =>
-  :never)`) around the native call plus the wrap, and an `ensure` **stops the
-  sandbox** when an exception or a kill cuts in before the caller has the
-  object — but only a sandbox the call owns (`Sandbox#owns_lifecycle?`, the
-  same predicate as `connect_or_create`'s block form): one that was already
-  running for someone else is left running. A `SIGINT` cannot be masked this
-  way; it can arrive before the wrapper is assigned, and then the next case
-  applies.
+  :never)`) around the native call only, so the bare `Native::Sandbox` is
+  bound to a local before a queued exception or kill can land; an `ensure`
+  then **stops the sandbox** when one cuts in before the caller has the
+  object — but only a sandbox the call owns (`owns_lifecycle`, the same
+  predicate as `connect_or_create`'s block form): one that was already
+  running for someone else is left running. The Ruby wrapper is constructed
+  *after* the mask, with normal interrupt handling, because `new` runs a
+  subclass's `initialize`: a constructor that blocks or runs long must not
+  hold a `Timeout.timeout` or `Thread#kill` back until it returns. So the
+  cleanup works on the native handle (its `owns_lifecycle` and `stop`), never
+  on the wrapper, and covers the window from the native handle's assignment
+  through the wrapper's construction: an interrupt delivered as the mask ends
+  (before `new` runs), one delivered inside a subclass's `initialize`, and an
+  exception that `initialize` raises itself. That cleanup is best-effort, not
+  a guarantee for every lost return: a *further* interrupt that arrives during
+  the cleanup itself, before the native `stop` has started, or one delivered
+  at the method's final return boundary, after the wrapper has been handed
+  off but before the caller has assigned it, leaves the teardown to GC (as it
+  did before construction moved out of the mask). A `SIGINT` cannot be masked
+  this way; it can arrive before the native handle is assigned, and then the
+  next case applies.
 - **Every other wrapper** (`ExecHandle`, streams, SSH clients, write sinks, …)
   and every plain result simply becomes garbage; GC frees the wrapper and the
   Rust value's `Drop` closes the session or connection.
@@ -129,7 +143,9 @@ for the thread's next blocking operation. The four acquisition methods are
 the exception: their own `Object => :never` mask sits on top of the caller's,
 so a deferred exception is not raised at the native call's entry there — the
 sandbox is returned and the exception is delivered at the next blocking
-operation after the acquisition.
+operation after the acquisition. (If that blocking operation is inside a
+subclass's `initialize`, the caller does not have the object yet, so the
+sandbox is stopped as above.)
 
 `spec/fake_runtime/interrupt_safety_spec.rb` pins all of this against the real
 extension, driving it with a fake `msb` (`spec/support/fake_runtime/`) whose
@@ -199,9 +215,13 @@ Three pieces use the identity:
   the identity of the process it belongs to (one `AtomicU64`, pid and
   generation, written and read whole). `ensure_this_process_backend` runs,
   with the GVL held, at the start of every `block_on` and of every synchronous
-  entry that reads the backend. In a process whose identity differs from the
-  recorded one it builds a fresh backend from the record, swaps it into the
-  core and `mem::forget`s the inherited one, along with the backends that open
+  entry that reads the backend. The one exception is the runtime installer
+  (`Native.install`, `Native.setup`): it never reads the backend, so it runs
+  through `block_on_runtime_install`, which skips the check, and a child that
+  installs leaves the record alone for its first call that does use the
+  backend. In a process whose identity differs from the recorded one it
+  builds a fresh backend from the record, swaps it into the core and
+  `mem::forget`s the inherited one, along with the backends that open
   `with_backend` scopes had saved for their restore. A scope the parent opened
   can still be closed in the child: closing it installs a backend rebuilt from
   how the saved one had been chosen. For the ladder this means the child
@@ -233,9 +253,10 @@ Three pieces use the identity:
   fields, `ExecHandle#id`) skip the check through `peek()`, so a child can
   still read the name it needs to open a handle of its own.
 
-What a child leaks is bounded: one runtime, the inherited default backend, the
-saved backend of each open scope, and each inherited handle it collects; plus
-one backend for each parent-opened scope it closes.
+What a child leaks is bounded: one runtime; once it uses the backend, the
+inherited default backend and the saved backend of each open scope; each
+inherited handle it collects; plus one backend for each parent-opened scope it
+closes. A child that only installs the runtime builds no backend.
 
 The mutexes involved (`backend.rs`) are only taken with the GVL held, and
 nothing that runs under them calls into Ruby or releases the GVL — Ruby
@@ -260,6 +281,38 @@ Limits, by design:
   with any threaded native library.
 - **Other libraries.** The SDK no longer touches inherited state; code that
   reaches it some other way can still hang or trap.
+- **macOS system frameworks.** On macOS a forked child that has not called
+  `exec` cannot use the system frameworks the core reaches for network and
+  credential work: CoreFoundation and libobjc are not fork-safe, and the
+  child dies — `SIGSEGV`, or `SIGABRT` from libobjc's fork check — inside the
+  framework. It is a crash, not an exception; nothing can rescue it. Two such
+  calls sit on SDK paths. Every HTTP client the core builds (reqwest, with the
+  `system-proxy` feature that the core crate enables; a downstream crate
+  cannot turn a Cargo feature off) looks up the system proxy settings through
+  SystemConfiguration (`SCDynamicStoreCopyProxies`) while it is built; and a
+  pull without explicit `registry_auth:` first looks for registry credentials
+  in the Keychain (`keyring`). So in a forked child on macOS, each of these
+  kills the child:
+  - any use of a cloud backend, however it is chosen (`set_default_backend`,
+    `with_backend`, `MSB_BACKEND`/`MSB_API_KEY`, a profile) — the child's
+    rebuild of the backend described above builds a client;
+  - `Sandbox.create` with an image that is not in the image cache yet, or
+    with `pull_policy: :always` (the Keychain lookup, then the registry
+    client; with `registry_auth:` only the latter);
+  - `Image.load` (it builds a registry client even for a local archive);
+  - runtime provisioning: `Microsandbox.install`, `Microsandbox.setup`, and
+    the first-use install in `ensure_runtime!`.
+
+  Whether the parent used the SDK makes no difference: a child of a parent
+  that only required the gem dies the same way, and
+  `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` does not prevent it. Calls that
+  stay on the local catalog and runtime are unaffected, including
+  `Sandbox.create` with an image already in the cache. On Linux the cloud
+  case is exercised by `spec/unit/fork_safety_spec.rb` and works (those
+  examples are skipped on macOS). On macOS, do this work in a process that
+  was not forked — the parent before it forks, or a fresh one
+  (`Process.spawn`, or `fork` followed by `exec`) — for example, pull the
+  images the workers need in the master before forking them.
 - **Forks that skip atfork handlers.** A process created with `vfork` or a
   raw `clone` keeps its parent's generation, so only its pid identifies it.
   Ruby itself never forks that way — `Kernel#fork` runs the handlers, and

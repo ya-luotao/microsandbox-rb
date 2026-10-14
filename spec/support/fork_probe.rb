@@ -14,8 +14,11 @@
 # which is where a handle inherited from the parent would be destroyed.
 #
 # Only catalog reads and writes are used (volumes), so no `msb` runtime is
-# needed and nothing is ever provisioned.
+# needed and nothing is ever provisioned. The cloud scenarios list volumes on a
+# fake cloud API instead; the spec runs it (WireCapture::KeepAliveCloudApi)
+# and passes its URL in FORK_PROBE_CLOUD_URL.
 
+require "fileutils"
 require "json"
 require "microsandbox"
 
@@ -53,6 +56,60 @@ module ForkProbe
     Microsandbox::Volume.list.size
   end
 
+  # Put a runtime where `install` and `setup` look for it (MSB_HOME), so that
+  # they return without downloading anything: an `msb` that reports this gem's
+  # runtime version, and a file named like the platform's libkrunfw. The spec
+  # also points every proxy variable at a closed port, so an install that
+  # misses this and tries to download fails at once instead.
+  def fake_installed_runtime
+    home = ENV.fetch("MSB_HOME")
+    bin = File.join(home, "bin")
+    lib = File.join(home, "lib")
+    FileUtils.mkdir_p([bin, lib])
+    msb = File.join(bin, "msb")
+    File.write(msb, "#!/bin/sh\necho 'msb #{Microsandbox::RUNTIME_VERSION.delete_prefix("v")}'\n")
+    File.chmod(0o755, msb)
+    # libkrunfw's ABI 5 / 5.6.1, as named by the core (microsandbox_utils::libkrunfw_filename).
+    firmware = RUBY_PLATFORM.include?("darwin") ? "libkrunfw.5.dylib" : "libkrunfw.so.5.6.1"
+    File.write(File.join(lib, firmware), "not a real libkrunfw\n")
+    abort "fork probe: the fake runtime is not recognised as installed" unless Microsandbox.installed?
+  end
+
+  # `Microsandbox.install`, or the same through `setup`.
+  def run_installer(kind)
+    if kind == :setup
+      Microsandbox.setup(base_dir: ENV.fetch("MSB_HOME"))
+    else
+      Microsandbox.install
+    end
+    true
+  end
+
+  # The runtime installer in a forked child must leave the inherited backend
+  # alone: the child's first call that USES the backend is still the one that
+  # takes it over. That call resolves the parent's selection (the environment
+  # ladder) again, as the child's environment has it at that moment — so a
+  # broken ladder (cloud, no API key) shows which call adopted: it fails, and
+  # the next one, once the environment is repaired, succeeds. With +broken+
+  # the environment breaks before the installer runs (which therefore must
+  # not resolve it), otherwise just after it (so the installer must not have
+  # resolved it already, with the good environment).
+  def installer_child(kind, broken:)
+    ENV["MSB_BACKEND"] = "cloud" if broken # and no API key
+    ok = step("child.install") { run_installer(kind) }
+    ENV["MSB_BACKEND"] = "cloud"
+    ok &= !step("child.adopts") { volumes } # it must have raised
+    ENV.delete("MSB_BACKEND")
+    ok &= step("child.list1") { volumes }
+    exit(ok ? 0 : 1)
+  end
+
+  def installer_scenario(kind, broken:)
+    fake_installed_runtime
+    step("parent.warm") { volumes }
+    reap(fork { installer_child(kind, broken: broken) }) { step("parent.after") { volumes } }
+  end
+
   # Wait for +pid+, report how it ended, and leave with its verdict (after the
   # optional block, which runs in the parent once the child is gone).
   def reap(pid, name = "child.status")
@@ -60,6 +117,25 @@ module ForkProbe
     puts JSON.generate(step: name, ok: status.success?, exit: status.exitstatus, signal: status.termsig)
     yield if block_given?
     exit(status.success? ? 0 : 1)
+  end
+
+  # The names a cloud volume listing returned. The fake API names its single
+  # volume after the request it answered ("seq-3"), which tells the spec which
+  # logged request, on which connection, this call was served by.
+  def cloud_volumes
+    Microsandbox::Volume.list.map(&:name)
+  end
+
+  def cloud_url
+    ENV.fetch("FORK_PROBE_CLOUD_URL")
+  end
+
+  # What every cloud child does: two listings, then a normal exit.
+  def child_cloud_reads
+    ok = step("child.list1") { cloud_volumes }
+    ok &= step("child.list2") { cloud_volumes }
+    ok &= step("child.kind") { Microsandbox.default_backend_kind.to_s }
+    exit(ok ? 0 : 1)
   end
 
   # What every child does: two catalog reads, then a normal exit.
@@ -70,6 +146,26 @@ module ForkProbe
   end
 
   SCENARIOS = {
+    # The runtime installer in a forked child (see installer_child).
+    "install_then_env_breaks" => -> { installer_scenario(:install, broken: false) },
+    "install_env_broken" => -> { installer_scenario(:install, broken: true) },
+    "setup_then_env_breaks" => -> { installer_scenario(:setup, broken: false) },
+    "setup_env_broken" => -> { installer_scenario(:setup, broken: true) },
+
+    # The parent ran the installer too (it runs `msb --version`, a child
+    # process of its own), then forks; the child installs and reads.
+    "install_in_both" => lambda do
+      fake_installed_runtime
+      step("parent.install") { run_installer(:install) }
+      step("parent.warm") { volumes }
+      pid = fork do
+        ok = step("child.install") { run_installer(:install) }
+        ok &= step("child.list1") { volumes }
+        exit(ok ? 0 : 1)
+      end
+      reap(pid) { step("parent.after") { run_installer(:install) && volumes } }
+    end,
+
     # (f) control: the parent has not touched the SDK when it forks.
     "fresh" => lambda do
       reap(fork { child_reads })
@@ -304,6 +400,60 @@ module ForkProbe
       end
       emit("parent.close", left)
       reap(pid) { step("parent.after") { volumes } }
+    end,
+
+    # A working cloud backend across fork. The parent's request leaves an idle
+    # keep-alive connection in its client's pool, and the connection's driver
+    # task lives on the parent's tokio runtime, which the child does not have.
+    # The child must reach the API over a client (and a connection) of its
+    # own; the parent's pooled connection must still serve the parent after.
+    "cloud_selected" => lambda do
+      Microsandbox.set_default_backend(:cloud, url: cloud_url, api_key: "k-selected")
+      step("parent.warm") { cloud_volumes }
+      reap(fork { child_cloud_reads }) { step("parent.after") { cloud_volumes } }
+    end,
+
+    # The same, with the cloud backend chosen by the environment ladder
+    # (MSB_BACKEND=cloud, MSB_API_URL, MSB_API_KEY, set by the spec): the child
+    # rebuilds it by resolving the ladder again.
+    "cloud_env" => lambda do
+      step("parent.warm") { cloud_volumes }
+      reap(fork { child_cloud_reads }) { step("parent.after") { cloud_volumes } }
+    end,
+
+    # Fork inside a with_backend(:cloud) block the parent opened over a cloud
+    # default, each with a warm connection. The child's first call uses the
+    # scoped backend, then it leaves the block, which restores the default
+    # (rebuilt in the child), and uses that. The parent waits inside the block,
+    # uses the scoped backend again, leaves, and uses its default again.
+    "cloud_with_backend" => lambda do
+      Microsandbox.set_default_backend(:cloud, url: cloud_url, api_key: "k-outer")
+      step("parent.warm") { cloud_volumes }
+      pid = :unset
+      child_ok = true
+      closed = measure do
+        Microsandbox.with_backend(:cloud, url: cloud_url, api_key: "k-scoped") do
+          step("parent.scoped") { cloud_volumes }
+          pid = fork
+          if pid.nil?
+            child_ok &= step("child.scoped") { cloud_volumes }
+          else
+            _, status = Process.wait2(pid)
+            puts JSON.generate(step: "child.status", ok: status.success?, exit: status.exitstatus, signal: status.termsig)
+            child_ok = status.success?
+            step("parent.scoped_after") { cloud_volumes }
+          end
+        end
+        true
+      end
+      if pid.nil?
+        child_ok &= emit("child.close", closed)
+        child_ok &= step("child.after") { cloud_volumes }
+        exit(child_ok ? 0 : 1)
+      end
+      emit("parent.close", closed)
+      step("parent.after") { cloud_volumes }
+      exit(child_ok ? 0 : 1)
     end
   }.freeze
 end

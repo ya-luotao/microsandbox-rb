@@ -46,8 +46,10 @@ fn all_sandbox_metrics() -> Result<RHash, Error> {
 }
 
 /// Download and install the `msb` runtime + `libkrunfw` into `~/.microsandbox`.
+/// Never touches the backend, so a forked child does not take the inherited
+/// one over here (see `runtime::block_on_runtime_install`).
 fn install() -> Result<(), Error> {
-    runtime::block_on(microsandbox::setup::install())?.map_err(error::to_ruby)
+    runtime::block_on_runtime_install(microsandbox::setup::install())?.map_err(error::to_ruby)
 }
 
 /// Customizable install via the core `Setup` builder. `opts`: base_dir (install
@@ -84,7 +86,8 @@ fn setup(opts: RHash) -> Result<(), Error> {
             .force(force)
             .build(),
     };
-    runtime::block_on(setup.install())?.map_err(error::to_ruby)
+    // Backend-free, like `install`.
+    runtime::block_on_runtime_install(setup.install())?.map_err(error::to_ruby)
 }
 
 /// Whether the `msb` runtime + `libkrunfw` are installed and resolvable.

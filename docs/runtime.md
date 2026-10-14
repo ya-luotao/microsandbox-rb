@@ -114,7 +114,9 @@ backend), chosen the same way as the parent's: an explicit
 `set_default_backend`, an enclosing `with_backend` block, or — when neither
 was used — the environment and config file as the child sees them at that
 call. Everything addressed by name works in the child from then on:
-`Sandbox.create`/`get`/`list`/`start`, `Volume`, `Image`, `Snapshot`.
+`Sandbox.create`/`get`/`list`/`start`, `Volume`, `Image`, `Snapshot` — except
+that on macOS a forked child must not do anything that builds a network
+client (see [macOS](#macos-no-network-clients-in-a-forked-child) below).
 
 If the parent's choice cannot be made again in the child (say the child's
 environment now selects the cloud backend without credentials), SDK calls
@@ -126,6 +128,7 @@ does not depend on the inherited choice and works regardless.
 Microsandbox::Sandbox.list             # the parent has used the SDK
 
 pid = fork do
+  # On macOS "alpine" must already be in the image cache (see below).
   Microsandbox::Sandbox.create("job-#{Process.pid}", image: "alpine") do |sb|
     puts sb.exec("echo", ["hello from the worker"]).stdout
   end
@@ -188,6 +191,33 @@ Things to know:
 - **Memory.** A child leaks, once, the native state it inherited (the
   parent's runtime, backend and whichever inherited handles it collects)
   instead of destroying it — destroying it is what used to crash.
+
+### macOS: no network clients in a forked child
+
+On macOS, a forked child that has not called `exec` dies — `SIGSEGV` or
+`SIGABRT`, not an exception, so it cannot be rescued — as soon as the SDK
+builds a network client or reads registry credentials from the Keychain
+there. macOS's system frameworks do not support being used after `fork`
+without `exec`, and every HTTP client the SDK builds looks up the system proxy
+settings through them. In a forked child on macOS, do not:
+
+- use a cloud backend at all, however it is selected (`set_default_backend`,
+  `with_backend`, `MSB_BACKEND`/`MSB_API_KEY`, a profile);
+- `Sandbox.create` with an image that is not in the image cache yet, or with
+  `pull_policy: :always`;
+- `Image.load`;
+- install the runtime: `Microsandbox.install`, `Microsandbox.setup`, or the
+  first-use install `ensure_runtime!` performs.
+
+It makes no difference whether the parent used the SDK, and
+`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` does not help. Local work is
+unaffected, including `Sandbox.create` with an image that is already cached.
+On Linux the cloud backend works in a forked child.
+
+Do that work in a process that was not forked: in the parent before it forks
+(install the runtime and pull the images the workers will use — creating a
+sandbox from the image pulls it), or in a fresh process started with
+`Process.spawn` (or `fork` followed by `exec`).
 
 ## One runtime line per home
 
