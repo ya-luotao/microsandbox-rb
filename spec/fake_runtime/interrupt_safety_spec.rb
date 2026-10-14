@@ -373,6 +373,181 @@ RSpec.describe "interrupted native calls", :fake_runtime do
     end
   end
 
+  # `Sandbox.acquire` masks interrupts around the native call only; the wrapper
+  # — and so a subclass's `initialize` — is built afterwards with normal
+  # interrupt handling, and the cleanup works on the bare native handle.
+  describe "a Sandbox subclass (construction outside the interrupt mask)" do
+    # A Sandbox subclass whose `initialize` calls `super`, then +hook+.
+    def subclass_with(&hook)
+      Class.new(Microsandbox::Sandbox) do
+        define_method(:initialize) do |native|
+          super(native)
+          hook.call
+        end
+      end
+    end
+
+    it "builds an instance of the subclass, running its initialize (control)" do
+      ran = Queue.new
+      klass = subclass_with { ran << true }
+      sandbox = klass.create(unique_sandbox_name("fr-subctl"), image: rootfs)
+      expect(sandbox).to be_an_instance_of(klass)
+      expect(ran.size).to eq(1)
+      expect(sandbox.owns_lifecycle?).to be(true)
+    ensure
+      sandbox&.stop
+    end
+
+    it "Timeout.timeout fires inside a blocking initialize, promptly, and the sandbox is stopped" do
+      name = unique_sandbox_name("fr-subto")
+      entered = Queue.new
+      gate = Queue.new
+      # Bounded even if the mask regressed (the timeout would then wait for
+      # this pop): `gate` is closed in the ensure below.
+      klass = subclass_with do
+        entered << FakeRuntime.now
+        gate.pop
+      end
+      limit = 2.5
+      without_gc do
+        started = FakeRuntime.now
+        thread = in_thread do
+          Timeout.timeout(limit) { klass.create(name, image: rootfs) }
+          :returned
+        rescue Timeout::Error
+          :timeout
+        end
+        finish(thread, "create under Timeout.timeout with a blocking initialize")
+        elapsed = FakeRuntime.now - started
+        expect(thread.value).to eq(:timeout)
+        expect(entered.size).to eq(1), "initialize never ran: the timeout fired before the create returned"
+        expect(entered.pop - started).to be < limit
+        # The timeout is not held back by the blocked constructor: it lands at
+        # its deadline, plus the cleanup stop.
+        expect(elapsed).to be < limit + 2
+        pid = FakeRuntime.relay_pid_for(name)
+        expect_torn_down(pid, within: 5, leak: "sandbox #{name} is running and no Ruby object owns it")
+        expect(FakeRuntime.shutdown_seen?(pid)).to be(true), "expected an explicit stop, not a GC drop"
+      end
+    ensure
+      gate&.close
+    end
+
+    it "Thread#kill lands inside a blocking initialize and the sandbox is stopped" do
+      name = unique_sandbox_name("fr-subkill")
+      entered = Queue.new
+      gate = Queue.new
+      klass = subclass_with do
+        entered << true
+        gate.pop
+      end
+      without_gc do
+        thread = in_thread(entered) do
+          klass.create(name, image: rootfs)
+          :returned
+        end
+        await(entered, "blocking initialize")
+        thread.kill
+        finish(thread, "killed initialize")
+        expect(thread.status).to be(false)
+        pid = FakeRuntime.relay_pid_for(name)
+        expect_torn_down(pid, within: 5, leak: "sandbox #{name} is running and no Ruby object owns it")
+        expect(FakeRuntime.shutdown_seen?(pid)).to be(true), "expected an explicit stop, not a GC drop"
+      end
+    ensure
+      gate&.close
+    end
+
+    # An interrupt queued during the native call is delivered as the mask ends,
+    # i.e. after the native call returned and before `new` ran: `initialize`
+    # never runs, and only the bare native handle exists to clean up.
+    describe "an interrupt between the native return and the wrapper" do
+      it "stops a sandbox the call owns" do
+        name = unique_sandbox_name("fr-subwin")
+        ran = Queue.new
+        klass = subclass_with { ran << true }
+        without_gc do
+          pid = nil
+          thread = FakeRuntime.with_relay_env("FAKE_RELAY_BOOT_DELAY" => slow) do
+            t = in_thread do
+              klass.create(name, image: rootfs)
+              :returned
+            rescue RuntimeError
+              :interrupted
+            end
+            pid = in_flight_relay(name)
+            t
+          end
+          thread.raise(RuntimeError, "simulated interrupt")
+          finish(thread, "interrupted subclass create")
+          expect(thread.value).to eq(:interrupted)
+          expect(ran.size).to eq(0), "initialize ran: the interrupt did not land before the wrapper existed"
+          expect_torn_down(pid, within: 5, leak: "sandbox #{name} is running and no Ruby object owns it")
+          expect(FakeRuntime.shutdown_seen?(pid)).to be(true), "expected an explicit stop, not a GC drop"
+        end
+      end
+
+      it "leaves a sandbox it merely connected to running" do
+        name = unique_sandbox_name("fr-subconn")
+        ran = Queue.new
+        klass = subclass_with { ran << true }
+        owner = FakeRuntime.with_relay_env("FAKE_RELAY_CONN_DELAY" => slow) do
+          Microsandbox::Sandbox.create(name, image: rootfs)
+        end
+        pid = FakeRuntime.relay_pid_for(name)
+        mark = FakeRuntime.log_mark
+        thread = in_thread do
+          klass.connect_or_create(name, image: rootfs)
+          :returned
+        rescue RuntimeError
+          :interrupted
+        end
+        wait_for_log(/conn\d+: connected/, since: mark)
+        thread.raise(RuntimeError, "simulated interrupt")
+        finish(thread, "interrupted subclass connect_or_create")
+        expect(thread.value).to eq(:interrupted)
+        expect(ran.size).to eq(0), "initialize ran: the interrupt did not land before the wrapper existed"
+        FakeRuntime.gc!
+        sleep 0.3
+        expect(FakeRuntime.torn_down?(pid)).to be(false), "the interrupt stopped a sandbox this call did not own"
+        expect(FakeRuntime.relay_running?(pid)).to be(true)
+        expect(owner.exec("echo", ["still", "up"]).stdout).to eq("still up\n")
+      ensure
+        owner&.stop
+      end
+    end
+
+    # The caller gets no reference when `initialize` raises, exactly as when an
+    # interrupt cuts in, so the same ownership-scoped cleanup applies.
+    describe "an initialize that raises" do
+      let(:failing) { subclass_with { raise ArgumentError, "bad subclass" } }
+
+      it "stops a sandbox the call owns and propagates the error" do
+        name = unique_sandbox_name("fr-subraise")
+        without_gc do
+          expect { failing.create(name, image: rootfs) }.to raise_error(ArgumentError, "bad subclass")
+          pid = FakeRuntime.relay_pid_for(name)
+          expect(pid).not_to be_nil
+          expect_torn_down(pid, within: 5, leak: "sandbox #{name} is running and no Ruby object owns it")
+          expect(FakeRuntime.shutdown_seen?(pid)).to be(true), "expected an explicit stop, not a GC drop"
+        end
+      end
+
+      it "leaves a sandbox it merely connected to running" do
+        name = unique_sandbox_name("fr-subraisec")
+        owner = Microsandbox::Sandbox.create(name, image: rootfs)
+        pid = FakeRuntime.relay_pid_for(name)
+        expect { failing.connect_or_create(name, image: rootfs) }.to raise_error(ArgumentError, "bad subclass")
+        FakeRuntime.gc!
+        sleep 0.3
+        expect(FakeRuntime.torn_down?(pid)).to be(false), "the failed constructor stopped a sandbox this call did not own"
+        expect(owner.exec("echo", ["still", "up"]).stdout).to eq("still up\n")
+      ensure
+        owner&.stop
+      end
+    end
+  end
+
   describe "an interrupt during exec_stream" do
     it "closes every interrupted guest session once the handle is collected" do
       sandbox = FakeRuntime.with_relay_env("FAKE_RELAY_CONN_DELAY" => slow) do
