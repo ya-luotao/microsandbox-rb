@@ -8,6 +8,16 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-10-14
+
+Gem-only fix release; the embedded runtime stays at **`v0.6.18`**. Fork safety
+now also survives pid reuse (a process is identified by its pid and fork
+generation together), `install`/`setup` in a forked child no longer touch the
+backend, a `Sandbox` subclass's `initialize` no longer runs with interrupts
+masked, and the macOS limit that a forked child must not build network clients
+is documented. It also picks up dependency updates: magnus 0.9, tokio 1.53,
+rb-sys 0.9.130, and rustls 0.23.46 for four TLS advisories (see Security).
+
 ### Fixed
 
 - **A `Sandbox` subclass's `initialize` no longer runs with interrupts
@@ -40,6 +50,16 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   child handler and identifies a process by its pid and that count together.
   `ForkedHandleError`'s message no longer names one pid as two processes when
   the pids are equal.
+
+### Security
+
+- **rustls 0.23.45 → 0.23.46** (a transitive dependency, through the network
+  stack's DNS client and the HTTP client). Fixes RUSTSEC-2026-0346 (`Debug`
+  output of client session values exposed TLS secrets), RUSTSEC-2026-0347
+  (buffered application data sent to the outer server after ECH rejection),
+  RUSTSEC-2026-0348 (Brotli certificate decompression could allocate up to
+  1 GiB before authentication) and RUSTSEC-2026-0349 (an unauthenticated
+  ServerHello could downgrade later connections to classical key exchange).
 
 ### Docs
 
@@ -1559,7 +1579,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.3...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.4...HEAD
+[0.17.4]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.0...v0.17.1

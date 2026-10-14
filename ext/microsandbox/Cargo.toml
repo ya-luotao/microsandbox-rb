@@ -8,7 +8,7 @@ description = "Ruby SDK native extension for microsandbox — secure, fast micro
 # returns this via env!("CARGO_PKG_VERSION") and version_spec.rb asserts equality.
 # The core-crate dependencies below stay on their own tag, which is
 # Microsandbox::RUNTIME_VERSION and moves independently of this version.
-version = "0.17.3"
+version = "0.17.4"
 authors = ["Super Rad Company <development@superrad.company>"]
 repository = "https://github.com/superradcompany/microsandbox"
 license = "Apache-2.0"
