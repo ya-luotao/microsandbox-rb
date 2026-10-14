@@ -134,6 +134,13 @@ impl ProcessIdentity {
         }
     }
 
+    /// An identity from its two halves — ONLY for the fork-identity
+    /// diagnostics in `lib.rs`, which let the specs compare identities that no
+    /// real fork can produce on demand (an equal pid with another generation).
+    pub fn from_parts(pid: u32, generation: u32) -> Self {
+        Self { pid, generation }
+    }
+
     /// The fork generation, for `Native.fork_generation` (a diagnostic the
     /// fork specs read; not part of the Ruby API).
     pub fn generation(self) -> u32 {
@@ -252,10 +259,25 @@ impl<T> ForkGuarded<T> {
         }
     }
 
+    /// A guard owned by `owner` instead of this process — ONLY for the
+    /// fork-identity diagnostic in `lib.rs`, which runs the real ownership
+    /// decision ([`get_in`](Self::get_in)) on identities given by a spec.
+    pub fn owned_by(owner: ProcessIdentity, class: &'static str, inner: T) -> Self {
+        Self {
+            owner,
+            class,
+            inner: ManuallyDrop::new(inner),
+        }
+    }
+
     /// The payload, or `ForkedHandleError` when this is not the process that
     /// created it.
     pub fn get(&self) -> Result<&T, Error> {
-        let cur = ProcessIdentity::current();
+        self.get_in(ProcessIdentity::current())
+    }
+
+    /// [`get`](Self::get) as decided in the process identified by `cur`.
+    pub fn get_in(&self, cur: ProcessIdentity) -> Result<&T, Error> {
         if self.owner == cur {
             Ok(&self.inner)
         } else {

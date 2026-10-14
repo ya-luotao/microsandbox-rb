@@ -127,6 +127,36 @@ fn fork_generation() -> u32 {
     runtime::ProcessIdentity::current().generation()
 }
 
+/// Whether two given identities are the same process, by the two comparisons
+/// every ownership decision uses: `PartialEq` (the runtime cell, handles,
+/// `with_backend` scopes) and the packed word (the backend record). Returns
+/// `[equal, same_bits]`. A spec-only diagnostic, like `fork_generation`:
+/// pid reuse cannot be staged on demand, so this is where the specs pin that
+/// both the pid and the generation take part. Pure: no state is read or
+/// changed.
+fn fork_identity_equal(pid_a: u32, gen_a: u32, pid_b: u32, gen_b: u32) -> (bool, bool) {
+    let a = runtime::ProcessIdentity::from_parts(pid_a, gen_a);
+    let b = runtime::ProcessIdentity::from_parts(pid_b, gen_b);
+    (a == b, a.to_bits() == b.to_bits())
+}
+
+/// Run a handle's real ownership check (`ForkGuarded::get_in`) for a handle
+/// created by the process (`born_pid`, `born_gen`) and used in (`cur_pid`,
+/// `cur_gen`): `nil` when it is allowed, the `ForkedHandleError` that `get`
+/// would raise otherwise — including the equal-pid wording. Spec-only and
+/// pure, like `fork_identity_equal`; the guard holds no payload.
+fn fork_identity_guard(
+    born_pid: u32,
+    born_gen: u32,
+    cur_pid: u32,
+    cur_gen: u32,
+) -> Result<(), Error> {
+    let born = runtime::ProcessIdentity::from_parts(born_pid, born_gen);
+    let cur = runtime::ProcessIdentity::from_parts(cur_pid, cur_gen);
+    let guard = runtime::ForkGuarded::owned_by(born, "Microsandbox::VolumeFs", ());
+    guard.get_in(cur).map(|_| ())
+}
+
 /// magnus entry point. RubyGems loads this via `require "microsandbox/microsandbox_rb"`,
 /// which calls `Init_microsandbox_rb` (matching the cdylib `[lib] name`).
 #[magnus::init]
@@ -150,6 +180,8 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
     native.define_singleton_method("all_sandbox_metrics", function!(all_sandbox_metrics, 0))?;
     native.define_singleton_method("fork_generation", function!(fork_generation, 0))?;
+    native.define_singleton_method("fork_identity_equal", function!(fork_identity_equal, 4))?;
+    native.define_singleton_method("fork_identity_guard", function!(fork_identity_guard, 4))?;
 
     backend::define(ruby, &native)?;
     sandbox::define(ruby, &native)?;

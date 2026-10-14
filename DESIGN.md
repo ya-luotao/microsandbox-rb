@@ -176,7 +176,12 @@ see the counter through the spawn's own synchronization. Handlers cannot be
 unregistered, and Ruby never unloads an extension, so the handler stays
 valid for the life of the process. Should registration fail (`ENOMEM`), the
 generation stays 0 and the identity is effectively the pid alone.
-`Native.fork_generation` returns the counter, for the fork specs only.
+Three spec-only diagnostics on `Native` expose it: `fork_generation` returns
+the counter, and `fork_identity_equal` / `fork_identity_guard` run the real
+comparisons (`==`, the packed backend word, a handle's ownership check) on
+identities a spec chooses — the only way to pin that both halves decide,
+since a real fork changes both and pid reuse cannot be staged
+(`spec/unit/fork_identity_spec.rb`).
 
 Three pieces use the identity:
 
