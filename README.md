@@ -209,7 +209,7 @@ share the upstream tag, but the numbers have diverged since and the gem version
 is **not** an indicator of the embedded runtime. Ask the build instead:
 
 ```ruby
-Microsandbox::VERSION          # => "0.17.3"  (the gem's own version)
+Microsandbox::VERSION          # => "0.17.4"  (the gem's own version)
 Microsandbox.runtime_version   # => "v0.6.18" (the embedded upstream runtime tag)
 ```
 
@@ -248,6 +248,7 @@ constants against this gem's. Every release records its runtime in
 | `0.17.1` | `v0.6.18` | gem-only security and hardening release: relative host paths pinned at create time (GHSA-mcw9-9rf6-p4rm), `Volume.fs` path validation, `Cargo.lock` advisory updates, argument-guard and cleanup fixes, `SECURITY.md` |
 | `0.17.2` | `v0.6.18` | gem-only fix and release-pipeline hardening release: an interrupted native call no longer loses its result (a sandbox the call owns is stopped on `Timeout`/`Thread#kill`), release preflight, SHA-pinned workflow actions and `cargo deny` advisory checks, RBS and docs contract specs |
 | `0.17.3` | `v0.6.18` | gem-only fix release, fork safety: a forked child (Puma, Resque, Solid Queue) rebuilds its backend and runtime on its first SDK call instead of hanging or crashing, a handle created before the fork raises `ForkedHandleError` in the child, and nothing inherited from the parent is dropped there |
+| `0.17.4` | `v0.6.18` | gem-only fix release: fork safety identifies a process by pid and fork generation (survives pid reuse), `install`/`setup` leave the backend alone in a forked child, a `Sandbox` subclass's `initialize` runs outside the interrupt mask, and the macOS limit that a forked child must not build network clients is documented |
 
 ## Development
 
