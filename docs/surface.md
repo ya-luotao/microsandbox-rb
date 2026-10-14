@@ -59,7 +59,10 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 - **Errors** — the typed hierarchy in [errors.md](errors.md).
 - **Process model** — the SDK may be used before and after `fork`; objects
   created before a fork are refused in the child with `ForkedHandleError`
-  (see [runtime.md](runtime.md#forking-puma-resque-solid-queue)).
+  (see [runtime.md](runtime.md#forking-puma-resque-solid-queue)). On macOS a
+  forked child must not build network clients — cloud backends, image pulls,
+  `Image.load`, runtime install — or it crashes (see
+  [runtime.md](runtime.md#macos-no-network-clients-in-a-forked-child)).
 
 Create options span resources (`cpus`/`memory`/`max_cpus`/`max_memory`),
 `env`/`workdir`/`labels`/`user`/`hostname`/`shell`, named `scripts`, the image

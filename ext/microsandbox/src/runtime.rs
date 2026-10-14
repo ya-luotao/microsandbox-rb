@@ -50,11 +50,15 @@ use tokio::runtime::Runtime;
 
 use crate::error;
 
-/// The current Ruby handle. Safe to call from any bound method or value
-/// conversion: we always hold the GVL there (conversions run after `block_on`
-/// returns and re-acquires it).
+/// The current Ruby handle. Safe to call from any bound method, value
+/// conversion or error construction (`error::*`): we always hold the GVL there
+/// (both run after `block_on` returns and re-acquires it).
+///
+/// Panics when the calling thread does not hold the GVL (a `nogvl` callback, a
+/// tokio worker): `Ruby::get` checks that in release builds too, so a misplaced
+/// call fails loudly instead of touching Ruby without the lock.
 pub fn ruby() -> Ruby {
-    Ruby::get().expect("microsandbox: not on a Ruby thread")
+    Ruby::get().expect("microsandbox: not on a Ruby thread holding the GVL")
 }
 
 /// This process's id. The single `std::process::id()` call site: everything

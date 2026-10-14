@@ -9,6 +9,8 @@ use magnus::{value::ReprValue, Error, ExceptionClass, Module, RClass, RModule, R
 use microsandbox::{AgentClientError, MicrosandboxError, Operation, UnsupportedReason};
 use microsandbox_network::policy::BuildError;
 
+use crate::runtime::ruby;
+
 /// The Ruby class (relative to the `Microsandbox` module) for a core error.
 /// `"Error"` is the base class; anything else is a named subclass.
 fn class_name(err: &MicrosandboxError) -> &'static str {
@@ -88,16 +90,16 @@ fn exception_class(ruby: &Ruby, name: &str) -> Option<ExceptionClass> {
 }
 
 /// Convert a core error into a Ruby exception, preserving the typed class.
-// The `exception::runtime_error()` fallbacks fire only off a Ruby thread (which
-// never happens from a bound method); there is no handle-based alternative there.
-#[allow(deprecated)]
+///
+/// Every constructor in this module builds a Ruby exception class, so it must
+/// run on a Ruby thread holding the GVL: in a bound method, never inside a
+/// `block_on` future or a `nogvl` callback (those return the core error and
+/// get mapped after `block_on` returns). There is no exception class to build
+/// without the GVL, so [`ruby`] panics instead of handing out a handle that
+/// isn't backed by one.
 pub fn to_ruby(err: MicrosandboxError) -> Error {
     let message = err.to_string();
-    let ruby = match Ruby::get() {
-        Ok(ruby) => ruby,
-        // Not on a Ruby thread (should never happen from a bound method).
-        Err(_) => return Error::new(magnus::exception::runtime_error(), message),
-    };
+    let ruby = ruby();
 
     // `Unsupported` gets a Ruby-idiom message (`sandbox.kill` instead of
     // `Sandbox::kill`) plus structured `operation` / `hint` attributes on the
@@ -116,15 +118,8 @@ pub fn to_ruby(err: MicrosandboxError) -> Error {
 /// backend but have no SDK [`Operation`] (Ruby-only diagnostic hooks such as
 /// `Microsandbox.runtime_path`). `name` is the Ruby-facing API name. Mirrors
 /// the Python SDK's name-based `local_only` helper.
-#[allow(deprecated)]
 pub fn local_only(name: &str) -> Error {
-    match Ruby::get() {
-        Ok(ruby) => unsupported_error(&ruby, name, "use a local backend"),
-        Err(_) => Error::new(
-            magnus::exception::runtime_error(),
-            format!("{name} is not supported by this backend: use a local backend"),
-        ),
-    }
+    unsupported_error(&ruby(), name, "use a local backend")
 }
 
 /// Build a `Microsandbox::UnsupportedError` carrying the rendered message and
@@ -191,32 +186,26 @@ fn camel_to_snake(name: &str) -> String {
 
 /// A plain `Microsandbox::Error` (base) with a custom message — used for
 /// binding-level validation errors that have no core counterpart.
-#[allow(deprecated)]
 pub fn base_error(message: impl Into<String>) -> Error {
     let message = message.into();
-    match Ruby::get() {
-        Ok(ruby) => match exception_class(&ruby, "Error") {
-            Some(class) => Error::new(class, message),
-            None => Error::new(ruby.exception_runtime_error(), message),
-        },
-        Err(_) => Error::new(magnus::exception::runtime_error(), message),
+    let ruby = ruby();
+    match exception_class(&ruby, "Error") {
+        Some(class) => Error::new(class, message),
+        None => Error::new(ruby.exception_runtime_error(), message),
     }
 }
 
 /// `Microsandbox::ForkedHandleError`: a handle created in process `born` was
 /// used in process `cur`, a fork descendant (see `runtime::ForkGuarded`).
 /// `class` is the Ruby class users know the handle by.
-#[allow(deprecated)]
 pub fn forked_handle(class: &str, born: u32, cur: u32) -> Error {
     let message = format!(
         "{class} was created in process {born} and cannot be used in forked process {cur}; \
          create a new handle after fork (the original keeps working in process {born})"
     );
-    match Ruby::get() {
-        Ok(ruby) => match exception_class(&ruby, "ForkedHandleError") {
-            Some(class) => Error::new(class, message),
-            None => Error::new(ruby.exception_runtime_error(), message),
-        },
-        Err(_) => Error::new(magnus::exception::runtime_error(), message),
+    let ruby = ruby();
+    match exception_class(&ruby, "ForkedHandleError") {
+        Some(class) => Error::new(class, message),
+        None => Error::new(ruby.exception_runtime_error(), message),
     }
 }
