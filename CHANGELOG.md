@@ -15,8 +15,8 @@ now also survives pid reuse (a process is identified by its pid and fork
 generation together), `install`/`setup` in a forked child no longer touch the
 backend, a `Sandbox` subclass's `initialize` no longer runs with interrupts
 masked, and the macOS limit that a forked child must not build network clients
-is documented. It also picks up dependency updates: magnus 0.9, tokio 1.53 and
-rb-sys 0.9.130.
+is documented. It also picks up dependency updates: magnus 0.9, tokio 1.53,
+rb-sys 0.9.130, and rustls 0.23.46 for four TLS advisories (see Security).
 
 ### Fixed
 
@@ -50,6 +50,16 @@ rb-sys 0.9.130.
   child handler and identifies a process by its pid and that count together.
   `ForkedHandleError`'s message no longer names one pid as two processes when
   the pids are equal.
+
+### Security
+
+- **rustls 0.23.45 → 0.23.46** (a transitive dependency, through the network
+  stack's DNS client and the HTTP client). Fixes RUSTSEC-2026-0346 (`Debug`
+  output of client session values exposed TLS secrets), RUSTSEC-2026-0347
+  (buffered application data sent to the outer server after ECH rejection),
+  RUSTSEC-2026-0348 (Brotli certificate decompression could allocate up to
+  1 GiB before authentication) and RUSTSEC-2026-0349 (an unauthenticated
+  ServerHello could downgrade later connections to classical key exchange).
 
 ### Docs
 
