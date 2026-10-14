@@ -458,6 +458,42 @@ RSpec.describe "interrupted native calls", :fake_runtime do
       gate&.close
     end
 
+    # Pins *normal* interrupt handling, not merely "interruptible at the next
+    # blocking call": this initialize runs Ruby code without ever blocking, so
+    # a construction that deferred interrupts to a blocking operation
+    # (`Thread.handle_interrupt(Object => :on_blocking)`) would hold the raise
+    # back until `release` is closed. Bounded by a safety deadline either way.
+    it "Thread#raise lands inside a busy, non-blocking initialize and the sandbox is stopped" do
+      name = unique_sandbox_name("fr-subcpu")
+      entered = Queue.new
+      release = Queue.new
+      klass = subclass_with do
+        entered << true
+        deadline = FakeRuntime.now + 10
+        Thread.pass until release.closed? || FakeRuntime.now > deadline
+      end
+      thread = nil
+      without_gc do
+        thread = in_thread(entered) do
+          klass.create(name, image: rootfs)
+          :returned
+        rescue RuntimeError
+          :interrupted
+        end
+        await(entered, "busy initialize")
+        thread.raise(RuntimeError, "simulated interrupt")
+        expect(thread.join(5)).to be(thread),
+          "the raise was held back by a busy initialize that never blocks (it is still running, release not closed)"
+        expect(thread.value).to eq(:interrupted)
+        pid = FakeRuntime.relay_pid_for(name)
+        expect_torn_down(pid, within: 5, leak: "sandbox #{name} is running and no Ruby object owns it")
+        expect(FakeRuntime.shutdown_seen?(pid)).to be(true), "expected an explicit stop, not a GC drop"
+      end
+    ensure
+      release&.close
+      thread&.join(10)
+    end
+
     # An interrupt queued during the native call is delivered as the mask ends,
     # i.e. after the native call returned and before `new` ran: `initialize`
     # never runs, and only the bare native handle exists to clean up.
