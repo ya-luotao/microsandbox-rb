@@ -112,14 +112,20 @@ reached once the result is a Ruby object. What happens to it then:
   predicate as `connect_or_create`'s block form): one that was already
   running for someone else is left running. The Ruby wrapper is constructed
   *after* the mask, with normal interrupt handling, because `new` runs a
-  subclass's `initialize`: a constructor that blocks must not hold a
-  `Timeout.timeout` or `Thread#kill` back until it returns. So the cleanup
-  works on the native handle (its `owns_lifecycle` and `stop`), never on the
-  wrapper, and covers every way the caller can end up without the object: an
-  interrupt delivered as the mask ends (before `new` runs), one delivered
-  inside a subclass's `initialize`, and an exception that `initialize` raises
-  itself. A `SIGINT` cannot be masked this way; it can arrive before the
-  native handle is assigned, and then the next case applies.
+  subclass's `initialize`: a constructor that blocks or runs long must not
+  hold a `Timeout.timeout` or `Thread#kill` back until it returns. So the
+  cleanup works on the native handle (its `owns_lifecycle` and `stop`), never
+  on the wrapper, and covers the window from the native handle's assignment
+  through the wrapper's construction: an interrupt delivered as the mask ends
+  (before `new` runs), one delivered inside a subclass's `initialize`, and an
+  exception that `initialize` raises itself. That cleanup is best-effort, not
+  a guarantee for every lost return: a *further* interrupt that arrives during
+  the cleanup itself, before the native `stop` has started, or one delivered
+  at the method's final return boundary, after the wrapper has been handed
+  off but before the caller has assigned it, leaves the teardown to GC (as it
+  did before construction moved out of the mask). A `SIGINT` cannot be masked
+  this way; it can arrive before the native handle is assigned, and then the
+  next case applies.
 - **Every other wrapper** (`ExecHandle`, streams, SSH clients, write sinks, …)
   and every plain result simply becomes garbage; GC frees the wrapper and the
   Rust value's `Drop` closes the session or connection.

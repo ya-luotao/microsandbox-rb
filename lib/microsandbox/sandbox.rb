@@ -625,6 +625,13 @@ module Microsandbox
       #   raise` — is what also covers `Thread#kill`, which no `rescue` can
       #   catch.
       #
+      # The protected window is the native handle's assignment through the
+      # wrapper's construction, and the cleanup in it is best-effort: a
+      # *further* interrupt that lands during the cleanup, before the native
+      # `stop` has started, or one delivered at this method's return boundary
+      # (after `handed_off` is set, before the caller has assigned the result),
+      # leaves the teardown to GC.
+      #
       # A SIGINT (Ctrl-C on the main thread) is the exception: it is not queued
       # like those two and cannot be masked. One that lands during the native
       # call is raised the moment the call returns — the VM checks interrupts
