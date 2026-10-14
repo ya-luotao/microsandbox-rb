@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
@@ -77,7 +77,7 @@ jobs:
       - name: Smoke-test the host platform gem (msb --version)
         run: rake -C binaries 'vendor[x86_64-linux-gnu]' verify
       - run: ls -la binaries/pkg
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gem-binaries
           path: binaries/pkg/*.gem
@@ -87,7 +87,7 @@ jobs:
     name: source gem
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1.329.0
         with:
           ruby-version: "3.4"
@@ -103,7 +103,7 @@ jobs:
           mkdir -p pkg
           gem build microsandbox-rb.gemspec --output "pkg/microsandbox-rb-${version}.gem"
           ls -la pkg
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gem-source
           path: pkg/*.gem
@@ -145,7 +145,7 @@ jobs:
       # Never interpolated into the script text: passed through the environment.
       PREFLIGHT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.preflight_ref || github.ref_name }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history + all tags: the script resolves the tag and asks
           # whether its commit is an ancestor of origin/main. (NOT
@@ -181,7 +181,7 @@ jobs:
       contents: read
       id-token: write # required for Trusted Publishing (OIDC)
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: gem-source
           path: dist
@@ -242,7 +242,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: gem-binaries
           path: dist
@@ -284,7 +284,7 @@ jobs:
     permissions:
       contents: write # create/edit the GitHub Release
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history + all tags, so the "is this the newest tag?" check below
           # (git tag --sort=-v:refname) sees every version. NOT fetch-tags:true —
