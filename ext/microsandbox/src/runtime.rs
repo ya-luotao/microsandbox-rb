@@ -209,6 +209,13 @@ impl<T> Drop for ForkGuarded<T> {
 /// Every module's `define` calls this for each type it wraps, right after
 /// defining the class, so wrapping a value afterwards is `TypedData::class`
 /// reading a resolved static plus `rb_data_typed_object_wrap`.
+///
+/// Doing it at load also keeps that first resolution away from concurrent
+/// callers, which matters since magnus 0.9: the static is a magnus `Lazy`, an
+/// `OnceLock` whose initializer (the `const_get`) runs while holding the lock.
+/// That `funcall` can switch Ruby threads, and a second thread reaching the
+/// same lock would block on it while holding the GVL the first one needs to
+/// finish.
 pub fn preload_class<T: TypedData>(ruby: &Ruby) {
     let _ = T::class(ruby);
 }
