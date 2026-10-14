@@ -497,7 +497,7 @@ module Microsandbox
         opts = build_create_opts(**kwargs)
         Microsandbox.ensure_runtime!
         # Everything Ruby-level happens BEFORE `acquire`: its interrupt mask must
-        # cover only the native call plus the wrap, never caller-supplied code.
+        # cover only the native call, never caller-supplied code.
         sandbox_name = name.to_s
         sandbox = acquire { Native::Sandbox.create(sandbox_name, opts) }
         return sandbox unless block_given?
@@ -603,17 +603,27 @@ module Microsandbox
       # sandbox would be garbage and only GC would stop it, "eventually"; for
       # `Timeout.timeout { Sandbox.create(...) }` that is not good enough. So:
       #
-      # - the acquisition runs under `Thread.handle_interrupt(Object => :never)`,
-      #   which holds a queued exception (or kill) back until the wrapper is
-      #   assigned. The mask covers only the uninterruptible native call plus
-      #   the wrap, so it changes no observable timing; runtime provisioning
-      #   ({Microsandbox.ensure_runtime!}) and the block forms' `yield` stay
-      #   outside it, with normal interrupt handling. For the same reason the
-      #   block passed here must contain NOTHING but the native call: argument
-      #   conversion (`name.to_s`, option Hashes) is the caller's own code and
-      #   has to run before `acquire`, where it stays interruptible;
-      # - the `ensure` plus the `acquired` flag — not `rescue Exception; raise` —
-      #   is what also covers `Thread#kill`, which no `rescue` can catch.
+      # - the native call runs under `Thread.handle_interrupt(Object => :never)`,
+      #   which holds a queued exception (or kill) back until the bare
+      #   {Native::Sandbox} is assigned to a local. The mask covers only that
+      #   uninterruptible call, so it changes no observable timing; runtime
+      #   provisioning ({Microsandbox.ensure_runtime!}), the wrapper's
+      #   construction and the block forms' `yield` stay outside it, with
+      #   normal interrupt handling. For the same reason the block passed here
+      #   must contain NOTHING but the native call: argument conversion
+      #   (`name.to_s`, option Hashes) is the caller's own code and has to run
+      #   before `acquire`, where it stays interruptible;
+      # - the wrapper is built after the mask (`new` may run a subclass's
+      #   `initialize`, which must not hold a `Timeout`/`Thread#kill` back), so
+      #   a held-back interrupt is delivered as the mask ends, before `new`.
+      #   Until `new` has returned, the cleanup therefore works on the bare
+      #   native handle, never on the wrapper: an interrupt at that point, one
+      #   that lands inside a subclass's `initialize`, and an exception that
+      #   `initialize` raises itself all leave the caller without a reference,
+      #   so all three stop the sandbox (when owned, see below);
+      # - the `ensure` plus the `handed_off` flag — not `rescue Exception;
+      #   raise` — is what also covers `Thread#kill`, which no `rescue` can
+      #   catch.
       #
       # A SIGINT (Ctrl-C on the main thread) is the exception: it is not queued
       # like those two and cannot be masked. One that lands during the native
@@ -625,30 +635,32 @@ module Microsandbox
       # Ownership: {connect_or_create} can hand back a sandbox that was already
       # running for someone else, and {start} restarts a persisted one. The
       # cleanup therefore applies EXACTLY the predicate the block form of
-      # {connect_or_create} uses — {Sandbox#owns_lifecycle?} — in all three
+      # {connect_or_create} uses — the lifecycle ownership behind
+      # {Sandbox#owns_lifecycle?}, read from the native handle — in all three
       # callers, {create} included: a sandbox this call does not own is never
       # stopped here. Its reference is just let go (GC closes the handle, the
       # sandbox keeps running).
       # @yieldreturn [Native::Sandbox]
       # @return [Sandbox]
       def acquire
-        sandbox = nil
-        acquired = false
+        native = nil
+        handed_off = false
         begin
           Thread.handle_interrupt(Object => :never) do
-            sandbox = new(yield)
+            native = yield
           end
-          acquired = true
+          sandbox = new(native)
+          handed_off = true
+          sandbox
         ensure
-          if sandbox && !acquired && sandbox.owns_lifecycle?
+          if native && !handed_off
             begin
-              sandbox.stop
+              native.stop if native.owns_lifecycle
             rescue Microsandbox::Error
               # best-effort cleanup; the interrupt is what the caller must see
             end
           end
         end
-        sandbox
       end
 
       # @api private

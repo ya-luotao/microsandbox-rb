@@ -8,6 +8,19 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `Sandbox` subclass's `initialize` no longer runs with interrupts
+  masked.** `Sandbox.create`, `.connect_or_create` and `.start` (and
+  `PullSession#sandbox`) hold a queued `Thread#raise`/`Timeout`/`Thread#kill`
+  back only while the native call runs; the wrapper is now built after that,
+  so a subclass whose constructor blocks no longer delays a `Timeout.timeout`
+  or `Thread#kill` until the constructor returns. The interrupt cleanup moved
+  to the native handle with it: an interrupt that lands before or during
+  `initialize`, or an exception `initialize` raises, still stops the sandbox
+  when the call owns it and leaves one it merely connected to running.
+  Behaviour of `Sandbox` itself is unchanged.
+
 ## [0.17.3] - 2026-10-13
 
 Gem-only fix release; the embedded runtime stays at **`v0.6.18`**. A process
