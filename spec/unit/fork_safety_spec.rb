@@ -81,6 +81,47 @@ RSpec.describe "fork safety (subprocess)" do
     end
   end
 
+  # `install` / `setup` never use the backend, so in a forked child they must
+  # not take the inherited one over: the child's next call that does use it is
+  # still the one that adopts. See installer_child in the probe: the call that
+  # adopts resolves the environment ladder as it is then, and a broken one
+  # makes that call fail. The runtime is already in place (the installer
+  # downloads nothing), and every proxy points at a closed port in case it
+  # tried to.
+  describe "the runtime installer in a forked child" do
+    let(:no_download) do
+      %w[HTTP_PROXY http_proxy HTTPS_PROXY https_proxy ALL_PROXY all_proxy].to_h { |name| [name, "http://127.0.0.1:9"] }
+        .merge("NO_PROXY" => nil, "no_proxy" => nil)
+    end
+
+    def expect_installer_left_backend_alone(run)
+      expect_clean(run)
+      expect_instant(run, "parent.warm", "child.install", "child.list1", "parent.after")
+      # The installer did not adopt: the first catalog read after it did, with
+      # the broken environment, and failed; the next one recovered.
+      expect(run[:steps].fetch("child.adopts")).to include("ok" => false, "error" => "Microsandbox::InvalidConfigError")
+    end
+
+    {
+      "install" => %w[install_then_env_breaks install_env_broken],
+      "setup" => %w[setup_then_env_breaks setup_env_broken]
+    }.each do |call, (then_breaks, broken)|
+      it "#{call} does not take the backend over before the environment breaks" do
+        expect_installer_left_backend_alone(run_probe(then_breaks, root: root, probe: probe, env: no_download))
+      end
+
+      it "#{call} works while the inherited selection does not resolve" do
+        expect_installer_left_backend_alone(run_probe(broken, root: root, probe: probe, env: no_download))
+      end
+    end
+
+    it "lets a child install after its parent did" do
+      run = run_probe("install_in_both", root: root, probe: probe, env: no_download)
+      expect_clean(run)
+      expect_instant(run, "parent.install", "parent.warm", "child.install", "child.list1", "parent.after")
+    end
+  end
+
   it "control: a child forked before any SDK use works" do
     run = run_probe("fresh", root: root, probe: probe)
     expect_clean(run)

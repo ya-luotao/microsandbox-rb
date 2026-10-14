@@ -180,7 +180,11 @@ pieces implement it, all keyed on the pid (`runtime::current_pid`):
   file), or an explicit `set_default_backend`/`with_backend` selection — and
   the pid it belongs to. `ensure_this_process_backend` runs, with the GVL
   held, at the start of every `block_on` and of every synchronous entry that
-  reads the backend. In a process whose pid differs from the recorded one it
+  reads the backend. The one exception is the runtime installer
+  (`Native.install`, `Native.setup`): it never reads the backend, so it runs
+  through `block_on_runtime_install`, which skips the check, and a child that
+  installs leaves the record alone for its first call that does use the
+  backend. In a process whose pid differs from the recorded one it
   builds a fresh backend from the record, swaps it into the core and
   `mem::forget`s the inherited one, along with the backends that open
   `with_backend` scopes had saved for their restore. A scope the parent opened
@@ -212,9 +216,10 @@ pieces implement it, all keyed on the pid (`runtime::current_pid`):
   through `peek()`, so a child can still read the name it needs to open a
   handle of its own.
 
-What a child leaks is bounded: one runtime, the inherited default backend, the
-saved backend of each open scope, and each inherited handle it collects; plus
-one backend for each parent-opened scope it closes.
+What a child leaks is bounded: one runtime; once it uses the backend, the
+inherited default backend and the saved backend of each open scope; each
+inherited handle it collects; plus one backend for each parent-opened scope it
+closes. A child that only installs the runtime builds no backend.
 
 The mutexes involved (`backend.rs`) are only taken with the GVL held, and
 nothing that runs under them calls into Ruby or releases the GVL — Ruby

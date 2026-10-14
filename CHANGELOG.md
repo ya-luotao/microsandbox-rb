@@ -22,6 +22,15 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   leaves one it merely connected to running.
   Behaviour of `Sandbox` itself is unchanged.
 
+- **`Microsandbox.install` and `Microsandbox.setup` no longer take over the
+  backend in a forked child.** They went through the same entry as every
+  other native call, so in a child they first rebuilt the backend inherited
+  from the parent — which they never use — and failed with the configuration
+  error when the parent's selection no longer resolved in the child (say its
+  environment selected the cloud backend without an API key). They now leave
+  the backend alone; the child's first call that uses it takes it over, as
+  before.
+
 ### Docs
 
 - **Known limitation: on macOS a forked child must not build network

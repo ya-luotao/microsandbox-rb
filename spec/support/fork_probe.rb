@@ -18,6 +18,7 @@
 # fake cloud API instead; the spec runs it (WireCapture::KeepAliveCloudApi)
 # and passes its URL in FORK_PROBE_CLOUD_URL.
 
+require "fileutils"
 require "json"
 require "microsandbox"
 
@@ -53,6 +54,60 @@ module ForkProbe
 
   def volumes
     Microsandbox::Volume.list.size
+  end
+
+  # Put a runtime where `install` and `setup` look for it (MSB_HOME), so that
+  # they return without downloading anything: an `msb` that reports this gem's
+  # runtime version, and a file named like the platform's libkrunfw. The spec
+  # also points every proxy variable at a closed port, so an install that
+  # misses this and tries to download fails at once instead.
+  def fake_installed_runtime
+    home = ENV.fetch("MSB_HOME")
+    bin = File.join(home, "bin")
+    lib = File.join(home, "lib")
+    FileUtils.mkdir_p([bin, lib])
+    msb = File.join(bin, "msb")
+    File.write(msb, "#!/bin/sh\necho 'msb #{Microsandbox::RUNTIME_VERSION.delete_prefix("v")}'\n")
+    File.chmod(0o755, msb)
+    # libkrunfw's ABI 5 / 5.6.1, as named by the core (microsandbox_utils::libkrunfw_filename).
+    firmware = RUBY_PLATFORM.include?("darwin") ? "libkrunfw.5.dylib" : "libkrunfw.so.5.6.1"
+    File.write(File.join(lib, firmware), "not a real libkrunfw\n")
+    abort "fork probe: the fake runtime is not recognised as installed" unless Microsandbox.installed?
+  end
+
+  # `Microsandbox.install`, or the same through `setup`.
+  def run_installer(kind)
+    if kind == :setup
+      Microsandbox.setup(base_dir: ENV.fetch("MSB_HOME"))
+    else
+      Microsandbox.install
+    end
+    true
+  end
+
+  # The runtime installer in a forked child must leave the inherited backend
+  # alone: the child's first call that USES the backend is still the one that
+  # takes it over. That call resolves the parent's selection (the environment
+  # ladder) again, as the child's environment has it at that moment — so a
+  # broken ladder (cloud, no API key) shows which call adopted: it fails, and
+  # the next one, once the environment is repaired, succeeds. With +broken+
+  # the environment breaks before the installer runs (which therefore must
+  # not resolve it), otherwise just after it (so the installer must not have
+  # resolved it already, with the good environment).
+  def installer_child(kind, broken:)
+    ENV["MSB_BACKEND"] = "cloud" if broken # and no API key
+    ok = step("child.install") { run_installer(kind) }
+    ENV["MSB_BACKEND"] = "cloud"
+    ok &= !step("child.adopts") { volumes } # it must have raised
+    ENV.delete("MSB_BACKEND")
+    ok &= step("child.list1") { volumes }
+    exit(ok ? 0 : 1)
+  end
+
+  def installer_scenario(kind, broken:)
+    fake_installed_runtime
+    step("parent.warm") { volumes }
+    reap(fork { installer_child(kind, broken: broken) }) { step("parent.after") { volumes } }
   end
 
   # Wait for +pid+, report how it ended, and leave with its verdict (after the
@@ -91,6 +146,26 @@ module ForkProbe
   end
 
   SCENARIOS = {
+    # The runtime installer in a forked child (see installer_child).
+    "install_then_env_breaks" => -> { installer_scenario(:install, broken: false) },
+    "install_env_broken" => -> { installer_scenario(:install, broken: true) },
+    "setup_then_env_breaks" => -> { installer_scenario(:setup, broken: false) },
+    "setup_env_broken" => -> { installer_scenario(:setup, broken: true) },
+
+    # The parent ran the installer too (it runs `msb --version`, a child
+    # process of its own), then forks; the child installs and reads.
+    "install_in_both" => lambda do
+      fake_installed_runtime
+      step("parent.install") { run_installer(:install) }
+      step("parent.warm") { volumes }
+      pid = fork do
+        ok = step("child.install") { run_installer(:install) }
+        ok &= step("child.list1") { volumes }
+        exit(ok ? 0 : 1)
+      end
+      reap(pid) { step("parent.after") { run_installer(:install) && volumes } }
+    end,
+
     # (f) control: the parent has not touched the SDK when it forks.
     "fresh" => lambda do
       reap(fork { child_reads })
