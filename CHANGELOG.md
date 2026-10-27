@@ -8,6 +8,15 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.17.5] - 2026-10-27
+
+Gem-only security release; the embedded runtime stays at **`v0.6.18`**.
+Dependency updates clear ten new RustSec advisories, RUSTSEC-2026-0381 to
+-0410. They include the zstd copy that decompresses pulled image layers.
+Three zstd advisories remain on a second copy that sits only on an
+external-kernel path the runtime never takes (see Security). `SECURITY.md`
+now maps four more upstream advisories to gem versions.
+
 ### Security
 
 - **zstd 0.13.3 → 0.14.3, zstd-safe 7.2.4 → 8.2.0 and zstd-sys 2.0.16 →
@@ -40,6 +49,15 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
   never configures one — it boots from libkrunfw — and VMs run in the `msb`
   process, not in the gem. It will be re-checked on the next runtime
   adoption.
+
+### Docs
+
+- **`SECURITY.md` maps four more upstream advisories to gem versions.** It
+  now lists GHSA-rh2c-vm8j-5gg6 (`Volume.fs` paths escaping the volume root:
+  affected `0.7.0`–`0.17.0`, mitigated in `0.17.1`; its upstream range is
+  incomplete), GHSA-v693-3rfr-6q3q (fixed from `0.9.2`) and
+  GHSA-89j4-256r-3pcq (fixed from `0.5.10`), and records that
+  GHSA-xgg5-hjwq-2gw8 affects no release of this gem.
 
 ## [0.17.4] - 2026-10-14
 
@@ -1612,7 +1630,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.4...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.5...HEAD
+[0.17.5]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.4...v0.17.5
 [0.17.4]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.1...v0.17.2
