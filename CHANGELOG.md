@@ -8,6 +8,39 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Security
+
+- **zstd 0.13.3 → 0.14.3, zstd-safe 7.2.4 → 8.2.0 and zstd-sys 2.0.16 →
+  2.1.2 for image-layer decompression** (transitive, through
+  async-compression 0.4.51 / compression-codecs 0.4.46). The SDK decompresses
+  pulled OCI image layers through these, so this fixes RUSTSEC-2026-0391
+  (data from an abandoned stream leaked into the next stream on a reused
+  context), RUSTSEC-2026-0398 (`Seekable::decompress` set a `Vec` length past
+  its capacity) and RUSTSEC-2026-0403 (uninitialized memory exposed when
+  streaming decompression of a legacy frame failed) on that path. The
+  zstd-sys bump also fixes RUSTSEC-2026-0410 (its WebAssembly allocator shim
+  corrupted memory on allocation failure) for every zstd user in the build.
+- **rustls-webpki 0.103.15 → 0.103.16, webpki-roots and webpki-root-certs
+  1.0.7 → 1.0.11** (transitive, through the TLS stack: the HTTP clients and
+  the network stack's DNS client). Fixes RUSTSEC-2026-0382 (certificate
+  verification could accept distrusted intermediates) and RUSTSEC-2026-0381 /
+  RUSTSEC-2026-0383 (the bundled root certificates trusted distrusted emSign
+  intermediates).
+- **tokio 1.53.2 → 1.54.1.** Fixes RUSTSEC-2026-0386 (`AsyncFd::new` and
+  related constructors violated I/O safety).
+- **crypto-bigint 0.7.5 → 0.7.10 and ctutils 0.4.2 → 0.4.6** (transitive,
+  through the SSH client, russh). Fixes RUSTSEC-2026-0387 and
+  RUSTSEC-2026-0385 (timing variability in operations meant to be constant
+  time). crypto-bigint 0.7.5 had also been yanked.
+- **Not fixed: a second copy of zstd 0.13.3 / zstd-safe 7.2.4 stays in the
+  build** for RUSTSEC-2026-0391, -0398 and -0403. It comes only from the VM
+  monitor crate pinned by the embedded runtime `v0.6.18` (msb_krun_vmm
+  0.1.32; no release of it moves to zstd 0.14), which uses it on x86_64
+  solely to decompress an external zstd-compressed kernel image. The runtime
+  never configures one — it boots from libkrunfw — and VMs run in the `msb`
+  process, not in the gem. It will be re-checked on the next runtime
+  adoption.
+
 ## [0.17.4] - 2026-10-14
 
 Gem-only fix release; the embedded runtime stays at **`v0.6.18`**. Fork safety
