@@ -42,4 +42,5 @@ through `Microsandbox::Volume.fs(name)` / `VolumeInfo#fs` (a `VolumeFs`). See
 
 Paths are relative to the volume root; a leading `/` is the volume root, not the
 host root. A path containing a `..` segment is refused with `FilesystemError` in
-every operation.
+every operation. Versions `0.7.0`–`0.17.0` did not refuse such paths and are
+affected by GHSA-rh2c-vm8j-5gg6; see [SECURITY.md](../SECURITY.md).
