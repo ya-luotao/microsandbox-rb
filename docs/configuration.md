@@ -28,7 +28,7 @@ To leave headroom for a live CPU/memory resize later, reserve a ceiling with
 The full option list — `init`/`ephemeral`, disk-image `fstype`, `log_level`,
 `security`, `rlimits`, `pull_policy`, `secrets`, `patches`
 (`Microsandbox::Patch`), the structured `root_disk:` (`Microsandbox::RootDisk`),
-`from_snapshot:`, `cmd:`, `detached:`, `idle_timeout`/`max_duration`, and more —
+`secret_violation_action:`, `cmd:`, `detached:`, `idle_timeout`/`max_duration`, and more —
 is documented in [surface.md](surface.md) and typed in
 [`sig/microsandbox.rbs`](../sig/microsandbox.rbs).
 
@@ -37,7 +37,10 @@ is documented in [surface.md](surface.md) and typed in
 `network:` takes composable profiles (`:public`, `:private`, `:host`, `:none`)
 or a custom `Microsandbox::NetworkPolicy` with per-rule CIDR/IP/domain/suffix/
 group allow-deny rules, per-direction defaults, DNS and TLS-interception
-settings, IPv4/IPv6 pools, `max_connections`, and `trust_host_cas`.
+settings, IPv4/IPv6 pools, connection caps (`max_tcp_connections:` for
+proxied TCP connections, `max_udp_connections:` for UDP relay sessions; `0`
+means unlimited, omit to keep the runtime default; `max_connections:` is a
+deprecated alias of the TCP cap), and `trust_host_cas`.
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",
@@ -48,20 +51,60 @@ Microsandbox::Sandbox.create("worker", image: "python",
 
 ### Strict hostname policy
 
-`strict: true` (runtime `v0.6.18`) makes a hostname-rule allow fail closed
+Strict mode (runtime `v0.6.18`) makes a hostname-rule allow fail closed
 unless the runtime can actually see the request authority (plain-HTTP `Host`,
 or SNI/`:authority` under TLS interception); a bypassed or non-intercepted
 HTTPS flow allowed only by a hostname rule is then denied before the upstream
-dial. Default `false`; create-only. Independently of `strict:`, any policy with
-domain rules checks plain-HTTP `Host` headers against it.
+dial. It is **on by default since 0.18.0** (runtime `v0.7`; it was opt-in
+before): pass `strict: false` to opt out. Create-only. Independently of
+`strict:`, any policy with domain rules checks plain-HTTP `Host` headers
+against it.
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",
   network: Microsandbox::NetworkPolicy.custom(default_egress: :deny,
     rules: [{ action: :allow, direction: :egress, protocol: :tcp, port: 443,
-              destination: Microsandbox::Destination.domain("api.example.com") }]),
-  strict: true)
+              destination: Microsandbox::Destination.domain("api.example.com") }]))
+# strict hostname enforcement applies by default; `strict: false` opts out.
 ```
+
+### HTTP deny response
+
+Since 0.18.0 (runtime `v0.7`) a request the network policy denies is answered
+instead of reset: a denied plain-HTTP request — or an HTTPS one under TLS
+interception — gets `403 Forbidden` with a JSON body such as
+`{"code": "network_policy_denied", "domain": "example.com", "message":
+"Request blocked by network policy."}`, and a request that a secret policy
+blocks gets one too. Other denied traffic is still dropped. This is the
+default for every sandbox the runtime starts, including ones created under
+0.17.x or earlier: their stored config has no `http` setting, so they pick up
+the default on their next start.
+
+Tune it with the create-only `http:` Hash:
+
+```ruby
+Microsandbox::Sandbox.create("worker", image: "python",
+  http: { network_message: "Egress is limited to the build mirror.",
+          secret_message: "Secrets only go to api.example.com." })
+
+# a plain-text 403 body instead of JSON (no custom messages in this format)
+Microsandbox::Sandbox.create("worker", image: "python", http: { format: :text })
+
+# the 0.17 behaviour: close the connection, no HTTP answer
+Microsandbox::Sandbox.create("worker", image: "python", http: { deny_response: false })
+```
+
+| Key | Values | Default |
+|---|---|---|
+| `deny_response:` | `true` / `false` | `true` |
+| `format:` | `:json` / `:text` (Symbol or String) | `:json` |
+| `network_message:` | String, used as is as the JSON `message` of a network-policy denial | the runtime's message |
+| `secret_message:` | String, the JSON `message` of a secret-policy denial | the runtime's message |
+
+The two messages need the JSON format and an enabled response; an unknown key
+or a wrong type raises `ArgumentError`. The setting is local-only: a cloud
+create accepts the defaults and `deny_response: false`, and raises
+`UnsupportedError` for a custom format or message.
 
 ## Outbound proxy
 
@@ -93,18 +136,106 @@ Microsandbox::Sandbox.create("worker", image: "python",
 ## Secrets
 
 `secrets:` gives the guest a placeholder and substitutes the real value only in
-requests to the hosts you allow, with multi-host / wildcard allow-lists,
-injection toggles, and a per-secret or sandbox-level violation policy. At
-create time it is an **Array of specs**: `env:` is the variable the guest sees
-(holding the placeholder), `value:` is the real secret, and `host:` / `hosts:` /
-`host_patterns:` is the allow-list.
+requests to the hosts you allow. At create time it is an **Array of specs** (one
+bare spec Hash also works): `env:` is the variable the guest sees (holding the
+placeholder), `value:` is the real secret, and `allow:` — required, non-empty —
+lists the hosts that may receive the real value: exact names, `"*.example.com"`
+wildcards, or `"*"` for ANY host (upstream's `allow_any_host_dangerous`; use it
+only when you mean it).
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",
-  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }])
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), allow: ["api.example.com"] }])
 # inside the guest: $API_KEY is "$MSB_API_KEY"; the proxy swaps in the real
 # value for requests to api.example.com only
 ```
+
+The other per-secret keys:
+
+- `allow_placeholder_for:` — hosts that may receive the **unchanged
+  placeholder** without it counting as a violation (e.g. an internal service
+  that only forwards it).
+- `placeholder:` — the guest-visible stand-in (default `$MSB_<env>`).
+- `require_tls_identity:` — substitute only over TLS whose server identity was
+  verified (default `true`).
+- `substitution:` — where the value may be substituted:
+  `{ headers:, header_fields:, query:, body: }`. Defaults: headers on, query
+  and body off. `header_fields: [...]` limits header substitution to the named
+  headers (it needs headers on). At least one location must stay enabled.
+  Inside an allowed header the runtime substitutes a Basic credential in
+  decoded form, otherwise the literal placeholder in any scheme (`Bearer`,
+  `token`, …); there is no Basic-only setting.
+- `violation_action:` — what happens when the placeholder heads for a host not
+  in `allow:`/`allow_placeholder_for:`: `:block`, `:block_and_log`, or
+  `:block_and_terminate` (kebab-case spellings are accepted too). The
+  sandbox-wide default is the create keyword `secret_violation_action:`
+  (upstream default `block_and_log`).
+
+### Migrating secrets from 0.17.x
+
+Runtime `v0.7` replaced the secrets vocabulary. The old keys raise
+`ArgumentError` naming their replacement instead of being silently dropped:
+
+| 0.17.x | 0.18.0 |
+| --- | --- |
+| `host:` / `hosts:` / `host_patterns:` | one `allow: [...]` list (wildcards included) |
+| `inject_headers:` / `inject_query:` / `inject_body:` | `substitution: { headers:, query:, body: }` |
+| `inject_basic_auth:` | removed, with no Basic-only equivalent: see [Basic-only secrets](#basic-only-secrets-inject_basic_auth) |
+| `require_tls:` | `require_tls_identity:` |
+| `on_violation:` (per secret) | `violation_action:` |
+| `on_secret_violation:` (create) | `secret_violation_action:` |
+| passthrough violation policy (`passthrough_hosts:` / `"passthrough"`) | per-secret `allow_placeholder_for: [...]` |
+
+`passthrough:` is still accepted on a secret spec as a deprecated alias of
+`allow_placeholder_for:` (it warns, and the two lists are merged).
+
+#### Basic-only secrets (`inject_basic_auth:`)
+
+0.17.x could substitute a secret only inside a Basic `Authorization` header
+(`inject_basic_auth: true` with `inject_headers: false`). Runtime `v0.7` has no
+such setting. The narrowest replacement is:
+
+```ruby
+Microsandbox::Sandbox.create("worker", image: "public.ecr.aws/docker/library/alpine:latest",
+  secrets: [{env: "API_KEY", value: ENV.fetch("API_KEY"), allow: ["api.example.com"],
+             substitution: {headers: true, header_fields: ["Authorization"], query: false, body: false}}])
+```
+
+It still widens the old policy within that one header: the runtime
+substitutes a Basic credential in decoded form and otherwise replaces the
+literal placeholder in any scheme, such as `Bearer` or `token`. Never use a
+bare `substitution: { headers: true }` for such a secret: it substitutes the
+value into **every** header sent to an allowed host, including ones a server
+may reflect or log.
+
+**Saved sandboxes are widened automatically.** The first `v0.7` runtime to
+open a 0.17.x runtime home converts every saved Basic-only secret to
+substitution in every header, with no `header_fields` allowlist (upstream
+catalog migration `migrate_secret_config`). No removed keyword is involved,
+and `modify` cannot narrow the converted policy. After the conversion such a
+secret looks the same as one that asked for header-wide substitution, so find
+the affected sandboxes **before upgrading**, with 0.17.x:
+
+```ruby
+# Run with microsandbox-rb 0.17.x, before upgrading.
+page = Microsandbox::Sandbox.list_with(limit: 100)
+loop do
+  page.each do |h|
+    secrets = h.config.dig("network", "secrets", "secrets") || []
+    basic_only = secrets.any? { |s| s.dig("injection", "basic_auth") && !s.dig("injection", "headers") }
+    puts h.name if basic_only
+  end
+  break unless page.next_cursor
+  page = Microsandbox::Sandbox.list_with(limit: 100, cursor: page.next_cursor)
+end
+```
+
+Then, after upgrading and before any of them is started again, remove each
+one (`Sandbox.remove`) and create it again with the recipe above. The new
+sandbox starts from a fresh root disk. If you already
+upgraded without the list, treat every saved secret whose `substitution` has
+`headers: true` and no `header_fields` (in `SandboxHandle#config`) as a
+candidate.
 
 An inline `value:` is part of the sandbox's saved configuration: it is stored
 in cleartext in the local catalog under the runtime home (`~/.microsandbox` by
@@ -142,13 +273,18 @@ written from the host without booting a sandbox via `Volume.fs` /
 `VolumeInfo#fs`.
 
 A relative host path (`volumes: { "/data" => "./data" }`, `image: "./rootfs"`,
-a `root_disk:` image, a `Patch.copy_file` source, a `tls:` certificate, a
-path-form `from_snapshot:`) is resolved **once, when the sandbox is created**,
+a `root_disk:` image, a `Patch.copy_file` source, a `tls:` certificate) is resolved **once, when the sandbox is created**,
 against the creating process's working directory, and stored as an absolute
 path. Starting the sandbox later from another directory mounts the same host
-directory. Resolution does not follow symlinks. Sandboxes created by gem
+directory. Resolution does not follow symlinks, and since runtime `v0.7` a bind
+path that goes through a symlink (macOS's `/tmp` → `/private/tmp`, say) is
+refused unless the mount sets `follow_root_symlinks: true`; pass the resolved
+path instead. Sandboxes created by gem
 versions before `0.17.1` kept the relative path and resolved it again on every
 start ([GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm));
 recreate those. On a cloud backend, host paths are sent as written.
 
-Boot from a snapshot with `Sandbox.create(name, from_snapshot: "snap-name-or-path")`.
+`Sandbox.restore` anchors a relative snapshot path (and `snapshot_base:`) the
+same way, when it is called. It replaced `Sandbox.create(name, from_snapshot:
+...)`, which raises with directions since 0.18.0; see
+[images.md](images.md#restoring-a-snapshot).

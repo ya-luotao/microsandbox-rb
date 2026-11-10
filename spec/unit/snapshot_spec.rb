@@ -20,14 +20,51 @@ RSpec.describe Microsandbox::Snapshot do
       expect(info.size_bytes).to eq(2048)
     end
 
-    it "passes dest_dir (the parent directory) and the resumable flag" do
+    it "passes dest_dir (the parent directory) and the full flag" do
       allow(Microsandbox::Native::Snapshot).to receive(:create).and_return(
         "digest" => "sha256:abc", "path" => "/tmp/snaps/snap1"
       )
-      described_class.create("snap1", from_sandbox: "box", dest_dir: "/tmp/snaps", resumable: true)
+      described_class.create("snap1", from_sandbox: "box", dest_dir: "/tmp/snaps", full: true)
       expect(Microsandbox::Native::Snapshot).to have_received(:create).with(
-        "snap1", hash_including("dest_dir" => "/tmp/snaps", "resumable" => true)
+        "snap1", hash_including("dest_dir" => "/tmp/snaps", "full" => true)
       )
+    end
+
+    it "rejects the removed resumable: keyword with directions" do
+      allow(Microsandbox::Native::Snapshot).to receive(:create)
+      [true, false].each do |value|
+        expect { described_class.create("snap1", from_sandbox: "box", resumable: value) }
+          .to raise_error(ArgumentError, /resumable:\) was renamed to full: in 0\.18\.0/)
+      end
+      expect(Microsandbox::Native::Snapshot).not_to have_received(:create)
+    end
+
+    it "passes guest_flush: as auto/required/skip (Symbol or String) and omits it by default" do
+      allow(Microsandbox::Native::Snapshot).to receive(:create).and_return("digest" => "sha256:abc")
+      described_class.create("snap1", from_sandbox: "box")
+      expect(Microsandbox::Native::Snapshot).to have_received(:create).with("snap1", {"from_sandbox" => "box"})
+      [[:auto, "auto"], ["required", "required"], [:skip, "skip"]].each do |value, wire|
+        described_class.create("snap1", from_sandbox: "box", guest_flush: value)
+        expect(Microsandbox::Native::Snapshot).to have_received(:create).with("snap1", hash_including("guest_flush" => wire))
+      end
+    end
+
+    it "rejects an unknown guest_flush: before calling the core" do
+      allow(Microsandbox::Native::Snapshot).to receive(:create)
+      [:always, "AUTO", 1].each do |value|
+        expect { described_class.create("snap1", from_sandbox: "box", guest_flush: value) }
+          .to raise_error(ArgumentError, /guest_flush: must be :auto, :required or :skip/)
+      end
+      expect(Microsandbox::Native::Snapshot).not_to have_received(:create)
+    end
+
+    it "carries the restore reference and its kind" do
+      allow(Microsandbox::Native::Snapshot).to receive(:create).and_return(
+        "digest" => "sha256:abc", "path" => "/snaps/g/snap_1", "reference" => "/snaps/g/snap_1",
+        "reference_kind" => "path"
+      )
+      info = described_class.create("snap1", from_sandbox: "box")
+      expect([info.reference, info.reference_kind]).to eq(["/snaps/g/snap_1", "path"])
     end
 
     it "requires from_sandbox as a keyword" do

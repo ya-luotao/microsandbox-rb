@@ -4,11 +4,13 @@ module Microsandbox
   # Metadata for a snapshot artifact, returned by {Snapshot.create}/{Snapshot.open}/
   # {Snapshot.get}/{Snapshot.list}/{Snapshot.list_dir}/{Snapshot.load}.
   #
-  # `digest` and `path` are always present. The artifact-opening paths
-  # (`create`/`open`/`list_dir`, and {SandboxHandle#snapshot}) carry the full
-  # descriptor — `size_bytes`, `image_ref`, `image_manifest_digest`, `format`,
-  # `fstype`, `parent_digest`, `created_at`, `source_sandbox`, and `labels`. The
-  # index paths (`get`/`list`/`load`) populate `name`, `parent_digest`,
+  # `digest` is always present, and `path` for every local artifact (nil for a
+  # cloud one). The artifact-opening paths (`create`/`open`/`list_dir`, and
+  # {SandboxHandle#snapshot}) carry the full descriptor — `parent_id`,
+  # `size_bytes`, `image_ref`, `image_manifest_digest`, `format`, `fstype`,
+  # `created_at`, `source_sandbox`, and `labels` (`parent_digest` is nil there:
+  # runtime v0.7 descriptors link their parent by id). The index paths
+  # (`get`/`list`/`load`) populate `name`, `parent_digest`,
   # `image_ref`, `format`, `size_bytes`, `created_at`, and the index-only
   # `locality`/`availability`/`migration_state` columns (descriptor-only fields
   # such as `source_sandbox`/`labels` are nil/empty there).
@@ -18,14 +20,34 @@ module Microsandbox
   # `"checkpoint"` — a manifest-backed state, where those are nil and the
   # `checkpoint_*` fields are set instead.
   class SnapshotInfo
-    # @return [String] descriptor digest ("sha256:…") — the canonical identity
+    # @return [String] descriptor digest ("sha256:…")
     attr_reader :digest
-    # @return [String] artifact directory path
+    # @return [String, nil] stable snapshot id (`snap_…`), independent of the
+    #   descriptor digest. Set on every local path; it is a selector on its own
+    #   for {Snapshot.open}/{Snapshot.get}/{Snapshot.verify}/{Snapshot.save}/
+    #   {Snapshot.remove}, unlike {#name}.
+    attr_reader :id
+    # @return [String, nil] the backend-neutral reference to pass back to
+    #   {Sandbox.restore} (runtime v0.7): for a local artifact, its absolute
+    #   path. {Sandbox.restore} given this {SnapshotInfo} uses it with its kind
+    #   (see {#reference_kind}).
+    attr_reader :reference
+    # @return [String, nil] how the backend reads {#reference}: "path", "id"
+    #   or "auto"
+    attr_reader :reference_kind
+    # @return [String, nil] artifact directory path (nil for a cloud artifact).
+    #   Since runtime v0.7 the core chooses this directory; it is no longer
+    #   `dest_dir/<name>`.
     attr_reader :path
-    # @return [String, nil] name alias (nil for digest-only entries)
+    # @return [String, nil] the member name alias inside its snapshot group
+    #   (index paths only; nil for digest-only entries). Since runtime v0.7 a
+    #   bare name selects a group head, not a member — address a member as
+    #   `"<group>:<name>"` or by {#id}/{#path}/{#digest}.
     attr_reader :name
-    # @return [String, nil] parent snapshot digest
+    # @return [String, nil] parent snapshot digest (index paths only)
     attr_reader :parent_digest
+    # @return [String, nil] parent snapshot id (descriptor paths)
+    attr_reader :parent_id
     # @return [String, nil] source OCI image reference
     attr_reader :image_ref
     # @return [String, nil] OCI manifest digest of the pinned image (descriptor paths)
@@ -55,9 +77,13 @@ module Microsandbox
 
     def initialize(data)
       @digest = data["digest"]
+      @id = data["id"]
+      @reference = data["reference"]
+      @reference_kind = data["reference_kind"]
       @path = data["path"]
       @name = data["name"]
       @parent_digest = data["parent_digest"]
+      @parent_id = data["parent_id"]
       @image_ref = data["image_ref"]
       @image_manifest_digest = data["image_manifest_digest"]
       @fstype = data["fstype"]
@@ -81,8 +107,9 @@ module Microsandbox
       @format&.to_sym
     end
 
-    # @return [Symbol, nil] payload scope — :disk today, :resumable once VM
-    #   pause/resume lands upstream
+    # @return [Symbol, nil] payload scope — :disk (file-backed disk state) or
+    #   :full (a composite checkpoint, see {Snapshot.create}'s `full:`).
+    #   Runtime v0.7 renamed `:resumable` to `:full`.
     def scope
       @scope&.to_sym
     end
@@ -146,42 +173,76 @@ module Microsandbox
 
   # Creation and management of sandbox snapshots. A snapshot captures a stopped
   # sandbox's disk state into a portable artifact; boot from it with
-  # `Sandbox.create(from_snapshot: "name-or-digest")`.
+  # {Sandbox.restore}.
   #
-  # v0.6.7 descriptor contract: artifacts are identified by their own name and
-  # live at `dest_dir/<name>`; the descriptor file is `snapshot.json`. Artifacts
-  # written by ≤0.10.x gems (`manifest.json`) are migrated automatically by the
-  # runtime on first use — after which older gem versions can no longer read
-  # them (downgrade requires the `msb self downgrade` tooling).
+  # Runtime v0.7 descriptor contract: an artifact carries its own stable
+  # {SnapshotInfo#id}, and the core chooses its directory (read it from
+  # {SnapshotInfo#path}; it is no longer `dest_dir/<name>`). Artifacts written
+  # by older gems are migrated automatically by the runtime on first use —
+  # after which older gem versions can no longer read them.
+  #
+  # Snapshot groups (runtime v0.7): {create} publishes the artifact into a
+  # group named after the source sandbox, as a member aliased `name`, and makes
+  # it the group's head. Selectors passed to {open}/{get}/{verify}/{save}/
+  # {remove} resolve as follows:
+  #
+  # - `"<group>"` (a bare name) — the group's current head;
+  # - `"<group>:<member>"` — that member, e.g. `"#{from_sandbox}:#{name}"`;
+  # - a snapshot id (`snap_…`) or descriptor digest (`sha256:…`);
+  # - a path (anything containing `/` or starting with `.`).
+  #
+  # So the `name` given to {create} is NOT a selector on its own. Keep the
+  # returned {SnapshotInfo#id} (or {SnapshotInfo#path}) instead. A {load}ed
+  # archive lands in a fresh generated group with no head selected, so address
+  # it by its {SnapshotInfo#id} or {SnapshotInfo#path}. Binding the group
+  # surface itself (`group:`, head selection) is planned for a later release.
   class Snapshot
     class << self
       # Create a snapshot named `name` from a stopped sandbox.
       #
-      # @param name [String] the snapshot's own name (its identity)
+      # @param name [String] the member name alias inside the snapshot group
+      #   (the group is named after `from_sandbox`; see the class notes on
+      #   selectors — select it later as `"#{from_sandbox}:#{name}"` or by the
+      #   returned {SnapshotInfo#id})
       # @param from_sandbox [String] name of the (stopped) source sandbox
-      # @param dest_dir [String, nil] parent directory override — the artifact
-      #   is written at `dest_dir/<name>` (default: the snapshots dir)
+      # @param dest_dir [String, nil] parent directory override (default: the
+      #   snapshots dir); the core picks the artifact directory beneath it
       # @param labels [Hash, nil] user labels
-      # @param force [Boolean] overwrite an existing artifact at the destination
+      # @param force [Boolean] runtime v0.7 rejects it: grouped snapshots are
+      #   immutable, so `force: true` raises {InvalidConfigError} — choose
+      #   another name or {remove} the existing member first
       # @param record_integrity [Boolean] record persistent payload integrity
       #   (a Merkle content digest) in the artifact — opt-in since runtime
       #   v0.6.9 because hashing large allocated uppers is expensive; without
       #   it {Snapshot.verify} reports `:not_recorded`
-      # @param resumable [Boolean] request a resumable (memory+device) snapshot;
-      #   raises {UnsupportedError} until VM pause/resume lands upstream
+      # @param full [Boolean] capture a full (memory + device) checkpoint
+      #   instead of disk state only (runtime v0.7; the backend rejects it with
+      #   {UnsupportedError} where full checkpoints are not available)
+      # @param guest_flush [Symbol, String, nil] optional guest filesystem
+      #   writeback before capture (runtime v0.7): `:auto` (the default:
+      #   required for a live disk-only capture), `:required`, or `:skip`.
+      #   Mandatory storage barriers apply either way; it does not flush
+      #   application buffers. A stopped source cannot satisfy `:required`.
+      # @param resumable [nil] removed in 0.18.0 — renamed to `full:` upstream;
+      #   passing it raises ArgumentError
       # @return [SnapshotInfo]
       def create(name, from_sandbox:, dest_dir: nil, labels: nil, force: false,
-        record_integrity: false, resumable: false)
+        record_integrity: false, full: false, guest_flush: nil, resumable: nil)
+        unless resumable.nil?
+          raise ArgumentError, "Snapshot.create(resumable:) was renamed to full: in 0.18.0 (runtime v0.7)"
+        end
+        flush = normalize_guest_flush(guest_flush)
         opts = {"from_sandbox" => from_sandbox.to_s}
         opts["dest_dir"] = dest_dir.to_s if dest_dir
         opts["labels"] = stringify(labels) if labels
         opts["force"] = true if force
         opts["record_integrity"] = true if record_integrity
-        opts["resumable"] = true if resumable
+        opts["full"] = true if full
+        opts["guest_flush"] = flush if flush
         SnapshotInfo.new(Native::Snapshot.create(name.to_s, opts))
       end
 
-      # Open a snapshot artifact by bare name or path (cheap metadata
+      # Open a snapshot artifact by selector or path (cheap metadata
       # validation; does not read the payload). Unlike {get}, this also
       # works for artifacts addressed by path that were never indexed, and it
       # returns the full descriptor.
@@ -190,7 +251,8 @@ module Microsandbox
         SnapshotInfo.new(Native::Snapshot.open(name_or_path.to_s))
       end
 
-      # Metadata for a snapshot by name or digest.
+      # Index metadata for a snapshot by selector (see the class notes), id or
+      # digest.
       # @return [SnapshotInfo]
       def get(name_or_digest)
         SnapshotInfo.new(Native::Snapshot.get(name_or_digest.to_s))
@@ -219,7 +281,8 @@ module Microsandbox
         Native::Snapshot.reindex(dir&.to_s)
       end
 
-      # Remove a snapshot artifact by name or path.
+      # Remove a snapshot artifact by selector or path (see the class notes).
+      # Removing a group's head leaves the group with no head selected.
       # @param force [Boolean] remove even if referenced
       # @return [nil]
       def remove(name_or_path, force: false)
@@ -260,6 +323,16 @@ module Microsandbox
 
       def stringify(hash)
         hash.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v.to_s }
+      end
+
+      GUEST_FLUSH = %w[auto required skip].freeze
+      private_constant :GUEST_FLUSH
+
+      def normalize_guest_flush(value)
+        return nil if value.nil?
+        flush = (value.is_a?(Symbol) || value.is_a?(String)) ? value.to_s : nil
+        return flush if GUEST_FLUSH.include?(flush)
+        raise ArgumentError, "guest_flush: must be :auto, :required or :skip, got #{value.inspect}"
       end
     end
   end

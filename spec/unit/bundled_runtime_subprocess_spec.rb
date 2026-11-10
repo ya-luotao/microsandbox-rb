@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "open3"
 require "rbconfig"
 require "tmpdir"
@@ -63,12 +64,84 @@ RSpec.describe "bundled runtime activation (subprocess)" do
     end
   end
 
+  # Since runtime v0.7 the core resolves msb and libkrunfw as ONE pair: an
+  # MSB_PATH executable needs its library beside it (`<dir>/` or `<dir>/../lib/`)
+  # or MSB_LIBKRUNFW_PATH.
+  def custom_pair(dir)
+    root = File.join(dir, "custom")
+    FileUtils.mkdir_p([File.join(root, "bin"), File.join(root, "lib")])
+    msb = File.join(root, "bin", "msb")
+    File.write(msb, "#!/bin/sh\necho msb 0.0.0\n")
+    File.chmod(0o755, msb)
+    firmware = RUBY_PLATFORM.include?("darwin") ? "libkrunfw.5.dylib" : "libkrunfw.so.5.6.1"
+    File.write(File.join(root, "lib", firmware), "")
+    msb
+  end
+
   it "lets MSB_PATH outrank the companion gem" do
     Dir.mktmpdir do |dir|
       fake_companion(dir)
-      out, err, status = run_child(dir, report, "MSB_PATH" => "/opt/custom/msb")
+      msb = custom_pair(dir)
+      out, err, status = run_child(dir, report, "MSB_PATH" => msb)
       expect(status).to be_success, err
-      expect(out).to eq("/opt/custom/msb")
+      expect(out).to eq(msb)
+    end
+  end
+
+  it "refuses an MSB_PATH executable with no libkrunfw to pair it with (runtime v0.7)" do
+    Dir.mktmpdir do |dir|
+      fake_companion(dir)
+      classed = 'require "microsandbox"; begin; print Microsandbox.runtime_path; ' \
+        'rescue Microsandbox::Error => e; print "ERROR " + e.class.name + " " + e.code + ": " + e.message; end'
+      out, err, status = run_child(dir, classed, "MSB_PATH" => "/opt/custom/msb")
+      expect(status).to be_success, err
+      expect(out).to start_with("ERROR Microsandbox::RuntimeIncompleteError runtime-incomplete: ")
+        .and include("/opt/custom/msb has no matching libkrunfw")
+    end
+  end
+
+  # Child-side probe: the resolved pair and its (gem-classified) origin.
+  let(:info_report) do
+    'require "microsandbox"; require "json"; i = Microsandbox.runtime_info; ' \
+      "print JSON.generate([i.origin, i.msb_path, i.libkrunfw_path])"
+  end
+
+  it "claims both SDK slots: the pair is the companion's, origin :sdk_package" do
+    Dir.mktmpdir do |dir|
+      msb = fake_companion(dir)
+      out, err, status = run_child(dir, info_report)
+      expect(status).to be_success, err
+      expect(JSON.parse(out)).to eq(["sdk_package", msb, File.join(dir, "vendor", "lib", "libkrunfw.5.dylib")])
+    end
+  end
+
+  # The resolver prefers the library slot over the library next to an
+  # MSB_PATH runtime, so with MSB_PATH set the companion leaves that slot free.
+  it "pairs an MSB_PATH runtime with its own library, not the companion's (origin :environment)" do
+    Dir.mktmpdir do |dir|
+      fake_companion(dir)
+      msb = custom_pair(dir)
+      out, err, status = run_child(dir, info_report, "MSB_PATH" => msb)
+      expect(status).to be_success, err
+      origin, resolved_msb, lib = JSON.parse(out)
+      expect([origin, resolved_msb]).to eq(["environment", msb])
+      expect(File.realpath(lib)).to eq(File.realpath(Dir[File.join(dir, "custom", "lib", "libkrunfw*")].first))
+    end
+  end
+
+  it "classifies a relative MSB_PATH as :environment" do
+    Dir.mktmpdir do |dir|
+      custom_pair(dir)
+      gems = File.join(dir, "empty-gem-home")
+      FileUtils.mkdir_p(gems)
+      env = {"MSB_PATH" => "custom/bin/msb", "RUBYOPT" => nil, "BUNDLE_GEMFILE" => nil, "BUNDLER_SETUP" => nil,
+             "MICROSANDBOX_NO_AUTO_INSTALL" => "1", "GEM_HOME" => gems, "GEM_PATH" => gems}
+      out, err, status = Open3.capture3(env, RbConfig.ruby, "-I", lib_dir, "-e", info_report, chdir: dir)
+      expect(status).to be_success, err
+      origin, msb = JSON.parse(out)
+      expect(origin).to eq("environment")
+      # The core anchors it against the working directory.
+      expect(File.realpath(msb)).to eq(File.realpath(File.join(dir, "custom", "bin", "msb")))
     end
   end
 
@@ -87,7 +160,9 @@ RSpec.describe "bundled runtime activation (subprocess)" do
       msb = fake_companion(dir)
       code = <<~RUBY
         require "microsandbox"
-        Microsandbox.define_singleton_method(:install) { raise "install must not run" }
+        Microsandbox.define_singleton_method(:install) { |**| raise "install must not run" }
+        Microsandbox::Native.define_singleton_method(:install_runtime) { |*| raise "install_runtime must not run" }
+        Microsandbox.define_singleton_method(:warn) { |*args| raise "unexpected warning: \#{args.inspect}" }
         Microsandbox.ensure_runtime!
         print Microsandbox.runtime_path
       RUBY

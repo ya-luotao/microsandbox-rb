@@ -2,7 +2,7 @@
 
 [![Gem Version](https://img.shields.io/gem/v/microsandbox-rb)](https://rubygems.org/gems/microsandbox-rb)
 [![CI](https://github.com/ya-luotao/microsandbox-rb/actions/workflows/ci.yml/badge.svg)](https://github.com/ya-luotao/microsandbox-rb/actions/workflows/ci.yml)
-[![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.1-CC342D)](https://www.ruby-lang.org/)
+[![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.3-CC342D)](https://www.ruby-lang.org/)
 [![Docs](https://img.shields.io/badge/docs-rubydoc.info-blue)](https://rubydoc.info/gems/microsandbox-rb)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
@@ -14,8 +14,8 @@ Lightweight microVM sandboxes for Ruby. Run AI agents and untrusted code with ha
 
 - **Real VMs, not containers.** Every sandbox has its own Linux kernel under KVM (Linux) or the Hypervisor framework (Apple Silicon). Sub-100 ms boot; the runtime lives in your process.
 - **Synchronous, idiomatic Ruby.** Keyword arguments, block-scoped lifecycle, a flat typed error hierarchy with stable `#code`s, and hand-maintained RBS signatures. The GVL is released during native calls, so other threads keep running.
-- **The whole core surface.** Collected *and* streaming exec, logs, metrics, and filesystem handles; live `modify` with dry-run plans; snapshots; named volumes with host-side access; image cache management; interactive `attach`; in-process SSH/SFTP; a raw `agentd` client.
-- **Network policy as data.** Composable profiles plus per-rule CIDR/domain allow-deny policies, TLS interception, outbound SOCKS4/SOCKS5 proxies, fail-closed strict hostname mode, and secrets injection with host allow-lists.
+- **The whole core surface.** Collected *and* streaming exec, logs, metrics, and filesystem handles; live `modify` with dry-run plans; snapshots and `Sandbox.restore`; named volumes with host-side access; image cache management; interactive `attach`; in-process SSH/SFTP; a raw `agentd` client.
+- **Network policy as data.** Composable profiles plus per-rule CIDR/domain allow-deny policies, TLS interception, outbound SOCKS4/SOCKS5 proxies, fail-closed strict hostname mode, and secret substitution with per-host allow-lists.
 - **Convergent lifecycle.** `connect_or_create`, `restart`, `destroy`, and `wait_for_status` take a name to the state you want and refuse to touch a sandbox someone recreated under the same name.
 - **Hermetic runtime.** The optional `microsandbox-rb-binaries` companion gem vendors a checksum-verified `msb` + `libkrunfw` in lockstep with the SDK, so production never downloads on first use. Without it, the runtime is provisioned into `~/.microsandbox` on demand.
 - **Local or cloud.** The same API runs against the local libkrun backend or the microsandbox cloud, selected per process or per block.
@@ -36,25 +36,28 @@ gem compiles the Rust extension, so the first install takes a few minutes.
 
 **Prerequisites**
 
-- Ruby 3.1 or newer.
+- Ruby 3.3 or newer.
 - Linux with KVM enabled, or macOS on Apple Silicon. Cloud-only users
   (`MSB_BACKEND=cloud`) need neither.
-- A stable Rust toolchain (1.91 or newer) on `PATH` to compile the source gem.
+- A stable Rust toolchain (1.94 or newer) on `PATH` to compile the source gem.
   Precompiled extension gems are not published; see
   [docs/releasing.md](docs/releasing.md).
 - The `msb` runtime and `libkrunfw` firmware, from the companion gem above or
-  downloaded on first use. Provision ahead of time (a Docker layer, an
-  air-gapped host) with:
+  downloaded on first use. The runtime must be exactly the version the SDK
+  embeds (`Microsandbox::RUNTIME_VERSION`); an older one left in
+  `~/.microsandbox` is replaced on first use. Provision ahead of time (a Docker
+  layer, an air-gapped host) with:
 
 ```ruby
-Microsandbox.install unless Microsandbox.installed?
+Microsandbox.install               # no-op when the home already holds this runtime
+Microsandbox.runtime_info          # => which msb + libkrunfw, from where, which version
 ```
 
 The companion gem ships one platform gem each for `arm64-darwin`,
 `x86_64-linux-gnu`, and `aarch64-linux-gnu`, must match the SDK version, and is
 found automatically at `require "microsandbox"`. See
-[docs/runtime.md](docs/runtime.md) for the resolution order, `MSB_PATH`, and
-disabling the first-use download.
+[docs/runtime.md](docs/runtime.md) for the resolution order, the exact-version
+rule, `MSB_PATH`, and disabling the first-use download.
 
 ## Quick start
 
@@ -135,16 +138,17 @@ Microsandbox::Sandbox.create("agent", image: "public.ecr.aws/docker/library/pyth
   network: Microsandbox::NetworkPolicy.custom(default_egress: :deny,
     rules: [{ action: :allow, direction: :egress, protocol: :tcp, port: 443,
               destination: Microsandbox::Destination.domain("api.example.com") }]),
-  strict: true,
   proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"),
-  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }]
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), allow: ["api.example.com"] }]
 ) do |sb|
   # ...
 end
 ```
 
-See [docs/configuration.md](docs/configuration.md) for every create option,
-including resources, ports, volumes, and root-disk layout.
+Strict hostname enforcement is on by default since 0.18.0, and a denied HTTP
+request gets a JSON `403`. See [docs/configuration.md](docs/configuration.md)
+for every create option, including resources, ports, volumes, root-disk
+layout, the secrets keys, and the HTTP deny response.
 
 ### Observability and live modification
 
@@ -184,17 +188,18 @@ Since upstream `v0.6.9` the microsandbox repository ships an official
 [`sdk/ruby`](https://github.com/superradcompany/microsandbox/tree/main/sdk/ruby),
 a compact veneer over the same Rust SDK. Both gems define the `Microsandbox`
 module, so use one or the other in a process, not both. Differences below are
-taken from the official gem's own README as of upstream `v0.6.18`.
+taken from the official gem's own README as of upstream `v0.7.14`.
 
 | Capability | `microsandbox-rb` (this gem) | official `microsandbox` gem |
 |---|:---:|:---:|
 | Lifecycle, convergent `connect_or_create`, local/cloud backends | ✅ | ✅ |
 | Collected `exec`/`shell`, logs, metrics, guest filesystem | ✅ | ✅ |
 | Image, volume, and snapshot management | ✅ | ✅ |
+| Booting a sandbox from a snapshot (`Sandbox.restore`) | ✅ | not exposed |
 | Streaming exec, logs, metrics, filesystem handles | ✅ | not exposed |
 | Interactive SSH/SFTP client and server | ✅ | `ssh_exec` only |
 | Live modification plans (`modify`, dry-run) | ✅ | not exposed |
-| Outbound SOCKS proxy (`proxy:`) | ✅ | ✅ |
+| Outbound proxy (`proxy:`) | SOCKS4/SOCKS5 | HTTP CONNECT |
 | Full network policy and mount builders, strict hostname mode | ✅ | not exposed |
 | Rootfs patches, structured root disk, raw `agentd` client | ✅ | — |
 | RBS type signatures | ✅ | — |
@@ -209,8 +214,8 @@ share the upstream tag, but the numbers have diverged since and the gem version
 is **not** an indicator of the embedded runtime. Ask the build instead:
 
 ```ruby
-Microsandbox::VERSION          # => "0.17.5"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.18" (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.18.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.7.14" (the embedded upstream runtime tag)
 ```
 
 While the gem is `0.x`, a breaking API change bumps the minor and a fix bumps
@@ -250,6 +255,7 @@ constants against this gem's. Every release records its runtime in
 | `0.17.3` | `v0.6.18` | gem-only fix release, fork safety: a forked child (Puma, Resque, Solid Queue) rebuilds its backend and runtime on its first SDK call instead of hanging or crashing, a handle created before the fork raises `ForkedHandleError` in the child, and nothing inherited from the parent is dropped there |
 | `0.17.4` | `v0.6.18` | gem-only fix release: fork safety identifies a process by pid and fork generation (survives pid reuse), `install`/`setup` leave the backend alone in a forked child, a `Sandbox` subclass's `initialize` runs outside the interrupt mask, and the macOS limit that a forked child must not build network clients is documented; rustls 0.23.46 fixes four TLS advisories (RUSTSEC-2026-0346 to -0349) |
 | `0.17.5` | `v0.6.18` | gem-only security release: dependency updates clear RUSTSEC-2026-0381 to -0410, including the zstd used for image-layer decompression (three zstd advisories remain only on an external-kernel path the runtime never takes, see `CHANGELOG.md`); `SECURITY.md` maps more upstream advisories to gem versions |
+| `0.18.0` | `v0.7.14` | adopts upstream `v0.7.14` (**breaking**): the `msb` runtime must be exactly the SDK's version (a stale home runtime is replaced automatically, other sources are refused); secrets vocabulary (`allow:`/`allow_placeholder_for:`/`substitution:`/`violation_action:`), `secret_violation_action:`; `Sandbox.restore` replaces `create(from_snapshot:)`, `full:` replaces `resumable:`; HTTP denials default to a JSON 403 (`http:` option); one-way catalog migrations and macOS storage recovery for existing sandboxes; Ruby >= 3.3 |
 
 ## Development
 
@@ -263,7 +269,7 @@ cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml
 cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings
 ```
 
-CI compiles and runs the unit suite on Ruby 3.1 through 3.4 on Linux and macOS,
+CI compiles and runs the unit suite on Ruby 3.3 and 3.4 on Linux and macOS,
 lints Rust and Ruby, packages and installs the built gems, builds every
 `microsandbox-rb-binaries` platform gem, and boots real microVMs in a KVM
 integration job against both the provisioned and the bundled runtime.

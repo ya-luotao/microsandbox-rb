@@ -6,7 +6,10 @@ require "timeout"
 # WITHOUT booting a real microVM, by stubbing the native layer. The native
 # binding itself is covered by the integration specs.
 RSpec.describe Microsandbox::Sandbox do
-  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil) }
+  let(:native) {
+    instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil, stop_with_timeout: nil, kill: nil,
+      kill_with_timeout: nil)
+  }
 
   before do
     allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
@@ -130,44 +133,110 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /:username and :password/)
     end
 
-    it "maps pull_policy and normalizes a simple secret (host -> hosts)" do
+    it "maps pull_policy and normalizes a simple secret (a bare allow: host becomes a list)" do
       Microsandbox::Sandbox.create(
         "box", image: "x", pull_policy: "never",
-        secrets: [{env: "OPENAI_API_KEY", value: "sk-123", host: "api.openai.com"}]
+        secrets: [{env: "OPENAI_API_KEY", value: "sk-123", allow: "api.openai.com"}]
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "pull_policy" => "never",
           "secrets" => [{"env" => "OPENAI_API_KEY", "value" => "sk-123",
-                         "hosts" => ["api.openai.com"]}]
+                         "allow" => ["api.openai.com"]}]
         )
       )
     end
 
-    it "normalizes the full secret surface (patterns, injection, violation)" do
+    it "normalizes the full secret surface (allow, placeholder hosts, TLS identity, violation, substitution)" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
         secrets: [{
-          env: "STRIPE_KEY", value: "sk_live", hosts: ["api.stripe.com"],
-          host_patterns: ["*.stripe.com"], placeholder: "$STRIPE", require_tls: true,
-          inject_headers: true, inject_query: false, inject_body: true,
-          on_violation: "block_and_terminate"
+          env: "STRIPE_KEY", value: "sk_live", allow: ["api.stripe.com", "*.stripe.com"],
+          allow_placeholder_for: ["10.0.0.1"], placeholder: "$STRIPE", require_tls_identity: true,
+          violation_action: :block_and_terminate,
+          substitution: {headers: true, header_fields: ["Authorization"], query: false, body: true}
         }],
-        on_secret_violation: {passthrough_hosts: ["10.0.0.1"]}
+        secret_violation_action: :block
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "secrets" => [{
-            "env" => "STRIPE_KEY", "value" => "sk_live", "hosts" => ["api.stripe.com"],
-            "host_patterns" => ["*.stripe.com"], "placeholder" => "$STRIPE",
-            "require_tls" => true, "inject_headers" => true, "inject_query" => false,
-            "inject_body" => true, "on_violation" => "block_and_terminate"
+            "env" => "STRIPE_KEY", "value" => "sk_live", "allow" => ["api.stripe.com", "*.stripe.com"],
+            "allow_placeholder_for" => ["10.0.0.1"], "placeholder" => "$STRIPE",
+            "require_tls_identity" => true, "violation_action" => "block_and_terminate",
+            "substitution" => {"headers" => true, "header_fields" => ["Authorization"],
+                               "query" => false, "body" => true}
           }],
-          "on_secret_violation" => {"passthrough_hosts" => ["10.0.0.1"]}
+          "secret_violation_action" => "block"
         )
       )
+    end
+
+    it "passes allow: [\"*\"] through (the native layer maps it to upstream's allow_any_host_dangerous)" do
+      Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "K", value: "v", allow: ["*"]}])
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("secrets" => [{"env" => "K", "value" => "v", "allow" => ["*"]}])
+      )
+    end
+
+    it "accepts the deprecated passthrough: alias with a warning, merged into allow_placeholder_for:" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x",
+          secrets: [{env: "K", value: "v", allow: ["api.example.com"],
+                     allow_placeholder_for: ["a.internal"], passthrough: ["b.internal", "a.internal"]}]
+        )
+      end.to output(/passthrough: is deprecated; use allow_placeholder_for:/).to_stderr
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("secrets" => [hash_including("allow_placeholder_for" => ["a.internal", "b.internal"])])
+      )
+    end
+
+    {
+      host: /:host was removed in 0\.18\.0.*use allow:/,
+      hosts: /:hosts was removed.*use allow:/,
+      host_patterns: /:host_patterns was removed.*use allow:/,
+      inject_headers: /:inject_headers was removed.*substitution: \{ headers:/,
+      inject_query: /:inject_query was removed.*substitution: \{ query:/,
+      inject_body: /:inject_body was removed.*substitution: \{ body:/,
+      inject_basic_auth: /:inject_basic_auth was removed.*header_fields: \["Authorization"\], query: false, body: false \}.*any scheme.*bare headers: true/,
+      require_tls: /:require_tls was removed.*require_tls_identity:/,
+      on_violation: /:on_violation was removed.*violation_action:.*allow_placeholder_for:/
+    }.each do |key, message|
+      it "rejects the removed secret key :#{key} with its replacement" do
+        expect do
+          Microsandbox::Sandbox.create("box", image: "x",
+            secrets: [{env: "K", value: "sk_live_LEAK", allow: ["a.example"]}.merge(key => true)])
+        end.to raise_error(ArgumentError, message) { |e| expect(e.message).not_to include("sk_live_LEAK") }
+        expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+      end
+    end
+
+    it "rejects an unknown secret key and a key given as both Symbol and String" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "K", value: "v", allow: ["a"], hots: ["a"]}])
+      end.to raise_error(ArgumentError, /unknown secret key\(s\) :hots/)
+      both = {env: "K", value: "v", allow: ["a"]}.merge("env" => "K")
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [both])
+      end.to raise_error(ArgumentError, /both a Symbol and a String/)
+    end
+
+    it "validates substitution: (unknown keys, header_fields without headers, nothing enabled)" do
+      base = {env: "K", value: "v", allow: ["a.example"]}
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [base.merge(substitution: {cookies: true})])
+      end.to raise_error(ArgumentError, /unknown substitution key\(s\) :cookies/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x",
+          secrets: [base.merge(substitution: {headers: false, header_fields: ["X-Key"], body: true})])
+      end.to raise_error(ArgumentError, /header_fields: requires headers substitution/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [base.merge(substitution: {headers: false})])
+      end.to raise_error(ArgumentError, /at least one of headers, query, or body/)
     end
 
     it "raises on a secret spec missing env/value" do
@@ -187,10 +256,16 @@ RSpec.describe Microsandbox::Sandbox do
       }
     end
 
-    it "raises on a secret spec with no allowed host" do
+    it "raises on a secret spec with no allowed host (an empty allow: too)" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y"}])
-      end.to raise_error(ArgumentError, /:host, :hosts, or :host_patterns/)
+      end.to raise_error(ArgumentError, /needs a non-empty allow:/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y", allow: []}])
+      end.to raise_error(ArgumentError, /needs a non-empty allow:/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y", allow: [""]}])
+      end.to raise_error(ArgumentError, /entries must be non-empty host names/)
     end
 
     it "never embeds the cleartext secret value in the host error" do
@@ -199,7 +274,7 @@ RSpec.describe Microsandbox::Sandbox do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "sk_live_LEAK"}])
       end.to raise_error(ArgumentError) { |e|
-        expect(e.message).to match(/:host, :hosts, or :host_patterns/)
+        expect(e.message).to match(/needs a non-empty allow:/)
         expect(e.message).not_to include("sk_live_LEAK")
       }
     end
@@ -250,48 +325,43 @@ RSpec.describe Microsandbox::Sandbox do
     it "accepts the upstream kebab-case violation spellings" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
-        secrets: [{env: "K", value: "v", hosts: ["api.example.com"],
-                   on_violation: "block-and-terminate"}],
-        on_secret_violation: "block-and-log"
+        secrets: [{env: "K", value: "v", allow: ["api.example.com"],
+                   violation_action: "block-and-terminate"}],
+        secret_violation_action: "block-and-log"
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
-          "secrets" => [hash_including("on_violation" => "block_and_terminate")],
-          "on_secret_violation" => "block_and_log"
+          "secrets" => [hash_including("violation_action" => "block_and_terminate")],
+          "secret_violation_action" => "block_and_log"
         )
       )
     end
 
-    it "maps the bare \"passthrough\" string to passthrough-all-hosts (SDK parity)" do
-      Microsandbox::Sandbox.create(
-        "box", image: "x",
-        secrets: [{env: "K", value: "v", hosts: ["api.example.com"], on_violation: "passthrough"}],
-        on_secret_violation: "passthrough"
-      )
-      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
-        "box",
-        hash_including(
-          "secrets" => [hash_including("on_violation" => {"passthrough_all_hosts" => true})],
-          "on_secret_violation" => {"passthrough_all_hosts" => true}
-        )
-      )
-    end
-
-    it "raises on an unknown violation action string" do
+    it "rejects the passthrough violation action, pointing at allow_placeholder_for: (runtime v0.7)" do
       expect do
-        Microsandbox::Sandbox.create(
-          "box", image: "x", on_secret_violation: "nope"
-        )
-      end.to raise_error(ArgumentError, /unknown on_violation "nope"/)
+        Microsandbox::Sandbox.create("box", image: "x", secret_violation_action: "passthrough")
+      end.to raise_error(ArgumentError, /:passthrough was removed in 0\.18\.0.*allow_placeholder_for:/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x",
+          secrets: [{env: "K", value: "v", allow: ["a"], violation_action: :passthrough}])
+      end.to raise_error(ArgumentError, /:passthrough was removed/)
     end
 
-    it "rejects an effectively-empty passthrough Hash (a no-op spec)" do
+    it "raises on an unknown violation action string, and on a non-String/Symbol one" do
       expect do
-        Microsandbox::Sandbox.create(
-          "box", image: "x", on_secret_violation: {passthrough_hosts: []}
-        )
-      end.to raise_error(ArgumentError, /passthrough on_violation needs at least one/)
+        Microsandbox::Sandbox.create("box", image: "x", secret_violation_action: "nope")
+      end.to raise_error(ArgumentError, /unknown secret_violation_action "nope"/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secret_violation_action: {passthrough_hosts: ["a"]})
+      end.to raise_error(ArgumentError, /secret_violation_action: must be a String or Symbol/)
+    end
+
+    it "rejects the removed on_secret_violation: keyword with directions" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", on_secret_violation: "block")
+      end.to raise_error(ArgumentError, /on_secret_violation: was removed in 0\.18\.0.*secret_violation_action:/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
     end
 
     it "normalizes a Hash init with args and env" do
@@ -322,14 +392,14 @@ RSpec.describe Microsandbox::Sandbox do
       )
     end
 
-    it "normalizes dns/tls/pools/max_connections/trust_host_cas" do
+    it "normalizes dns/tls/pools/connection caps/trust_host_cas" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
         dns: {nameservers: ["1.1.1.1"], rebind_protection: true, query_timeout_ms: 2000},
         tls: {bypass: ["pinned.example.com"], verify_upstream: false,
               intercepted_ports: [443, 8443], block_quic: true, intercept_ca_cert: "/ca.pem"},
         ipv4_pool: "10.0.0.0/24", ipv6_pool: "fd00::/64",
-        max_connections: 128, trust_host_cas: true
+        max_tcp_connections: 128, max_udp_connections: 64, trust_host_cas: true
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
@@ -340,9 +410,88 @@ RSpec.describe Microsandbox::Sandbox do
                     "intercepted_ports" => [443, 8443], "block_quic" => true,
                     "intercept_ca_cert" => "/ca.pem"},
           "ipv4_pool" => "10.0.0.0/24", "ipv6_pool" => "fd00::/64",
-          "max_connections" => 128, "trust_host_cas" => true
+          "max_tcp_connections" => 128, "max_udp_connections" => 64, "trust_host_cas" => true
         )
       )
+    end
+
+    describe "http: deny response (runtime v0.7)" do
+      def native_http
+        opts = nil
+        expect(Microsandbox::Native::Sandbox).to have_received(:create).with("box", satisfy { |o| opts = o })
+        opts["http"]
+      end
+
+      it "normalizes every key (String format, case-insensitive)" do
+        Microsandbox::Sandbox.create("box", image: "x",
+          http: {deny_response: true, format: "JSON", network_message: "no", secret_message: ""})
+        expect(native_http).to eq("deny_response" => true, "format" => "json",
+          "network_message" => "no", "secret_message" => "")
+      end
+
+      it "accepts String keys" do
+        Microsandbox::Sandbox.create("box", image: "x", http: {"format" => :json, "network_message" => "no"})
+        expect(native_http).to eq("format" => "json", "network_message" => "no")
+      end
+
+      it "accepts format: :text and deny_response: false on their own" do
+        Microsandbox::Sandbox.create("box", image: "x", http: {format: :text})
+        expect(native_http).to eq("format" => "text")
+      end
+
+      it "leaves nil keys out" do
+        Microsandbox::Sandbox.create("box", image: "x", http: {deny_response: false, format: nil})
+        expect(native_http).to eq("deny_response" => false)
+      end
+
+      {
+        "a non-Hash" => [:json, /http: must be a Hash/],
+        "an unknown key (no aliases)" => [{deny_response_format: :json}, /unknown http: key\(s\) deny_response_format/],
+        "a non-boolean deny_response" => [{deny_response: "yes"}, /deny_response: must be true or false/],
+        "an unknown format" => [{format: :xml}, /format: must be :json or :text/],
+        "a non-String message" => [{network_message: :blocked}, /network_message: must be a String/],
+        "a message with the text format" => [{format: :text, network_message: "x"}, /network_message: needs the JSON format/],
+        "a message with deny_response: false" => [{deny_response: false, secret_message: "x"}, /secret_message: has no effect/]
+      }.each do |label, (value, message)|
+        it "rejects #{label} before any native call" do
+          expect { Microsandbox::Sandbox.create("box", image: "x", http: value) }.to raise_error(ArgumentError, message)
+          expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+        end
+      end
+    end
+
+    describe "connection caps (runtime v0.7)" do
+      it "maps the deprecated max_connections: onto the TCP cap, with a warning" do
+        allow(Microsandbox::Sandbox).to receive(:warn)
+        Microsandbox::Sandbox.create("box", image: "x", max_connections: 7)
+        expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+          "box", satisfy { |opts| opts["max_tcp_connections"] == 7 && !opts.key?("max_connections") }
+        )
+        expect(Microsandbox::Sandbox).to have_received(:warn)
+          .with(/max_connections: is deprecated; use max_tcp_connections:/, uplevel: 3)
+      end
+
+      it "refuses max_connections: together with max_tcp_connections:" do
+        expect {
+          Microsandbox::Sandbox.create("box", image: "x", max_connections: 7, max_tcp_connections: 8)
+        }.to raise_error(ArgumentError, /mutually exclusive/)
+        expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+      end
+
+      it "passes 0 (unlimited) through and leaves nil unset" do
+        Microsandbox::Sandbox.create("box", image: "x", max_tcp_connections: 0)
+        expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+          "box", satisfy { |opts| opts["max_tcp_connections"] == 0 && !opts.key?("max_udp_connections") }
+        )
+      end
+
+      it "rejects a negative or non-integer cap before any native call" do
+        expect { Microsandbox::Sandbox.create("box", image: "x", max_udp_connections: -1) }
+          .to raise_error(ArgumentError, /max_udp_connections: must be >= 0/)
+        expect { Microsandbox::Sandbox.create("box", image: "x", max_tcp_connections: "many") }
+          .to raise_error(ArgumentError)
+        expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+      end
     end
 
     it "normalizes the resource/limit scalar options" do
@@ -544,7 +693,7 @@ RSpec.describe Microsandbox::Sandbox do
         "box",
         satisfy { |opts|
           opts["strict"] == true &&
-            (opts.keys & %w[dns tls ipv4_pool ipv6_pool max_connections trust_host_cas]).empty?
+            (opts.keys & %w[dns tls ipv4_pool ipv6_pool max_tcp_connections max_udp_connections trust_host_cas]).empty?
         }
       )
     end
@@ -689,18 +838,13 @@ RSpec.describe Microsandbox::Sandbox do
       expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
     end
 
-    it "raises when both image: and from_snapshot: are given" do
-      expect do
-        Microsandbox::Sandbox.create("box", image: "x", from_snapshot: "snap")
-      end.to raise_error(ArgumentError, /either image: or from_snapshot:/)
+    it "rejects the removed from_snapshot: keyword with directions (alone or with image:)" do
+      [{from_snapshot: "snap"}, {image: "x", from_snapshot: "snap"}].each do |kwargs|
+        expect do
+          Microsandbox::Sandbox.create("box", **kwargs)
+        end.to raise_error(ArgumentError, /from_snapshot: was removed in 0\.18\.0.*Sandbox\.restore/)
+      end
       expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
-    end
-
-    it "accepts from_snapshot: on its own" do
-      Microsandbox::Sandbox.create("box", from_snapshot: "snap")
-      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
-        "box", hash_including("from_snapshot" => "snap")
-      )
     end
 
     it "rejects a negative replace_with_timeout before any runtime round-trip" do
@@ -732,14 +876,118 @@ RSpec.describe Microsandbox::Sandbox do
         :done
       end
       expect(result).to eq(:done)
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
+      expect(native).not_to have_received(:kill)
+      expect(native).not_to have_received(:kill_with_timeout)
     end
 
     it "stops the sandbox even if the block raises" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x") { raise "boom" }
       end.to raise_error("boom")
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
+    end
+
+    # Runtime v0.7: a graceful stop never escalates, so the block form bounds
+    # it and kills on expiry rather than hanging on the way out. The kill has
+    # its own end-to-end budget: a plain #kill waits for the transition lock
+    # without a deadline.
+    it "kills the sandbox with a bounded kill when the bounded stop times out on block exit" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      expect { expect(Microsandbox::Sandbox.create("box", image: "x") { :done }).to eq(:done) }
+        .not_to output.to_stderr
+      expect(native).to have_received(:kill_with_timeout).with(15.0)
+      expect(native).not_to have_received(:kill)
+    end
+
+    it "uses BLOCK_STOP_TIMEOUT as the block-form budget" do
+      stub_const("Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT", 3)
+      Microsandbox::Sandbox.create("box", image: "x") { :done }
+      expect(native).to have_received(:stop_with_timeout).with(3.0)
+    end
+
+    it "warns about a failing kill after a timed-out stop and keeps the block's exception" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      allow(native).to receive(:kill_with_timeout).and_raise(Microsandbox::Error, "kill timed out")
+      expect do
+        expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "boom" } }
+          .to raise_error(IOError, "boom")
+      end.to output(/cleanup gave up on sandbox "box", which may still be running.*kill timed out/).to_stderr
+    end
+
+    # The warning is best-effort too: a stderr that cannot be written must not
+    # replace the block's result or exception, on either cleanup path.
+    context "when the cleanup warning cannot be written" do
+      let(:broken_stderr) do
+        Class.new do
+          def initialize(error) = @error = error
+          def write(*) = raise(@error)
+          def puts(*) = raise(@error)
+          def print(*) = raise(@error)
+          def flush = self
+        end
+      end
+
+      before do
+        allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+        allow(native).to receive(:kill_with_timeout).and_raise(Microsandbox::Error, "kill timed out")
+      end
+
+      def with_stderr(io)
+        original = $stderr
+        $stderr = io
+        yield
+      ensure
+        $stderr = original
+      end
+
+      [[IOError, "not opened for writing"], [Errno::EPIPE, nil]].each do |klass, message|
+        context "(#{klass})" do
+          let(:stderr) { broken_stderr.new(message ? klass.new(message) : klass.new) }
+
+          it "keeps the block's exception" do
+            with_stderr(stderr) do
+              expect { Microsandbox::Sandbox.create("box", image: "x") { raise ArgumentError, "boom" } }
+                .to raise_error(ArgumentError, "boom")
+            end
+          end
+
+          it "keeps the block's return value" do
+            with_stderr(stderr) do
+              expect(Microsandbox::Sandbox.create("box", image: "x") { :done }).to eq(:done)
+            end
+            expect(native).to have_received(:kill_with_timeout)
+          end
+
+          it "keeps the handover failure in the native-object cleanup" do
+            allow(Microsandbox::Sandbox).to receive(:new).and_raise(RuntimeError, "handover failed")
+            allow(native).to receive(:owns_lifecycle).and_return(true)
+            with_stderr(stderr) do
+              expect { Microsandbox::Sandbox.create("box", image: "x") }.to raise_error(RuntimeError, "handover failed")
+            end
+            expect(native).to have_received(:kill_with_timeout)
+          end
+        end
+      end
+
+      it "keeps the block's exception when $stderr is closed" do
+        closed = StringIO.new
+        closed.close
+        with_stderr(closed) do
+          expect { Microsandbox::Sandbox.create("box", image: "x") { raise ArgumentError, "boom" } }
+            .to raise_error(ArgumentError, "boom")
+        end
+      end
+    end
+
+    it "still warns when the sandbox's name cannot be read" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      allow(native).to receive(:kill_with_timeout).and_raise(Microsandbox::Error, "kill timed out")
+      allow(native).to receive(:name).and_raise(Microsandbox::ForkedHandleError, "forked")
+      expect do
+        expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "boom" } }
+          .to raise_error(IOError, "boom")
+      end.to output(/cleanup gave up on sandbox "<unknown: Microsandbox::ForkedHandleError>"/).to_stderr
     end
   end
 
@@ -842,6 +1090,26 @@ RSpec.describe Microsandbox::Sandbox do
 
     it "exposes the live #status as a Symbol" do
       expect(sb.status).to eq(:running)
+    end
+
+    # Runtime v0.7: the live sandbox's bounded variants (the plain #stop waits
+    # forever and never escalates).
+    it "forwards #stop_with_timeout / #kill_with_timeout as seconds, rejecting bad budgets" do
+      allow(native).to receive(:kill_with_timeout)
+      expect(sb.stop_with_timeout(2)).to be_nil
+      expect(sb.kill_with_timeout(0.5)).to be_nil
+      expect(native).to have_received(:stop_with_timeout).with(2.0)
+      expect(native).to have_received(:kill_with_timeout).with(0.5)
+      [-1, Float::NAN, Float::INFINITY].each do |bad|
+        expect { sb.stop_with_timeout(bad) }.to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+        expect { sb.kill_with_timeout(bad) }.to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+      end
+    end
+
+    it "lets StopTimeoutError from #stop_with_timeout surface (nothing is killed)" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      expect { sb.stop_with_timeout(1) }.to raise_error(Microsandbox::StopTimeoutError)
+      expect(native).not_to have_received(:kill)
     end
 
     # The binding routes the live #stop through the sandbox object itself (not a
@@ -960,6 +1228,98 @@ RSpec.describe Microsandbox::Sandbox do
     end
   end
 
+  # Sandbox.restore (runtime v0.7): stub-level; the real restores run in
+  # spec/integration/snapshot_spec.rb.
+  describe ".restore" do
+    before { allow(Microsandbox::Native::Sandbox).to receive(:restore).and_return(native) }
+
+    def restored_with
+      captured = nil
+      expect(Microsandbox::Native::Sandbox).to have_received(:restore) { |ref, opts| captured = [ref, opts] }
+      captured
+    end
+
+    it "maps the destination options and reads a String selector as auto" do
+      sb = Microsandbox::Sandbox.restore("snap_123", name: :child, cpus: 2, memory: 768, user: "app",
+        log_level: :debug, max_duration: 60, idle_timeout: 30, volumes: {"/data" => "/host/data"},
+        ports: {"8080" => "80"}, disable_network: true, cow_memory: true, disk_only: true,
+        snapshot_base: "base", allow_missing_resources: true, external_mount_policy: :relaxed)
+      expect(sb).to be_a(Microsandbox::Sandbox)
+      ref, opts = restored_with
+      expect(ref).to eq("snap_123")
+      expect(opts).to eq(
+        "snapshot_kind" => "auto", "name" => "child", "cpus" => 2, "memory" => 768, "user" => "app",
+        "log_level" => "debug", "max_duration" => 60, "idle_timeout" => 30,
+        "volumes" => [{"guest" => "/data", "kind" => "bind", "source" => "/host/data"}],
+        "ports" => {8080 => 80}, "disable_network" => true, "cow_memory" => true, "disk_only" => true,
+        "snapshot_base" => "base", "allow_missing_resources" => true, "external_mount_policy" => "relaxed"
+      )
+      expect(Microsandbox).to have_received(:ensure_runtime!)
+    end
+
+    it "sends only name: and the kind when nothing else is given" do
+      Microsandbox::Sandbox.restore("src:snap", name: "child")
+      expect(restored_with).to eq(["src:snap", {"name" => "child", "snapshot_kind" => "auto"}])
+    end
+
+    it "restores a SnapshotInfo by its reference and kind, falling back to path, id, then digest" do
+      {
+        {"reference" => "/snaps/a", "reference_kind" => "path", "path" => "/snaps/a", "id" => "snap_1"} => ["/snaps/a", "path"],
+        {"path" => "/snaps/b", "id" => "snap_2", "digest" => "sha256:b"} => ["/snaps/b", "path"],
+        {"id" => "snap_3", "digest" => "sha256:c"} => ["snap_3", "id"],
+        {"digest" => "sha256:d"} => ["sha256:d", "auto"]
+      }.each do |data, (ref, kind)|
+        RSpec::Mocks.space.proxy_for(Microsandbox::Native::Sandbox).reset
+        allow(Microsandbox::Native::Sandbox).to receive(:restore).and_return(native)
+        Microsandbox::Sandbox.restore(Microsandbox::SnapshotInfo.new(data), name: "child")
+        got_ref, opts = restored_with
+        expect([got_ref, opts["snapshot_kind"]]).to eq([ref, kind])
+      end
+    end
+
+    it "reads a Pathname as a path" do
+      Microsandbox::Sandbox.restore(Pathname("snaps/x"), name: "child")
+      expect(restored_with.last).to include("snapshot_kind" => "path")
+      expect(restored_with.first).to eq("snaps/x")
+    end
+
+    it "warns on the deprecated forked: and maps it to cow_memory" do
+      expect { Microsandbox::Sandbox.restore("s", name: "child", forked: true) }
+        .to output(/restore\(forked:\) is deprecated; use cow_memory:/).to_stderr
+      expect(restored_with.last).to include("cow_memory" => true)
+    end
+
+    it "rejects what restore cannot change, before provisioning the runtime" do
+      [
+        [{network: :none}, /unknown keyword: :network/],
+        [{security: :restricted}, /unknown keyword: :security/],
+        [{vsock: {"/s" => 1}}, /unknown keyword: :vsock/],
+        [{max_tcp_connections: 1}, /unknown keyword: :max_tcp_connections/],
+        [{image: "alpine"}, /unknown keyword: :image/],
+        [{external_mount_policy: :loose}, /external_mount_policy: must be :strict or :relaxed/]
+      ].each do |kwargs, message|
+        expect { Microsandbox::Sandbox.restore("s", name: "child", **kwargs) }.to raise_error(ArgumentError, message)
+      end
+      expect { Microsandbox::Sandbox.restore("s") }.to raise_error(ArgumentError, /missing keyword: :name/)
+      expect { Microsandbox::Sandbox.restore(42, name: "child") }.to raise_error(ArgumentError, /snapshot must be/)
+      expect(Microsandbox).not_to have_received(:ensure_runtime!)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:restore)
+    end
+
+    it "stops the restored sandbox after the block, though upstream starts it detached" do
+      allow(native).to receive(:owns_lifecycle).and_return(false)
+      expect(Microsandbox::Sandbox.restore("s", name: "child") { |sb| sb.name }).to eq("box")
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
+    end
+
+    it "stops the unowned restored sandbox when the caller never gets it" do
+      allow(native).to receive(:owns_lifecycle).and_return(false)
+      allow(Microsandbox::Sandbox).to receive(:new).and_raise(IOError, "lost")
+      expect { Microsandbox::Sandbox.restore("s", name: "child") }.to raise_error(IOError, "lost")
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
+    end
+  end
+
   # The acquisition entry points mask interrupts around the native call (so an
   # interrupted call's sandbox can be stopped), and a mask makes whatever runs
   # under it uninterruptible. It must therefore cover the native call only:
@@ -975,7 +1335,7 @@ RSpec.describe Microsandbox::Sandbox do
       end.new("box")
     end
 
-    {create: {image: "python"}, connect_or_create: {image: "python"}, start: {}}.each do |entry, kwargs|
+    {create: {image: "python"}, connect_or_create: {image: "python"}, start: {}, restore: {name: "r"}}.each do |entry, kwargs|
       it ".#{entry} can be timed out while its arguments are prepared, before any native call" do
         allow(Microsandbox::Native::Sandbox).to receive(entry).and_return(native)
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -1012,7 +1372,7 @@ RSpec.describe Microsandbox::Sandbox do
     it "validates .connect_or_create kwargs exactly like .create" do
       expect do
         Microsandbox::Sandbox.connect_or_create("box", image: "x", from_snapshot: "snap")
-      end.to raise_error(ArgumentError, /either image: or from_snapshot:/)
+      end.to raise_error(ArgumentError, /from_snapshot: was removed in 0\.18\.0/)
       expect(Microsandbox::Native::Sandbox).not_to have_received(:connect_or_create)
     end
 
@@ -1025,13 +1385,15 @@ RSpec.describe Microsandbox::Sandbox do
       yielded = nil
       Microsandbox::Sandbox.connect_or_create("box", image: "x") { |sb| yielded = sb }
       expect(yielded).to be_a(Microsandbox::Sandbox)
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
     end
 
     it "leaves a merely-connected sandbox running after the .connect_or_create block form" do
       allow(native).to receive(:owns_lifecycle).and_return(false)
       Microsandbox::Sandbox.connect_or_create("box", image: "x") { |sb| sb.name }
-      expect(native).not_to have_received(:stop)
+      expect(native).not_to have_received(:stop_with_timeout)
+      expect(native).not_to have_received(:kill)
+      expect(native).not_to have_received(:kill_with_timeout)
     end
 
     it "leaves a detached sandbox running after the .connect_or_create block form" do
@@ -1040,12 +1402,12 @@ RSpec.describe Microsandbox::Sandbox do
       expect(Microsandbox::Native::Sandbox).to have_received(:connect_or_create).with(
         "box", hash_including("detached" => true)
       )
-      expect(native).not_to have_received(:stop)
+      expect(native).not_to have_received(:stop_with_timeout)
     end
 
     it "still returns the block's value and swallows a teardown stop failure" do
       allow(native).to receive(:owns_lifecycle).and_return(true)
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxNotRunningError, "gone")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxNotRunningError, "gone")
       result = Microsandbox::Sandbox.connect_or_create("box", image: "x") { :block_value }
       expect(result).to eq(:block_value)
     end
@@ -1056,10 +1418,12 @@ RSpec.describe Microsandbox::Sandbox do
     # best-effort teardown failure — the block's value still comes back.
     it "swallows SandboxReplacedError from the block-form teardown" do
       allow(native).to receive(:owns_lifecycle).and_return(true)
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxReplacedError, "replaced")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxReplacedError, "replaced")
       result = Microsandbox::Sandbox.connect_or_create("box", image: "x") { :block_value }
       expect(result).to eq(:block_value)
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout)
+      expect(native).not_to have_received(:kill)
+      expect(native).not_to have_received(:kill_with_timeout)
     end
 
     it "exposes the sandbox identity as #id" do

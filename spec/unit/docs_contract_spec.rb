@@ -144,7 +144,7 @@ RSpec.describe "documentation contract" do
     it "#{doc} names every version lock-step location" do
       text = read.call(doc)
       required = ["version.rb", "ext/microsandbox/Cargo.toml", "binaries.rb", "Cargo.lock",
-        "microsandbox-runtime", "binaries/checksums"]
+        "microsandbox-utils", "binaries/checksums"]
       expect(required.reject { |r| text.include?(r) }).to be_empty
     end
   end

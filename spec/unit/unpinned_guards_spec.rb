@@ -3,7 +3,7 @@
 # Behaviour that no other spec pinned: each example fails if the guard it
 # names is removed or inverted. Stub-level, like sandbox_spec.rb.
 RSpec.describe "guards no other spec pins" do
-  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil) }
+  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil, stop_with_timeout: nil, kill: nil) }
 
   before do
     allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
@@ -45,12 +45,12 @@ RSpec.describe "guards no other spec pins" do
 
   describe "block-form teardown" do
     it "swallows a stop failure after the .create block and still returns the block value" do
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxNotRunningError, "gone")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxNotRunningError, "gone")
       expect(Microsandbox::Sandbox.create("box", image: "x") { :value }).to eq(:value)
     end
 
     it "lets the block's own exception win over a stop failure after .create" do
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxNotRunningError, "gone")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxNotRunningError, "gone")
       expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "from block" } }
         .to raise_error(IOError, "from block")
     end
@@ -59,7 +59,7 @@ RSpec.describe "guards no other spec pins" do
       allow(native).to receive(:owns_lifecycle).and_return(true)
       expect { Microsandbox::Sandbox.connect_or_create("box", image: "x") { raise "boom" } }
         .to raise_error("boom")
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout)
     end
 
     it "closes the write sink when the fs.write_stream block raises" do
@@ -115,13 +115,30 @@ RSpec.describe "guards no other spec pins" do
   end
 
   describe "Microsandbox.setup option mapping" do
-    before { allow(Microsandbox::Native).to receive(:setup) }
+    before do
+      allow(Microsandbox::Native).to receive(:setup)
+      allow(Microsandbox).to receive(:warn)
+    end
 
     it "forwards base_dir/version/force/skip_verify" do
       Microsandbox.setup(base_dir: "/opt/msb", version: "0.6.18", force: true, skip_verify: true)
       expect(Microsandbox::Native).to have_received(:setup).with(
         "base_dir" => "/opt/msb", "version" => "0.6.18", "force" => true, "skip_verify" => true
       )
+    end
+
+    # The v0.7 launch contract accepts only an msb of exactly the SDK's runtime.
+    it "warns that any other runtime version will be refused at every start" do
+      Microsandbox.setup(version: "0.6.18")
+      expect(Microsandbox).to have_received(:warn).with(
+        a_string_matching(/setup\(version: "0\.6\.18"\).*only runtime #{Regexp.escape(Microsandbox::RUNTIME_VERSION.delete_prefix("v"))}.*refused at every local sandbox start/)
+      )
+    end
+
+    it "does not warn for the SDK's own runtime version (with or without the v)" do
+      Microsandbox.setup(version: Microsandbox::RUNTIME_VERSION)
+      Microsandbox.setup(version: Microsandbox::RUNTIME_VERSION.delete_prefix("v"))
+      expect(Microsandbox).not_to have_received(:warn)
     end
 
     it "sends an empty Hash by default (no accidental force/skip)" do
@@ -139,8 +156,11 @@ RSpec.describe "guards no other spec pins" do
 
     before do
       allow(Microsandbox).to receive(:ensure_runtime!).and_call_original
-      allow(Microsandbox).to receive(:installed?).and_return(true)
-      allow(Microsandbox).to receive(:install)
+      # Missing runtime, so "not disabled" is observable as an install.
+      allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
+      allow(Microsandbox::Native).to receive(:backend_runtime_home_pair).and_return(["/h/bin/msb", "/h/lib/libkrunfw"])
+      allow(Microsandbox).to receive(:bootstrap_install)
+      allow(Microsandbox).to receive(:warn)
     end
 
     def ensure_runtime_with(value)
@@ -151,14 +171,14 @@ RSpec.describe "guards no other spec pins" do
     ["0", "false", "FALSE", "no", "No", ""].each do |value|
       it "treats #{value.inspect} as NOT disabled (auto-install still runs)" do
         ensure_runtime_with(value)
-        expect(Microsandbox).to have_received(:install).once
+        expect(Microsandbox).to have_received(:bootstrap_install).once
       end
     end
 
     %w[1 true yes on].each do |value|
       it "treats #{value.inspect} as disabled" do
         ensure_runtime_with(value)
-        expect(Microsandbox).not_to have_received(:install)
+        expect(Microsandbox).not_to have_received(:bootstrap_install)
       end
     end
   end

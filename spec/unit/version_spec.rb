@@ -62,14 +62,17 @@ RSpec.describe Microsandbox do
 
     # Guards against the constant silently drifting from the pinned git tag — the
     # exact failure mode (a stale "currently vX.Y.Z" note) that motivated adding
-    # the constant. Also asserts all THREE upstream git deps (`microsandbox`,
-    # `microsandbox-network`, `microsandbox-runtime`) share one tag: a bump that
-    # misses one would otherwise compile two runtime versions into the ext.
+    # the constant. Covers EVERY git dependency on the upstream repository (not
+    # a fixed list of crate names), so a dep added later cannot be missed: a
+    # bump that leaves one behind would compile two runtime versions into the
+    # ext, and the launch contract needs msb == the SDK crate version exactly.
     it "stays in sync with the upstream tag pinned in ext/microsandbox/Cargo.toml" do
       cargo = File.read(File.expand_path("../../ext/microsandbox/Cargo.toml", __dir__), encoding: "UTF-8")
-      tags = cargo.scan(/^microsandbox(?:-network|-runtime)?\s*=\s*\{[^}]*\btag\s*=\s*"([^"]+)"/).flatten
-      expect(tags.size).to eq(3)
-      expect(tags.uniq).to eq([Microsandbox::RUNTIME_VERSION])
+      upstream = %r{git\s*=\s*"https://github\.com/superradcompany/microsandbox"}
+      deps = cargo.scan(/^([\w-]+)\s*=\s*(\{[^}]*\})/).select { |_, body| body.match?(upstream) }
+      expect(deps.map(&:first)).to include("microsandbox", "microsandbox-network")
+      tags = deps.map { |name, body| [name, body[/\btag\s*=\s*"([^"]+)"/, 1]] }
+      expect(tags.map(&:last)).to all(eq(Microsandbox::RUNTIME_VERSION)), "upstream git deps off RUNTIME_VERSION: #{tags.inspect}"
     end
   end
 end

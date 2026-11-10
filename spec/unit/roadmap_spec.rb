@@ -144,16 +144,15 @@ RSpec.describe "streaming exec, images, volumes" do
       allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
     end
 
-    it "normalizes volumes and from_snapshot into create options" do
+    it "normalizes volumes into create options" do
       Microsandbox::Sandbox.create(
         "box",
-        from_snapshot: "snap-1",
+        image: "python",
         volumes: {"/data" => "/host/data", "/cache" => {named: "cache-vol", ro: true}}
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
-          "from_snapshot" => "snap-1",
           "volumes" => [
             {"guest" => "/data", "kind" => "bind", "source" => "/host/data"},
             {"guest" => "/cache", "kind" => "named", "source" => "cache-vol", "readonly" => true}

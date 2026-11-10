@@ -30,46 +30,124 @@ should skip it: it is a separate, optional gem precisely so nobody has to fetch
 ### Fallback — first-use download
 
 Without the companion gem, the `msb` runtime and `libkrunfw` firmware are
-provisioned into `~/.microsandbox` automatically on first use (the first
-`Sandbox.create`/`start` downloads them if missing). To provision ahead of time
-— e.g. while baking a container image, or to avoid the first-call latency —
-call `install` explicitly:
+provisioned into the runtime home (`MSB_HOME`, default `~/.microsandbox`)
+automatically on first use: the first `Sandbox.create`/`start` downloads them
+if no runtime resolves. To provision ahead of time — e.g. while baking a
+container image, or to avoid the first-call latency — call `install`
+explicitly:
 
 ```ruby
-Microsandbox.install unless Microsandbox.installed?
+Microsandbox.install               # no-op when the home already holds this runtime
 ```
 
 Set `MICROSANDBOX_NO_AUTO_INSTALL` to disable the automatic first-use download
-(e.g. on air-gapped hosts that provision the runtime out of band). None of this
-applies when the companion gem supplies the runtime: its binaries are already
-the matching version, so `ensure_runtime!` skips the installer entirely and
-nothing is written to `~/.microsandbox`. `Microsandbox.setup` customizes the
-provisioning step itself.
+(e.g. on air-gapped hosts that provision the runtime out of band). With it set
+the SDK never writes a runtime file: a missing runtime surfaces as
+`RuntimeNotInstalledError` from the operation itself, and a mismatched one (see
+below) is only reported. None of this applies when the companion gem supplies
+the runtime: its binaries are already the matching version, so `ensure_runtime!`
+skips the installer entirely and nothing is written to `~/.microsandbox`.
+`Microsandbox.setup` customizes the provisioning step itself.
+
+### One runtime version
+
+Runtime v0.7 launches a local sandbox only when the `msb` executable is
+**exactly** the runtime this SDK embeds (`Microsandbox::RUNTIME_VERSION`); it
+reads the version embedded in the executable, and refuses every other one —
+an older `0.7.x`, a pre-0.7 `msb` (which carries no embedded version), and a
+wrapper script in front of `msb` (likewise unversioned). Before the first local
+sandbox start `Microsandbox.ensure_runtime!` checks the selected runtime:
+
+| Selected runtime | What the SDK does |
+|---|---|
+| this version | nothing |
+| none at all | warns, then `install`s into the runtime home |
+| the runtime home's, another version | warns, then `install(force: true)` replaces the pair in the home |
+| `MSB_PATH`, `runtime_path=`, a configured path — another version | never touched: warns that every local sandbox start will be refused |
+| a partial pair | raises `RuntimeIncompleteError`, naming the files to delete or the variable to set |
+
+With `MICROSANDBOX_NO_AUTO_INSTALL` set nothing is installed or replaced in any
+of these cases; a mismatch is reported with the same warning.
+
+The selected runtime is the one the local backend will launch. That backend
+reads its runtime configuration — `MSB_HOME`, `MSB_PATH`,
+`MSB_LIBKRUNFW_PATH`, `runtime_path=`/`libkrunfw_path=`, the config file —
+once, when it is first used in a process (any sandbox, image or catalog call,
+`runtime_path`, `default_backend_kind`). If one of them changed afterwards so
+that the home or the selected pair differs, `ensure_runtime!` raises
+`Microsandbox::InvalidConfigError` before it checks or installs anything,
+rather than repairing a runtime that sandboxes will not use. Otherwise both
+the check and any install it makes use the backend's own configuration, so
+changing the environment while it runs cannot redirect them. Set the
+environment before the first SDK call, or call
+`Microsandbox.set_default_backend(:local)` to rebuild the backend from the
+current configuration. `Microsandbox.install` is not affected: it always
+targets the home the current configuration names.
+
+`Microsandbox.install(force: false)` checks the runtime home itself — the exact
+two files the resolver expects there (`bin/msb` and `lib/libkrunfw.5.dylib` on
+macOS, `lib/libkrunfw.so.5.6.1` on Linux) — whatever `MSB_PATH` or another
+source would select instead. A complete pair of this version is kept (no
+download) unless `force: true`; another version is replaced; a home with only
+one of the two files is refused, because the installer never repairs a partial
+installation: delete both files and retry.
 
 ## Runtime path resolution
 
-The `msb` runtime path is resolved in this order: the `MSB_PATH` environment
-variable → the `microsandbox-rb-binaries` gem (or another SDK-set override) →
-the config file → `~/.microsandbox/bin/msb` → `msb` on `PATH`.
-`Microsandbox.runtime_path` reports the winner.
+The runtime is resolved as one **pair** — the `msb` executable and the
+`libkrunfw` library that goes with it — in this order:
+
+1. `MSB_PATH`, with `MSB_LIBKRUNFW_PATH` or else the library next to the
+   executable (in its directory, or in `../lib`). `MSB_LIBKRUNFW_PATH` alone is
+   an error: it needs `MSB_PATH` so the pair is explicit.
+2. The SDK path slots: the `microsandbox-rb-binaries` gem, or
+   `runtime_path=` / `libkrunfw_path=`.
+3. The paths in the config file.
+4. The runtime home: `<home>/bin/msb` and `<home>/lib/<libkrunfw>`. A home
+   holding only one of them is an error, never skipped.
+
+`msb` on `PATH` is no longer consulted. `Microsandbox.runtime_info` reports the
+selected pair and where it came from; `Microsandbox.installed?` says whether
+any source resolves a complete pair (it does not check the version).
 
 ```ruby
-Microsandbox.installed?            # => true/false
-Microsandbox.install               # download + install the runtime (idempotent)
-Microsandbox.runtime_path          # => "/Users/you/.microsandbox/bin/msb"
+info = Microsandbox.runtime_info   # => #<Microsandbox::RuntimeInfo origin=home …>
+info.origin                        # => :home (:environment, :sdk_package, :configuration, :installed)
+info.msb_path                      # => "/Users/you/.microsandbox/bin/msb"
+info.libkrunfw_path                # => "/Users/you/.microsandbox/lib/libkrunfw.5.dylib"
+info.version                       # => "0.7.14" (nil for a pre-0.7 msb or a wrapper script)
+info.matches_sdk?                  # => true
+
+Microsandbox.installed?            # => true/false (any complete pair, any version)
+Microsandbox.install               # install this runtime into the home (idempotent)
+Microsandbox.runtime_path          # => the selected msb
 Microsandbox.runtime_path = "/opt/microsandbox/bin/msb"  # override (set-once)
-Microsandbox.libkrunfw_path = "/opt/microsandbox/lib/libkrunfw.dylib"  # override (set-once)
+Microsandbox.libkrunfw_path = "/opt/microsandbox/lib/libkrunfw.5.dylib"  # override (set-once)
 ```
 
+`origin` is **gem-classified**: runtime v0.7.14 folds `MSB_PATH` and the SDK
+path slots into its configuration before it resolves and reports both as
+`:configuration`. The SDK refines that one value by the resolved path:
+`:environment` when it is `MSB_PATH`, `:sdk_package` when it is the binaries
+gem's `msb` (`MSB_PATH` wins when both match), otherwise `:configuration`
+(`runtime_path=` or the config file). Every other value is upstream's.
+
 When `microsandbox-rb-binaries` is installed, `require "microsandbox"` claims
-that SDK-set slot with the gem's vendored `msb` (the firmware is found alongside
-it), and `runtime_path` points into the gem. The two gems are versioned in
+both SDK slots with the gem's vendored `msb` and `libkrunfw`, and
+`runtime_info.origin` is `:sdk_package`. The two gems are versioned in
 lockstep and the companion gem must be the same version **and** built for the
 same upstream runtime — a mismatch of either is reported with a warning and
 skipped, and the SDK falls back to `~/.microsandbox` rather than driving a
-runtime it doesn't match. Because the slot is **set-once**,
-`Microsandbox.runtime_path=` is then a no-op: use the `MSB_PATH` environment
-variable, which outranks it, to point at a different runtime.
+runtime it doesn't match. Because the slots are **set-once**,
+`Microsandbox.runtime_path=` and `libkrunfw_path=` are then no-ops: use the
+`MSB_PATH` environment variable, which outranks them, to point at a different
+runtime. If `MSB_PATH` is already set when `microsandbox` is required, the gem
+leaves the `libkrunfw` slot free, so the `MSB_PATH` runtime pairs with its own
+library; setting `MSB_PATH` later, from inside the process, cannot undo that
+claim — set `MSB_LIBKRUNFW_PATH` too in that case.
+
+The runtime home must be private: none of its ancestors may be group- or
+world-writable without the sticky bit, or the runtime refuses it.
 
 ## Backend routing
 
@@ -222,8 +300,8 @@ sandbox from the image pulls it), or in a fresh process started with
 ## One runtime line per home
 
 The runtime home (`MSB_HOME`, default `~/.microsandbox`) belongs to one
-runtime line at a time. This gem embeds runtime `v0.6.18` and, on first use,
-installs that version of `msb` into the home — replacing a different version
+runtime line at a time. This gem embeds the runtime named by
+`Microsandbox::RUNTIME_VERSION` and, on first use, installs that version of `msb` into the home — replacing a different version
 that is already there, including a newer `msb` installed by the official CLI.
 In the other direction, a `0.7.x` `msb` migrates the catalog to a newer schema
 the first time it opens it, after which every local call from this gem fails
@@ -238,32 +316,37 @@ export MSB_HOME="$HOME/.microsandbox-rb"
 
 ## Known issues at the pinned runtime
 
-These are fixed upstream in runtime releases this gem has not adopted yet. See
-[SECURITY.md](../SECURITY.md) for the security advisories.
+Open upstream at runtime `v0.7.14`. See [SECURITY.md](../SECURITY.md) for the
+security advisories.
 
-- **macOS hosts: guest `fallocate` can truncate a file on a bind mount or a
-  directory-backed named volume.** Preallocating a range that ends inside an
-  existing file shrinks the file to the end of that range, and the call
-  reports success. Fixed upstream in `v0.7.0`. Until then, keep data that
-  guest programs preallocate (databases, download tools) on the guest's OCI
-  root disk or a `disk:` volume, not on a host directory.
-- **`modify(secrets:)` adding the first secret** to a sandbox created without
-  any does not turn on TLS interception, so the value is not substituted.
-  Create the sandbox with at least one secret.
-- **`patches:`** resets the owner and mode of parent directories that already
-  exist in the image to `root:root 0755`. Write after boot with `sb.fs`, or
-  restore ownership yourself.
+- **A fresh runtime home cannot create a sandbox from a directory or disk
+  image** ([superradcompany/microsandbox#2041](https://github.com/superradcompany/microsandbox/issues/2041)).
+  Runtime v0.7.14 creates `<home>/sandboxes/<name>` without creating
+  `<home>/sandboxes` first, except on the OCI-image path, so on a home where
+  no install ever ran (the runtime came from `MSB_PATH` or the binaries gem)
+  such a create failed with `No such file or directory`. **Worked around in
+  the SDK:** before every local `create` / `connect_or_create` /
+  `create_with_progress` / `restore` it creates `<home>/sandboxes` (with the
+  mode the OCI path gives it), once a runtime resolves — so a create that is
+  about to fail with `RuntimeNotInstalledError` still writes nothing.
+- **Linux: a detached sandbox leaves a zombie VM process**
+  ([superradcompany/microsandbox#1950](https://github.com/superradcompany/microsandbox/issues/1950)).
+  After a sandbox started with `detached: true` (or `#detach`ed, or restored
+  without a block) stops, its VM child stays `<defunct>` in the SDK process
+  until that process exits. macOS reaps it. A long-running process that
+  creates many detached sandboxes accumulates them; prefer attached
+  sandboxes there.
 
 ## Environment variables
 
 | Variable | Effect |
 |----------|--------|
-| `MSB_PATH` | Path to the `msb` runtime binary; outranks every other source, including the binaries gem |
-| `MSB_LIBKRUNFW_PATH` | Path to the `libkrunfw` shared library; outranks `Microsandbox.libkrunfw_path=` |
+| `MSB_PATH` | Path to the `msb` runtime binary; outranks every other source, including the binaries gem. Needs `libkrunfw` beside it (or `../lib`), or `MSB_LIBKRUNFW_PATH` |
+| `MSB_LIBKRUNFW_PATH` | Path to the `libkrunfw` shared library; outranks `Microsandbox.libkrunfw_path=`. Only together with `MSB_PATH` |
 | `MSB_HOME` | Runtime home: the catalog, image cache, sandboxes, volumes, snapshots, and the first-use runtime install. Default `~/.microsandbox` |
 | `MSB_BACKEND` | `local` or `cloud`; cloud additionally reads `MSB_API_URL` / `MSB_API_KEY` |
 | `MSB_PROFILE` | Select a named profile from the config file |
 | `MSB_CONFIG_PATH` | Override the `~/.microsandbox/config.json` location |
-| `MICROSANDBOX_NO_AUTO_INSTALL` | Disable the first-use runtime download |
+| `MICROSANDBOX_NO_AUTO_INSTALL` | Never install or replace the runtime: no first-use download, no upgrade of a stale home runtime |
 | `MICROSANDBOX_INTEGRATION` | Set to `1` to run the integration specs (development only) |
 | `MICROSANDBOX_TEST_IMAGE` | Override the integration-spec image (development only) |

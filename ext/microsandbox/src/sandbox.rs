@@ -19,16 +19,18 @@ use microsandbox::logs::{
     LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
 use microsandbox::sandbox::{
-    AttachOptionsBuilder, DestroyOptions, DiskImageFormat, EnvVar, FlatClone, FsEntry, FsEntryKind,
-    FsMetadata, HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle,
-    RestartOptions, RlimitResource, RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics,
+    AttachOptionsBuilder, DestroyOptions, DiskImageFormat, EnvVar, ExternalMountRestorePolicy,
+    FlatClone, FsEntry, FsEntryKind, FsMetadata, HostPermissions, HttpDenyResponseFormat,
+    MountBuilder, Patch, PullPolicy, PullProgress, PullProgressHandle, RestartOptions,
+    RlimitResource, RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics,
     SandboxModificationBuilder, SandboxModificationPatch, SandboxStatus, SandboxStopResult,
     SecretBuilder, SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
 };
+use microsandbox::snapshot::SnapshotReference;
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
 use microsandbox::RegistryAuth;
-use microsandbox_network::builder::ViolationActionBuilder;
+use microsandbox::SecretViolationAction;
 use microsandbox_network::dns::Nameserver;
 use microsandbox_network::policy::{
     Action, Destination, DestinationGroup, Direction, NetworkPolicy, NetworkProfile, PortRange,
@@ -51,6 +53,83 @@ use crate::stream::{LogStream, MetricsStream};
 /// bound, so a large finite value would still reach (and panic) the native
 /// layer; this keeps the native layer panic-free regardless of the Ruby layer,
 /// mirroring `agent::dur`.
+/// Workaround for runtime v0.7.14 (docs/runtime.md, "Known issues at the
+/// pinned runtime"): only the OCI-image path of a local create runs
+/// `create_dir_all` on the sandbox directory; the directory- and disk-image
+/// paths create `<sandboxes>/<name>` with a non-recursive mkdir, so on a
+/// fresh runtime home (no install ever ran there: the runtime came from
+/// `MSB_PATH` or the binaries gem) they fail with ENOENT. Create the
+/// sandboxes directory first, the same way the OCI path does (a plain
+/// `create_dir_all`, so the same mode: `0o777 & !umask`).
+///
+/// Upstream issue: https://github.com/superradcompany/microsandbox/issues/2041
+///
+/// Only for a local backend whose own captured configuration resolves a
+/// runtime pair: when nothing resolves, the create is about to fail with
+/// `RuntimeNotInstalledError` and must leave the home untouched. A no-op for
+/// a cloud backend and on the OCI path (the directory then already exists).
+fn prepare_local_sandboxes_dir() -> Result<(), Error> {
+    crate::backend::ensure_this_process_backend()?;
+    let backend = microsandbox::default_backend();
+    let Some(local) = backend.as_local() else {
+        return Ok(());
+    };
+    if microsandbox::setup::resolve_runtime(local.config()).is_err() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(local.sandboxes_dir()).map_err(|error| error::to_ruby(error.into()))
+}
+
+/// The `http:` create option, read from the Ruby layer's normalized Hash.
+struct HttpDeny {
+    deny_response: Option<bool>,
+    format: Option<HttpDenyResponseFormat>,
+    network_message: Option<String>,
+    secret_message: Option<String>,
+}
+
+fn parse_http_deny(h: RHash) -> Result<HttpDeny, Error> {
+    let format = match conv::opt_string(h, "format")?.as_deref() {
+        None => None,
+        Some("json") => Some(HttpDenyResponseFormat::Json),
+        Some("text") => Some(HttpDenyResponseFormat::Text),
+        Some(other) => {
+            return Err(error::base_error(format!(
+                "http format must be json or text, got {other:?}"
+            )));
+        }
+    };
+    Ok(HttpDeny {
+        deny_response: conv::opt::<bool>(h, "deny_response")?,
+        format,
+        network_message: conv::opt_string(h, "network_message")?,
+        secret_message: conv::opt_string(h, "secret_message")?,
+    })
+}
+
+/// Run a whole kill under one deadline: the name's transition lock, the
+/// dispatch and the stopped-state observation. Upstream `kill_with_timeout`
+/// bounds only the observation; its `request_kill` waits for the transition
+/// lock without a deadline, so a held lock would block the caller forever.
+///
+/// Dropping the kill future on expiry is safe at v0.7.14: before the lock is
+/// taken it only closes the lock file; afterwards the guard's drop releases
+/// the lock, SIGKILL (if already sent) is synchronous, and a row left
+/// `Running` is reconciled from the dead pid by the next `get`/`list`/`start`.
+async fn kill_within<F>(name: &str, duration: Duration, kill: F) -> MicrosandboxResult<()>
+where
+    F: std::future::Future<Output = MicrosandboxResult<()>>,
+{
+    match tokio::time::timeout(duration, kill).await {
+        Ok(result) => result,
+        Err(_) => Err(microsandbox::MicrosandboxError::Runtime(format!(
+            "timed out killing sandbox '{name}' within {:.3}s (the budget covers the \
+             transition lock, the kill request and observing the stop)",
+            duration.as_secs_f64()
+        ))),
+    }
+}
+
 fn secs_to_duration(secs: f64) -> Result<Duration, Error> {
     Duration::try_from_secs_f64(secs).map_err(|e| {
         error::base_error(format!(
@@ -101,9 +180,6 @@ impl Sandbox {
                     host_path::Image::Path(path) => b.image(path),
                 };
             }
-        }
-        if let Some(v) = conv::opt_string(opts, "from_snapshot")? {
-            b = b.from_snapshot(host_paths.pin_snapshot(v)?);
         }
         if let Some(v) = conv::opt_u8(opts, "cpus")? {
             b = b.cpus(v);
@@ -177,119 +253,9 @@ impl Sandbox {
                 }
             }
         }
-        // volumes: each mount is normalized by the Ruby layer to a string-keyed
-        // Hash — guest (req), kind ("bind"/"named"/"tmpfs"/"disk"), source
-        // (bind/named/disk), size_mib (tmpfs/disk), format + fstype (disk),
-        // readonly/noexec/nosuid/nodev (bool), stat_virtualization,
-        // host_permissions, override_uid/override_gid (u32 pair).
-        // Enum-valued options are validated up front (the
-        // volume closure can't return an error); the core validates the rest
-        // (e.g. rejecting stat_virtualization on tmpfs/disk) at create().
-        for m in conv::opt_hash_vec(opts, "volumes")? {
-            let guest = conv::opt_string(m, "guest")?
-                .ok_or_else(|| error::base_error("volume mount is missing :guest"))?;
-            let kind = conv::opt_string(m, "kind")?
-                .ok_or_else(|| error::base_error("volume mount is missing :kind"))?;
-            let source = conv::opt_string(m, "source")?;
-            let size_mib = conv::opt_u32(m, "size_mib")?;
-            // Bind-mount guest-write quota override (MiB). The core's MountBuilder
-            // applies it to bind mounts only and rejects it on tmpfs/disk/named at
-            // build(); we forward it as-is so that validation lives in one place.
-            let quota_mib = conv::opt_u32(m, "quota_mib")?;
-            let fstype = conv::opt_string(m, "fstype")?;
-            let readonly = conv::opt_bool(m, "readonly")?;
-            let noexec = conv::opt_bool(m, "noexec")?;
-            let nosuid = conv::opt_bool(m, "nosuid")?;
-            let nodev = conv::opt_bool(m, "nodev")?;
-            let format = conv::opt_string(m, "format")?
-                .map(|f| disk_format_from_str(&f))
-                .transpose()?;
-            let stat_virt = conv::opt_string(m, "stat_virtualization")?
-                .map(|s| stat_virtualization_from_str(&s))
-                .transpose()?;
-            let host_perms = conv::opt_string(m, "host_permissions")?
-                .map(|s| host_permissions_from_str(&s))
-                .transpose()?;
-            // v0.6.15: the fallback guest owner presented for host files that
-            // carry no per-file stat override. The Ruby layer validates the pair
-            // (both-or-neither, u32 range, bind/named only, not with
-            // stat_virtualization=off); whether a *named* volume is directory-
-            // or disk-backed is known only to the core, which rejects the
-            // disk-backed case at build().
-            let override_uid = conv::opt_u32(m, "override_uid")?;
-            let override_gid = conv::opt_u32(m, "override_gid")?;
-            // v0.6.7: mount-root symlink protection is on by default; this is
-            // the per-mount opt-out. Valid for bind/named-directory mounts —
-            // the core rejects it elsewhere at build().
-            let follow_root_symlinks = conv::opt::<bool>(m, "follow_root_symlinks")?;
-            // bind/named/disk require a source; tmpfs must not have one. A
-            // bind or disk source is a host path; a named source is a volume
-            // name and is never resolved.
-            let backing = match (kind.as_str(), source) {
-                ("bind", Some(host)) => {
-                    MountBacking::Bind(host_paths.pin(host, "bind mount host path")?)
-                }
-                ("disk", Some(host)) => {
-                    MountBacking::Disk(host_paths.pin(host, "disk mount host path")?)
-                }
-                ("named", Some(name)) => MountBacking::Named(name),
-                ("bind" | "named" | "disk", None) => {
-                    return Err(error::base_error(format!(
-                        "volume mount kind {kind:?} requires a source"
-                    )))
-                }
-                ("tmpfs", _) => MountBacking::Tmpfs,
-                (other, _) => {
-                    return Err(error::base_error(format!(
-                        "unknown volume mount kind {other:?} (expected bind/named/tmpfs/disk)"
-                    )))
-                }
-            };
-            b = b.volume(guest, move |mut mb| {
-                mb = match backing {
-                    MountBacking::Named(name) => mb.named(name),
-                    MountBacking::Tmpfs => mb.tmpfs(),
-                    MountBacking::Disk(host) => mb.disk(host),
-                    MountBacking::Bind(host) => mb.bind(host),
-                };
-                if let Some(n) = size_mib {
-                    mb = mb.size(n);
-                }
-                if let Some(q) = quota_mib {
-                    mb = mb.quota(q);
-                }
-                if let Some(f) = format {
-                    mb = mb.format(f);
-                }
-                if let Some(ft) = fstype {
-                    mb = mb.fstype(ft);
-                }
-                if readonly {
-                    mb = mb.readonly();
-                }
-                if noexec {
-                    mb = mb.noexec();
-                }
-                if nosuid {
-                    mb = mb.nosuid();
-                }
-                if nodev {
-                    mb = mb.nodev();
-                }
-                if let Some(sv) = stat_virt {
-                    mb = mb.stat_virtualization(sv);
-                }
-                if let Some(hp) = host_perms {
-                    mb = mb.host_permissions(hp);
-                }
-                if let (Some(uid), Some(gid)) = (override_uid, override_gid) {
-                    mb = mb.owner(uid, gid);
-                }
-                if let Some(follow) = follow_root_symlinks {
-                    mb = mb.follow_root_symlinks(follow);
-                }
-                mb
-            });
+        // volumes: see `parse_volumes` (shared with `restore`).
+        for (guest, spec) in parse_volumes(opts, host_paths)? {
+            b = b.volume(guest, move |mb| spec.apply(mb));
         }
         // patches: rootfs modifications applied before boot. The Ruby layer
         // normalizes each `Microsandbox::Patch.*` into a string-keyed Hash with
@@ -372,20 +338,21 @@ impl Sandbox {
             b = b.rlimit_range(resource, soft, hard);
         }
         // secrets: each entry is normalized by the Ruby layer to a string-keyed
-        // Hash — env (req), value (req), hosts / host_patterns (allow lists),
-        // placeholder, require_tls, inject_{headers,basic_auth,query,body},
-        // on_violation. Routed through the full secret builder (`b.secret`), which
-        // auto-enables TLS interception. Mirrors the Python/Node SecretEntry.
+        // Hash — env (req), value (req), allow (req, non-empty), and optional
+        // allow_placeholder_for, placeholder, require_tls_identity,
+        // violation_action, substitution {headers, header_fields, query, body}.
+        // Routed through the full secret builder (`b.secret`), which
+        // auto-enables TLS interception. Mirrors the Python SecretEntry.
         for h in conv::opt_hash_vec(opts, "secrets")? {
             let spec = parse_secret(h)?;
             b = b.secret(move |s| spec.apply(s));
         }
-        // Sandbox-level secret-leak policy (block / block_and_log /
-        // block_and_terminate / passthrough). Applied via the network builder,
-        // which accumulates on top of any policy/dns/tls already configured.
-        if let Some(v) = conv::opt::<Value>(opts, "on_secret_violation")? {
-            let spec = parse_violation_spec(v)?;
-            b = b.network(move |n| n.on_secret_violation(move |va| spec.apply(va)));
+        // Sandbox-level secret-leak action (block / block_and_log /
+        // block_and_terminate). Applied via the network builder, which
+        // accumulates on top of any policy/dns/tls already configured.
+        if let Some(v) = conv::opt_string(opts, "secret_violation_action")? {
+            let action = parse_violation_action(&v)?;
+            b = b.network(move |n| n.secret_violation_action(action));
         }
         // Advanced network configuration (custom DNS, TLS-interception tuning,
         // guest IP pools, connection cap, host-CA trust), applied via the network
@@ -410,7 +377,10 @@ impl Sandbox {
                     .map_err(|e| error::base_error(format!("invalid ipv6_pool {s:?}: {e}")))
             })
             .transpose()?;
-        let max_connections = conv::opt::<usize>(opts, "max_connections")?;
+        // Connection caps (runtime v0.7): 0 selects unlimited. The Ruby layer
+        // maps the deprecated `max_connections:` onto the TCP cap.
+        let max_tcp_connections = conv::opt::<usize>(opts, "max_tcp_connections")?;
+        let max_udp_connections = conv::opt::<usize>(opts, "max_udp_connections")?;
         let trust_host_cas = conv::opt::<bool>(opts, "trust_host_cas")?;
         // strict: fail-closed hostname-policy enforcement (v0.6.18). A
         // hostname-rule allow must be backed by an inspectable request
@@ -421,13 +391,21 @@ impl Sandbox {
         // core's generated network config patch (ConfigPatch derive) does
         // carry a `strict` field, so this is SDK parity, not a core limit.
         let strict = conv::opt::<bool>(opts, "strict")?;
+        // http: how a policy-denied request is answered (runtime v0.7). The
+        // Ruby layer validated it; the deprecated text `deny_message` is not
+        // bound.
+        let http = conv::opt::<RHash>(opts, "http")?
+            .map(parse_http_deny)
+            .transpose()?;
         if dns.is_some()
             || tls.is_some()
             || ipv4_pool.is_some()
             || ipv6_pool.is_some()
-            || max_connections.is_some()
+            || max_tcp_connections.is_some()
+            || max_udp_connections.is_some()
             || trust_host_cas.is_some()
             || strict.is_some()
+            || http.is_some()
         {
             b = b.network(move |mut n| {
                 if let Some(dns) = dns {
@@ -476,14 +454,34 @@ impl Sandbox {
                 if let Some(p) = ipv6_pool {
                     n = n.ipv6_pool(p);
                 }
-                if let Some(m) = max_connections {
-                    n = n.max_connections(m);
+                if let Some(m) = max_tcp_connections {
+                    n = n.max_tcp_connections(m);
+                }
+                if let Some(m) = max_udp_connections {
+                    n = n.max_udp_connections(m);
                 }
                 if let Some(t) = trust_host_cas {
                     n = n.trust_host_cas(t);
                 }
                 if let Some(s) = strict {
                     n = n.strict(s);
+                }
+                if let Some(http) = http {
+                    n = n.http(move |mut h| {
+                        if let Some(enabled) = http.deny_response {
+                            h = h.deny_response(enabled);
+                        }
+                        if let Some(format) = http.format {
+                            h = h.deny_response_format(format);
+                        }
+                        if let Some(message) = http.network_message {
+                            h = h.network_deny_message(message);
+                        }
+                        if let Some(message) = http.secret_message {
+                            h = h.secret_deny_message(message);
+                        }
+                        h
+                    });
                 }
                 n
             });
@@ -551,6 +549,7 @@ impl Sandbox {
     /// Create and boot a sandbox. `opts` is a string-keyed options Hash.
     fn create(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let b = Self::build_builder(name, opts)?;
+        prepare_local_sandboxes_dir()?;
         let inner = block_on(b.create())?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
@@ -561,6 +560,7 @@ impl Sandbox {
     /// Node `createWithPullProgress`.
     fn create_with_progress(name: String, opts: RHash) -> Result<PullSession, Error> {
         let b = Self::build_builder(name, opts)?;
+        prepare_local_sandboxes_dir()?;
         // `create_with_pull_progress` spawns a tokio task, so it must run inside
         // the runtime context even though the call itself is synchronous.
         let (handle, join) =
@@ -574,7 +574,93 @@ impl Sandbox {
     /// the combination with `replace`.
     fn connect_or_create(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let b = Self::build_builder(name, opts)?;
+        prepare_local_sandboxes_dir()?;
         let inner = block_on(b.connect_or_create())?.map_err(error::to_ruby)?;
+        Ok(Sandbox::from_inner(inner))
+    }
+
+    /// Boot a new sandbox from a snapshot (runtime v0.7 `Sandbox::restore`).
+    /// `snapshot` is a selector — an id, `group:member`, digest or path — read
+    /// as `snapshot_kind` says: "auto" (the default, the core decides), "id"
+    /// or "path" (a `SnapshotInfo#reference` keeps its kind). `opts` is the
+    /// Ruby layer's whitelist: name (required), cpus, memory, user, log_level,
+    /// max_duration, idle_timeout, volumes, ports, disable_network,
+    /// cow_memory, disk_only, snapshot_base, allow_missing_resources,
+    /// external_mount_policy. Upstream always restores detached.
+    fn restore(snapshot: String, opts: RHash) -> Result<Sandbox, Error> {
+        // `Sandbox::restore` builds a `SandboxBuilder`, which reads the default
+        // backend synchronously, like `build_builder`.
+        crate::backend::ensure_this_process_backend()?;
+        let host_paths = HostPaths::for_default_backend()?;
+        let reference = match conv::opt_string(opts, "snapshot_kind")?.as_deref() {
+            None | Some("auto") => SnapshotReference::auto(host_paths.pin_snapshot(snapshot)?),
+            Some("id") => SnapshotReference::id(snapshot),
+            Some("path") => SnapshotReference::path(
+                host_paths
+                    .pin(snapshot, "snapshot path")?
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            Some(other) => {
+                return Err(error::base_error(format!(
+                    "unknown snapshot reference kind {other:?} (expected auto/id/path)"
+                )))
+            }
+        };
+        let name = conv::opt_string(opts, "name")?
+            .ok_or_else(|| error::base_error("restore needs name: (the new sandbox name)"))?;
+        let mut b = microsandbox::Sandbox::restore_ref(reference).name(name);
+        if let Some(v) = conv::opt_u8(opts, "cpus")? {
+            b = b.cpus(v);
+        }
+        if let Some(v) = conv::opt_u32(opts, "memory")? {
+            b = b.memory(v);
+        }
+        if let Some(v) = conv::opt_string(opts, "user")? {
+            b = b.user(v);
+        }
+        if let Some(level) = conv::opt_string(opts, "log_level")? {
+            b = b.log_level(log_level_from_str(&level)?);
+        }
+        if let Some(secs) = conv::opt::<u64>(opts, "max_duration")? {
+            b = b.max_duration(secs);
+        }
+        if let Some(secs) = conv::opt::<u64>(opts, "idle_timeout")? {
+            b = b.idle_timeout(secs);
+        }
+        for (guest, spec) in parse_volumes(opts, host_paths)? {
+            b = b.volume(guest, move |mb| spec.apply(mb));
+        }
+        for (host, guest) in conv::opt_port_map(opts, "ports")? {
+            b = b.port(host, guest);
+        }
+        if conv::opt_bool(opts, "disable_network")? {
+            b = b.disable_network();
+        }
+        if conv::opt_bool(opts, "cow_memory")? {
+            b = b.cow_memory();
+        }
+        if conv::opt_bool(opts, "disk_only")? {
+            b = b.disk_only();
+        }
+        if let Some(base) = conv::opt_string(opts, "snapshot_base")? {
+            b = b.snapshot_base(host_paths.pin_snapshot(base)?);
+        }
+        if conv::opt_bool(opts, "allow_missing_resources")? {
+            b = b.allow_missing_resources();
+        }
+        match conv::opt_string(opts, "external_mount_policy")?.as_deref() {
+            None => {}
+            Some("strict") => b = b.external_mount_policy(ExternalMountRestorePolicy::Strict),
+            Some("relaxed") => b = b.external_mount_policy(ExternalMountRestorePolicy::Relaxed),
+            Some(other) => {
+                return Err(error::base_error(format!(
+                    "unknown external_mount_policy {other:?} (expected strict/relaxed)"
+                )))
+            }
+        }
+        prepare_local_sandboxes_dir()?;
+        let inner = block_on(b.restore())?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
 
@@ -722,7 +808,8 @@ impl Sandbox {
         Ok(ExecHandle::from_core(handle))
     }
 
-    /// Graceful stop (SIGTERM→SIGKILL escalation with a 10s default), routed
+    /// Graceful stop, waiting without a deadline (runtime v0.7 never escalates
+    /// to a kill; see `stop_with_timeout`), routed
     /// straight through the live sandbox like every other lifecycle method here
     /// and like both official bindings (`sdk/python/src/sandbox.rs`,
     /// `sdk/ruby/ext/.../lib.rs`).
@@ -750,10 +837,33 @@ impl Sandbox {
         Ok(exit_status_to_hash(status))
     }
 
-    /// Force kill (SIGKILL).
+    /// Graceful stop under one budget (seconds), including dispatch and the
+    /// runtime's release. Expiry is `StopTimeoutError` and kills nothing; a
+    /// zero budget times out before dispatch (runtime v0.7).
+    fn stop_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        let duration = secs_to_duration(secs)?;
+        let inner = self.inner.get()?;
+        block_on(inner.stop_with_timeout(duration))?.map_err(error::to_ruby)
+    }
+
+    /// Force kill (upstream `kill`): waits without a deadline for the name's
+    /// transition lock, then up to 5 s for the stopped state.
     fn kill(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.kill())?.map_err(error::to_ruby)
+    }
+
+    /// Force kill under one budget of `secs`, transition lock and dispatch
+    /// included (see `kill_within`).
+    fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        let duration = secs_to_duration(secs)?;
+        let inner = self.inner.get()?;
+        block_on(kill_within(
+            inner.name(),
+            duration,
+            inner.kill_with_timeout(duration),
+        ))?
+        .map_err(error::to_ruby)
     }
 
     /// Trigger a graceful drain (SIGUSR1 on local).
@@ -1342,81 +1452,39 @@ fn parse_patches(opts: RHash, host_paths: HostPaths) -> Result<Vec<Patch>, Error
 // Secret parsing (mirrors the Python/Node SecretEntry surface)
 //--------------------------------------------------------------------------------------------------
 
-/// A secret-leak response. Per-secret (`on_violation:`) and sandbox-level
-/// (`on_secret_violation:`) share the same shape.
-enum ViolationSpec {
-    Block,
-    BlockAndLog,
-    BlockAndTerminate,
-    Passthrough {
-        hosts: Vec<String>,
-        patterns: Vec<String>,
-        all: bool,
-    },
-}
-
-impl ViolationSpec {
-    fn apply(self, mut v: ViolationActionBuilder) -> ViolationActionBuilder {
-        match self {
-            ViolationSpec::Block => v.block(),
-            ViolationSpec::BlockAndLog => v.block_and_log(),
-            ViolationSpec::BlockAndTerminate => v.block_and_terminate(),
-            ViolationSpec::Passthrough {
-                hosts,
-                patterns,
-                all,
-            } => {
-                for h in hosts {
-                    v = v.passthrough_host(h);
-                }
-                for p in patterns {
-                    v = v.passthrough_host_pattern(p);
-                }
-                if all {
-                    v = v.passthrough_all_hosts(true);
-                }
-                v
-            }
-        }
+/// Parse a secret-leak action. The Ruby layer normalizes the spelling (kebab
+/// or snake case) before it gets here; this rejects anything else so a typo
+/// can never silently fall back to the default action.
+fn parse_violation_action(v: &str) -> Result<SecretViolationAction, Error> {
+    match v {
+        "block" => Ok(SecretViolationAction::Block),
+        "block_and_log" => Ok(SecretViolationAction::BlockAndLog),
+        "block_and_terminate" => Ok(SecretViolationAction::BlockAndTerminate),
+        other => Err(error::base_error(format!(
+            "unknown secret violation action {other:?} (expected block, block_and_log, or block_and_terminate)"
+        ))),
     }
 }
 
-/// Parse `on_violation:` — a String (block variants) or a Hash describing a
-/// passthrough action — into a [`ViolationSpec`].
-fn parse_violation_spec(v: Value) -> Result<ViolationSpec, Error> {
-    if let Ok(s) = String::try_convert(v) {
-        return match s.as_str() {
-            "block" => Ok(ViolationSpec::Block),
-            "block_and_log" => Ok(ViolationSpec::BlockAndLog),
-            "block_and_terminate" => Ok(ViolationSpec::BlockAndTerminate),
-            other => Err(error::base_error(format!(
-                "unknown on_violation {other:?} (expected block/block_and_log/\
-                 block_and_terminate, or a Hash with :passthrough_hosts/\
-                 :passthrough_host_patterns/:passthrough_all_hosts)"
-            ))),
-        };
-    }
-    let h = RHash::try_convert(v)
-        .map_err(|_| error::base_error("on_violation must be a String or a Hash"))?;
-    Ok(ViolationSpec::Passthrough {
-        hosts: conv::opt_string_vec(h, "passthrough_hosts")?,
-        patterns: conv::opt_string_vec(h, "passthrough_host_patterns")?,
-        all: conv::opt_bool(h, "passthrough_all_hosts")?,
-    })
+/// Which request locations a secret is substituted in. `None` leaves the
+/// builder default (headers on, query/body off).
+#[derive(Default)]
+struct SubstitutionSpec {
+    headers: Option<bool>,
+    header_fields: Option<Vec<String>>,
+    query: Option<bool>,
+    body: Option<bool>,
 }
 
 struct SecretSpec {
     env: String,
     value: String,
-    hosts: Vec<String>,
-    host_patterns: Vec<String>,
+    allow: Vec<String>,
+    allow_placeholder_for: Vec<String>,
     placeholder: Option<String>,
-    require_tls: Option<bool>,
-    inject_headers: Option<bool>,
-    inject_basic_auth: Option<bool>,
-    inject_query: Option<bool>,
-    inject_body: Option<bool>,
-    on_violation: Option<ViolationSpec>,
+    require_tls_identity: Option<bool>,
+    violation_action: Option<SecretViolationAction>,
+    substitution: Option<SubstitutionSpec>,
 }
 
 fn parse_secret(h: RHash) -> Result<SecretSpec, Error> {
@@ -1424,60 +1492,78 @@ fn parse_secret(h: RHash) -> Result<SecretSpec, Error> {
         conv::opt_string(h, "env")?.ok_or_else(|| error::base_error("secret requires :env"))?;
     let value =
         conv::opt_string(h, "value")?.ok_or_else(|| error::base_error("secret requires :value"))?;
-    let hosts = conv::opt_string_vec(h, "hosts")?;
-    let host_patterns = conv::opt_string_vec(h, "host_patterns")?;
-    if hosts.is_empty() && host_patterns.is_empty() {
+    let allow = conv::opt_string_vec(h, "allow")?;
+    // The Ruby layer already rejects this; checked again here because the
+    // upstream builder asserts on an empty allow list (a panic across FFI).
+    if allow.is_empty() {
         return Err(error::base_error(
-            "secret requires at least one allowed host (:host, :hosts, or :host_patterns)",
+            "secret requires at least one allowed host (:allow)",
         ));
     }
-    let on_violation = conv::opt::<Value>(h, "on_violation")?
-        .map(parse_violation_spec)
+    let violation_action = conv::opt_string(h, "violation_action")?
+        .map(|v| parse_violation_action(&v))
         .transpose()?;
+    let substitution = match conv::opt::<RHash>(h, "substitution")? {
+        Some(sub) => Some(SubstitutionSpec {
+            headers: conv::opt::<bool>(sub, "headers")?,
+            header_fields: conv::opt::<Vec<String>>(sub, "header_fields")?,
+            query: conv::opt::<bool>(sub, "query")?,
+            body: conv::opt::<bool>(sub, "body")?,
+        }),
+        None => None,
+    };
     Ok(SecretSpec {
         env,
         value,
-        hosts,
-        host_patterns,
+        allow,
+        allow_placeholder_for: conv::opt_string_vec(h, "allow_placeholder_for")?,
         placeholder: conv::opt_string(h, "placeholder")?,
-        require_tls: conv::opt::<bool>(h, "require_tls")?,
-        inject_headers: conv::opt::<bool>(h, "inject_headers")?,
-        inject_basic_auth: conv::opt::<bool>(h, "inject_basic_auth")?,
-        inject_query: conv::opt::<bool>(h, "inject_query")?,
-        inject_body: conv::opt::<bool>(h, "inject_body")?,
-        on_violation,
+        require_tls_identity: conv::opt::<bool>(h, "require_tls_identity")?,
+        violation_action,
+        substitution,
     })
 }
 
 impl SecretSpec {
+    /// Apply in the order the Python SDK uses (`sdk/python/src/helpers.rs`).
     fn apply(self, mut s: SecretBuilder) -> SecretBuilder {
         s = s.env(self.env).value(self.value);
-        for host in self.hosts {
-            s = s.allow_host(host);
+        for host in self.allow {
+            // `allow("*")` asserts upstream; the any-host form is an explicit,
+            // separately named call.
+            s = if host == "*" {
+                s.allow_any_host_dangerous(true)
+            } else {
+                s.allow(host)
+            };
         }
-        for pat in self.host_patterns {
-            s = s.allow_host_pattern(pat);
+        for host in self.allow_placeholder_for {
+            s = s.allow_placeholder_for(host);
+        }
+        if let Some(action) = self.violation_action {
+            s = s.violation_action(action);
         }
         if let Some(p) = self.placeholder {
             s = s.placeholder(p);
         }
-        if let Some(rt) = self.require_tls {
-            s = s.require_tls_identity(rt);
+        if let Some(required) = self.require_tls_identity {
+            s = s.require_tls_identity(required);
         }
-        if let Some(enabled) = self.inject_headers {
-            s = s.inject_headers(enabled);
-        }
-        if let Some(enabled) = self.inject_basic_auth {
-            s = s.inject_basic_auth(enabled);
-        }
-        if let Some(enabled) = self.inject_query {
-            s = s.inject_query(enabled);
-        }
-        if let Some(enabled) = self.inject_body {
-            s = s.inject_body(enabled);
-        }
-        if let Some(action) = self.on_violation {
-            s = s.on_violation(move |v| action.apply(v));
+        if let Some(sub) = self.substitution {
+            if let Some(fields) = sub.header_fields {
+                s = s.substitute_in_header_fields(fields);
+            }
+            // After the field list: `substitute_in_header_fields` turns header
+            // substitution on, and an explicit `headers: false` must still win.
+            if let Some(enabled) = sub.headers {
+                s = s.substitute_in_headers(enabled);
+            }
+            if let Some(enabled) = sub.query {
+                s = s.substitute_in_query(enabled);
+            }
+            if let Some(enabled) = sub.body {
+                s = s.substitute_in_body(enabled);
+            }
         }
         s
     }
@@ -1785,6 +1871,167 @@ enum MountBacking {
     Disk(PathBuf),
     Named(String),
     Tmpfs,
+}
+
+/// One parsed `volumes` entry (see [`parse_volumes`]).
+struct VolumeSpec {
+    backing: MountBacking,
+    size_mib: Option<u32>,
+    quota_mib: Option<u32>,
+    format: Option<DiskImageFormat>,
+    fstype: Option<String>,
+    readonly: bool,
+    noexec: bool,
+    nosuid: bool,
+    nodev: bool,
+    stat_virt: Option<StatVirtualization>,
+    host_perms: Option<HostPermissions>,
+    override_uid: Option<u32>,
+    override_gid: Option<u32>,
+    follow_root_symlinks: Option<bool>,
+}
+
+impl VolumeSpec {
+    /// Configure the core's `MountBuilder`. Create and restore share this:
+    /// both builders take `volume(guest, |m| …)`.
+    fn apply(self, mut mb: MountBuilder) -> MountBuilder {
+        mb = match self.backing {
+            MountBacking::Named(name) => mb.named(name),
+            MountBacking::Tmpfs => mb.tmpfs(),
+            MountBacking::Disk(host) => mb.disk(host),
+            MountBacking::Bind(host) => mb.bind(host),
+        };
+        if let Some(n) = self.size_mib {
+            mb = mb.size(n);
+        }
+        if let Some(q) = self.quota_mib {
+            mb = mb.quota(q);
+        }
+        if let Some(f) = self.format {
+            mb = mb.format(f);
+        }
+        if let Some(ft) = self.fstype {
+            mb = mb.fstype(ft);
+        }
+        if self.readonly {
+            mb = mb.readonly();
+        }
+        if self.noexec {
+            mb = mb.noexec();
+        }
+        if self.nosuid {
+            mb = mb.nosuid();
+        }
+        if self.nodev {
+            mb = mb.nodev();
+        }
+        if let Some(sv) = self.stat_virt {
+            mb = mb.stat_virtualization(sv);
+        }
+        if let Some(hp) = self.host_perms {
+            mb = mb.host_permissions(hp);
+        }
+        if let (Some(uid), Some(gid)) = (self.override_uid, self.override_gid) {
+            mb = mb.owner(uid, gid);
+        }
+        if let Some(follow) = self.follow_root_symlinks {
+            mb = mb.follow_root_symlinks(follow);
+        }
+        mb
+    }
+}
+
+/// Parse the `volumes` option: each mount is normalized by the Ruby layer to a string-keyed
+/// Hash — guest (req), kind ("bind"/"named"/"tmpfs"/"disk"), source
+/// (bind/named/disk), size_mib (tmpfs/disk), format + fstype (disk),
+/// readonly/noexec/nosuid/nodev (bool), stat_virtualization,
+/// host_permissions, override_uid/override_gid (u32 pair).
+/// Enum-valued options are validated up front (the
+/// volume closure can't return an error); the core validates the rest
+/// (e.g. rejecting stat_virtualization on tmpfs/disk) at create().
+fn parse_volumes(opts: RHash, host_paths: HostPaths) -> Result<Vec<(String, VolumeSpec)>, Error> {
+    let mut out = Vec::new();
+    for m in conv::opt_hash_vec(opts, "volumes")? {
+        let guest = conv::opt_string(m, "guest")?
+            .ok_or_else(|| error::base_error("volume mount is missing :guest"))?;
+        let kind = conv::opt_string(m, "kind")?
+            .ok_or_else(|| error::base_error("volume mount is missing :kind"))?;
+        let source = conv::opt_string(m, "source")?;
+        let size_mib = conv::opt_u32(m, "size_mib")?;
+        // Bind-mount guest-write quota override (MiB). The core's MountBuilder
+        // applies it to bind mounts only and rejects it on tmpfs/disk/named at
+        // build(); we forward it as-is so that validation lives in one place.
+        let quota_mib = conv::opt_u32(m, "quota_mib")?;
+        let fstype = conv::opt_string(m, "fstype")?;
+        let readonly = conv::opt_bool(m, "readonly")?;
+        let noexec = conv::opt_bool(m, "noexec")?;
+        let nosuid = conv::opt_bool(m, "nosuid")?;
+        let nodev = conv::opt_bool(m, "nodev")?;
+        let format = conv::opt_string(m, "format")?
+            .map(|f| disk_format_from_str(&f))
+            .transpose()?;
+        let stat_virt = conv::opt_string(m, "stat_virtualization")?
+            .map(|s| stat_virtualization_from_str(&s))
+            .transpose()?;
+        let host_perms = conv::opt_string(m, "host_permissions")?
+            .map(|s| host_permissions_from_str(&s))
+            .transpose()?;
+        // v0.6.15: the fallback guest owner presented for host files that
+        // carry no per-file stat override. The Ruby layer validates the pair
+        // (both-or-neither, u32 range, bind/named only, not with
+        // stat_virtualization=off); whether a *named* volume is directory-
+        // or disk-backed is known only to the core, which rejects the
+        // disk-backed case at build().
+        let override_uid = conv::opt_u32(m, "override_uid")?;
+        let override_gid = conv::opt_u32(m, "override_gid")?;
+        // v0.6.7: mount-root symlink protection is on by default; this is
+        // the per-mount opt-out. Valid for bind/named-directory mounts —
+        // the core rejects it elsewhere at build().
+        let follow_root_symlinks = conv::opt::<bool>(m, "follow_root_symlinks")?;
+        // bind/named/disk require a source; tmpfs must not have one. A
+        // bind or disk source is a host path; a named source is a volume
+        // name and is never resolved.
+        let backing = match (kind.as_str(), source) {
+            ("bind", Some(host)) => {
+                MountBacking::Bind(host_paths.pin(host, "bind mount host path")?)
+            }
+            ("disk", Some(host)) => {
+                MountBacking::Disk(host_paths.pin(host, "disk mount host path")?)
+            }
+            ("named", Some(name)) => MountBacking::Named(name),
+            ("bind" | "named" | "disk", None) => {
+                return Err(error::base_error(format!(
+                    "volume mount kind {kind:?} requires a source"
+                )))
+            }
+            ("tmpfs", _) => MountBacking::Tmpfs,
+            (other, _) => {
+                return Err(error::base_error(format!(
+                    "unknown volume mount kind {other:?} (expected bind/named/tmpfs/disk)"
+                )))
+            }
+        };
+        out.push((
+            guest,
+            VolumeSpec {
+                backing,
+                size_mib,
+                quota_mib,
+                format,
+                fstype,
+                readonly,
+                noexec,
+                nosuid,
+                nodev,
+                stat_virt,
+                host_perms,
+                override_uid,
+                override_gid,
+                follow_root_symlinks,
+            },
+        ));
+    }
+    Ok(out)
 }
 
 /// Parsed `root_disk` create option. Integer shorthand = managed upper of N
@@ -2455,6 +2702,9 @@ fn build_modify_patch(opts: RHash) -> Result<SandboxModificationPatch, Error> {
         workdir: conv::opt_string(opts, "workdir")?,
         secrets: parse_modify_secrets(opts)?,
         secrets_remove: conv::opt_string_vec(opts, "remove_secrets")?,
+        // Published-port edits (`ports`/`ports_remove`, runtime v0.7) are not
+        // exposed yet: empty means "leave the ports as they are".
+        ..Default::default()
     })
 }
 
@@ -2490,6 +2740,10 @@ fn parse_modify_secrets(opts: RHash) -> Result<Vec<SecretModificationPatch>, Err
             value: value.unwrap_or_default().into(),
             placeholder: conv::opt_string(h, "placeholder")?,
             allowed_hosts: conv::opt_string_vec(h, "allowed_hosts")?,
+            // The v0.7 policy fields (substitution, placeholder hosts,
+            // violation action, TLS-identity requirement) are not exposed on
+            // modify yet; None/empty keeps the stored values.
+            ..Default::default()
         });
     }
     Ok(out)
@@ -2740,28 +2994,38 @@ impl SbHandle {
             .map(|dt| dt.timestamp_millis())
     }
 
-    /// Graceful stop (SIGTERM→SIGKILL escalation, 10s default) and wait.
+    /// Graceful stop, waiting without a deadline (runtime v0.7: no escalation
+    /// to a kill).
     fn stop(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.stop())?.map_err(error::to_ruby)
     }
 
-    /// Graceful stop with a custom escalation timeout (seconds).
+    /// Graceful stop under one budget (seconds); expiry is `StopTimeoutError`
+    /// and kills nothing.
     fn stop_with_timeout(&self, secs: f64) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.stop_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
     }
 
-    /// Force kill (SIGKILL) and wait.
+    /// Force kill (upstream `kill`): waits without a deadline for the name's
+    /// transition lock, then up to 5 s for the stopped state.
     fn kill(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.kill())?.map_err(error::to_ruby)
     }
 
-    /// Force kill, waiting up to `secs` for the process to disappear.
+    /// Force kill under one budget of `secs`, transition lock and dispatch
+    /// included (see `kill_within`).
     fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        let duration = secs_to_duration(secs)?;
         let inner = self.inner.get()?;
-        block_on(inner.kill_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
+        block_on(kill_within(
+            inner.name(),
+            duration,
+            inner.kill_with_timeout(duration),
+        ))?
+        .map_err(error::to_ruby)
     }
 
     /// Send the graceful-shutdown request and return without waiting.
@@ -2974,6 +3238,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
         function!(Sandbox::connect_or_create, 2),
     )?;
     class.define_singleton_method("start", function!(Sandbox::start, 2))?;
+    class.define_singleton_method("restore", function!(Sandbox::restore, 2))?;
     class.define_singleton_method("get", function!(Sandbox::get, 1))?;
     class.define_singleton_method("list", function!(Sandbox::list, 0))?;
     class.define_singleton_method("list_with", function!(Sandbox::list_with, 1))?;
@@ -2993,6 +3258,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("stop", method!(Sandbox::stop, 0))?;
     class.define_method("stop_and_wait", method!(Sandbox::stop_and_wait, 0))?;
     class.define_method("kill", method!(Sandbox::kill, 0))?;
+    class.define_method("stop_with_timeout", method!(Sandbox::stop_with_timeout, 1))?;
+    class.define_method("kill_with_timeout", method!(Sandbox::kill_with_timeout, 1))?;
     class.define_method("drain", method!(Sandbox::drain, 0))?;
     class.define_method("wait", method!(Sandbox::wait, 0))?;
     class.define_method("wait_for_status", method!(Sandbox::wait_for_status, 1))?;

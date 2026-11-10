@@ -337,22 +337,22 @@ and the Rust→class mapping in `sdk/python/src/error.rs`.
 ## Runtime binary (`msb` + `libkrunfw`)
 
 The gem is **SDK-only**: nothing is provisioned while it is built or installed.
-The core crate's `prebuilt` feature — whose `build.rs` downloads the `msb`
-microVM runtime and `libkrunfw` firmware into `~/.microsandbox/{bin,lib}` at
-build time — is deliberately **off** (`default-features = false`, features
-`keyring`/`net`/`ssh`, the set the official SDKs ship). Build-time provisioning
-only ever helped the source gem: for a precompiled gem the download lands on the
-CI host, and even for a source install it couples "compile a Ruby extension" to
-"fetch 50 MB of host binaries", which is not the compiler's business.
+The core SDK crate's binary features — `download-binaries` (its `build.rs`
+downloads the `msb` runtime and `libkrunfw` into `~/.microsandbox` at build
+time) and `embed-binaries` (`include_bytes!` of the whole runtime tarball) —
+are deliberately **off** (`default-features = false`, features
+`cloud`/`keyring`/`local`/`net`/`ssh`, the set the official SDKs ship).
+Build-time provisioning only ever helped the source gem: for a precompiled gem
+the download lands on the CI host, and even for a source install it couples
+"compile a Ruby extension" to "fetch 50 MB of host binaries", which is not the
+compiler's business.
 
-The *guest* agent is a different story and is still embedded at build time: the
-`agentd` binary that runs as PID 1 inside every microVM is `include_bytes!`-d
-into the extension by `microsandbox-filesystem`'s `build.rs`, keyed by *target*
-arch. Without its `prebuilt` feature that build script demands a locally built
-`build/agentd` (workspace-only), so `ext/microsandbox/Cargo.toml` enables exactly
-that one sub-feature through a direct `microsandbox-runtime` dependency
-(`default-features = false, features = ["prebuilt"]`, whose `prebuilt` is just
-`microsandbox-filesystem/prebuilt`) while the SDK-level host download stays off.
+Since runtime `v0.7` the extension embeds nothing at all: the *guest* agent
+(`agentd`, PID 1 inside every microVM) ships inside the `msb` release build,
+so the host runtime pair is the only binary dependency. (Through runtime
+`v0.6.18` the extension `include_bytes!`-d `agentd` itself via a direct
+`microsandbox-runtime` dependency with its `prebuilt` feature; that dependency
+is gone.)
 
 ### The companion gem
 
@@ -404,20 +404,30 @@ pushes its platform package's `msb` into the same set-once slot at module load).
 A lazy hook inside `ensure_runtime!` would only cover `Sandbox.create`/`start`
 and silently miss every other entry point that resolves or spawns `msb`.
 
-The resolver order is therefore: `$MSB_PATH` → SDK-set path (claimed by the
-companion gem at load; `Microsandbox.runtime_path=` targets this same set-once
-slot, so with the gem installed the setter is a **no-op** — override via
-`MSB_PATH`) → config file → workspace build → `~/.microsandbox/bin/msb` →
-`which msb`. `Microsandbox.runtime_path` reports the winner.
-`Microsandbox.install` / `.installed?` expose the core `setup::install`/
-`is_installed` for explicit, idempotent provisioning (mirrors the Python
-`install()`/`is_installed()`).
+Since runtime `v0.7` the core resolves `msb` and `libkrunfw` as one **pair**,
+in this order: `$MSB_PATH` (with `MSB_LIBKRUNFW_PATH` or the library next to
+it) → the SDK path slots (claimed by the companion gem at load;
+`Microsandbox.runtime_path=`/`libkrunfw_path=` target the same set-once
+slots, so with the gem installed the setters are **no-ops** — override via
+`MSB_PATH`) → config file → the runtime home (`<home>/bin/msb` +
+`<home>/lib/<libkrunfw>`). `msb` on `PATH` is no longer a source.
+`Microsandbox.runtime_info` reports the winning pair, its origin and the
+version embedded in the `msb`; `Microsandbox.install` / `.installed?` cover
+explicit, idempotent provisioning (`installed?` = any complete pair resolves,
+whatever its version).
+
+Runtime `v0.7` launches only an `msb` whose embedded version equals the SDK's
+exactly (the launch contract refuses everything else, `#!` wrapper scripts
+included), so the bootstrap is version-aware: `ensure_runtime!` replaces a
+stale runtime in the home, but never touches one from `MSB_PATH`, the slots or
+the config file — it warns that local starts will be refused.
 
 Auto-provisioning stays as the **lowest tier**, deliberately (npx-style
 first-use download; see upstream discussion
 [superradcompany/microsandbox#1305](https://github.com/superradcompany/microsandbox/issues/1305)):
-`Sandbox.create`/`start` call `Microsandbox.ensure_runtime!`, which fetches a
-missing or version-stale runtime into `~/.microsandbox` on first use — by the
+`Sandbox.create`/`start`/`restore` (and `recover_storage`) call
+`Microsandbox.ensure_runtime!`, which fetches a missing or version-stale
+runtime into the runtime home on first use — by the
 *running* host's arch, which is always correct — at most once per process.
 `MICROSANDBOX_NO_AUTO_INSTALL` opts out (air-gapped hosts that provision out of
 band). When the companion gem won the resolver (`bundled_runtime_active?`),
@@ -434,8 +444,9 @@ extension.
 ## Core-crate dependency (self-contained)
 
 `ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
-(`microsandbox` / `microsandbox-network`, pinned to the same tag as
-`Microsandbox::RUNTIME_VERSION` — currently `v0.6.18`), so the gem builds anywhere
+(every upstream git dependency — `microsandbox`, `microsandbox-network`,
+`microsandbox-utils` — on
+the one tag recorded in `Microsandbox::RUNTIME_VERSION`), so the gem builds anywhere
 — CI and end-user source installs —
 without an adjacent checkout. For fast local development against a sibling
 microsandbox checkout, copy `.cargo/config.toml.example` to `.cargo/config.toml`
@@ -464,9 +475,9 @@ git. The override must never be committed — it would break container builds.
 
 ## Build requirements
 
-* Ruby >= 3.1, RubyGems >= 3.3.11
-* Rust (stable) >= 1.91 — the core crate is edition 2024 and pulls `smoltcp`
-  which sets MSRV 1.91. `rust-toolchain.toml` pins `stable`.
+* Ruby >= 3.3, RubyGems >= 3.3.11
+* Rust (stable) >= 1.94 — the core crate is edition 2024 and pulls sea-orm 2 /
+  sqlx 0.9, which set MSRV 1.94. `rust-toolchain.toml` pins `stable`.
 * Linux with KVM, or macOS on Apple Silicon (same as the other SDKs).
 
 ## Implemented surface (v1) vs roadmap
@@ -503,15 +514,20 @@ implemented, and so is the bulk of the v0.5.8 configuration surface that a
 later parity pass added: streaming image-pull progress, host-side `VolumeFs`,
 streaming guest fs (`read_stream`/`write_stream`), the full secrets surface,
 network configuration (DNS, TLS-interception tuning, IPv4/IPv6 pools,
-`max_connections`, `trust_host_cas`), `init`/`ephemeral`/disk-image `fstype`
-create options, full mount options (tmpfs/disk + stat-virtualization/
-host-permissions), and snapshot inspection (`open`/`list_dir`/`reindex`).
+`max_tcp_connections`/`max_udp_connections`, `trust_host_cas`, the HTTP deny
+response), `init`/`ephemeral`/disk-image `fstype` create options, full mount
+options (tmpfs/disk + stat-virtualization/host-permissions), snapshot
+inspection (`open`/`list_dir`/`reindex`), `Sandbox.restore`, and the runtime
+`v0.7` storage diagnosis/recovery.
 
 A few **secondary** upstream knobs remain unexposed (a genuine binding gap, not
 upstream-gated — they exist at the pinned runtime,
 `Microsandbox::RUNTIME_VERSION`): per-published-port host
 **bind address** (ports always bind loopback), network **interface overrides**,
-and inline **named-volume create-mode** (pre-create with `Volume.create`, then
-mount with `{ named: }`). These slot in module-by-module exactly as the existing
+inline **named-volume create-mode** (pre-create with `Volume.create`, then
+mount with `{ named: }`), HTTP CONNECT proxies, the inbound published-port
+caps, and the runtime `v0.7` additions planned for 0.19.0 (detached jobs,
+snapshot groups and live forks, restore's network/security options,
+`nested_virt`); `docs/surface.md` keeps the list. These slot in module-by-module exactly as the existing
 bindings do. Beyond those, surfacing genuinely newer core features is gated on
 advancing the pinned core-crate tag.

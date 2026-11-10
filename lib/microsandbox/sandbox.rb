@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "pathname"
 
 module Microsandbox
   # A controllable handle to a sandbox, returned by {Sandbox.get}, {Sandbox.list},
@@ -51,29 +52,41 @@ module Microsandbox
       Microsandbox.time_from_ms(ms)
     end
 
-    # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default).
+    # Request a graceful shutdown and wait, without a deadline, until the
+    # runtime has released the sandbox. Since runtime v0.7 nothing escalates to
+    # a kill: bound the wait with {#stop_with_timeout}, force it with {#kill}.
     # @return [nil]
     def stop
       @native.stop
       nil
     end
 
-    # Gracefully stop with a custom escalation timeout.
-    # @param timeout [Numeric] seconds to wait before escalating to SIGKILL
+    # Request a graceful shutdown and wait at most `timeout` seconds (one
+    # budget for dispatch and the runtime's release). Expiry raises
+    # {StopTimeoutError} and kills nothing — the shutdown may still complete
+    # later; call {#kill} if it must end now. A zero budget times out before
+    # the request is sent.
+    # @param timeout [Numeric] seconds
+    # @raise [StopTimeoutError] when the budget runs out
     # @return [nil]
     def stop_with_timeout(timeout)
       @native.stop_with_timeout(Sandbox.send(:coerce_duration, timeout, "timeout"))
       nil
     end
 
-    # Force-kill the sandbox (SIGKILL).
+    # Force-kill the sandbox, then wait up to 5 seconds to observe it stopped.
+    # Taking the name's transition lock first has no deadline: while another
+    # lifecycle operation holds it, this waits. Use {#kill_with_timeout} for
+    # one bound over the whole call.
     # @return [nil]
     def kill
       @native.kill
       nil
     end
 
-    # Force-kill, waiting up to `timeout` seconds for the process to disappear.
+    # Force-kill under one budget of `timeout` seconds that covers the
+    # transition lock, the kill request and observing the stop. Expiry raises
+    # {Error}; the sandbox may then still be running.
     # @param timeout [Numeric]
     # @return [nil]
     def kill_with_timeout(timeout)
@@ -140,9 +153,10 @@ module Microsandbox
 
     # Stop and start *this exact* sandbox, returning the new live sandbox
     # (runtime v0.6.16). A created/stopped/crashed sandbox is started directly.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @param detached [Boolean] start the replacement detached
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [Sandbox]
@@ -155,9 +169,10 @@ module Microsandbox
     # Stop and remove *this exact* sandbox (runtime v0.6.16) — {#stop} plus
     # {Sandbox.remove} in one convergent step, with an identity check that
     # refuses to remove a same-name replacement.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [nil]
     def destroy(force: false, timeout: nil)
@@ -210,13 +225,15 @@ module Microsandbox
       ModificationPlan.new(JSON.parse(@native.modify(opts)))
     end
 
-    # Snapshot this (stopped) sandbox under a bare name, resolved under the
-    # snapshots dir. Convenience equivalent of
-    # `Snapshot.create(<snapshot-name>, from_sandbox: <this sandbox>)`.
-    # (`snapshot_to(path)` was removed in 0.11.0 with runtime v0.6.7 — for
-    # explicit placement use `Snapshot.create(name, from_sandbox:, dest_dir:)`;
-    # the artifact lands at `dest_dir/<name>`.)
-    # @param name [String] destination snapshot name
+    # Snapshot this (stopped) sandbox. Convenience equivalent of
+    # `Snapshot.create(<snapshot-name>, from_sandbox: <this sandbox>)`: the
+    # artifact joins the snapshot group named after this sandbox as member
+    # `name` and becomes its head (see {Snapshot} for selectors — keep the
+    # returned {SnapshotInfo#id}). (`snapshot_to(path)` was removed in 0.11.0
+    # with runtime v0.6.7 — for explicit placement use
+    # `Snapshot.create(name, from_sandbox:, dest_dir:)`; the core picks the
+    # directory beneath `dest_dir`, read it from {SnapshotInfo#path}.)
+    # @param name [String] member name alias inside the snapshot group
     # @return [SnapshotInfo]
     def snapshot(name)
       SnapshotInfo.new(@native.snapshot(name.to_s))
@@ -340,12 +357,30 @@ module Microsandbox
     # arguments of {Sandbox#wait_for_status} / {SandboxHandle#wait_for_status}.
     STATUSES = %i[created starting running draining paused stopped crashed].freeze
 
+    # Seconds the block forms of {create}, {connect_or_create} and {restore}
+    # give the graceful stop on exit before they kill the sandbox (runtime
+    # v0.7's own default graceful-stop budget). The public {#stop} still waits
+    # without a deadline.
+    BLOCK_STOP_TIMEOUT = 10
+
+    # Seconds the same cleanup gives the kill that follows an expired
+    # {BLOCK_STOP_TIMEOUT}, transition lock and dispatch included. Upstream's
+    # kill itself waits up to 5 s for the process to exit and up to 5 s more
+    # for its lifecycle lock, so a slow but successful kill needs headroom
+    # above 10 s.
+    BLOCK_KILL_TIMEOUT = 15
+    private_constant :BLOCK_KILL_TIMEOUT
+
     class << self
       # Create and boot a sandbox.
       #
       # When a block is given the sandbox is yielded and stopped automatically
-      # when the block returns (the block's value is returned); otherwise the
-      # live {Sandbox} is returned and you are responsible for calling {#stop}.
+      # when the block returns (the block's value is returned): a graceful stop
+      # with a {BLOCK_STOP_TIMEOUT} budget, then a kill with its own 15-second
+      # budget, both covering the name's transition lock, so leaving the block
+      # never hangs (a kill that cannot finish is reported with a warning and
+      # the sandbox may still be running). Otherwise the live {Sandbox} is returned and you are
+      # responsible for calling {#stop}.
       #
       # @param name [String] sandbox name (max 128 UTF-8 bytes)
       # @param image [String, nil] OCI image reference (e.g. "python")
@@ -406,14 +441,28 @@ module Microsandbox
       #   this to inject `secrets:` on non-443 ports or to trust a private CA.
       # @param ipv4_pool [String, nil] guest IPv4 address pool CIDR (e.g. "10.0.0.0/24")
       # @param ipv6_pool [String, nil] guest IPv6 address pool CIDR
-      # @param max_connections [Integer, nil] cap on concurrent proxied connections
+      # @param max_tcp_connections [Integer, nil] cap on concurrent proxied TCP
+      #   connections; 0 means unlimited, nil leaves the runtime default
+      # @param max_udp_connections [Integer, nil] cap on concurrent UDP relay
+      #   sessions; 0 means unlimited, nil leaves the runtime default
+      # @param max_connections [Integer, nil] deprecated alias of
+      #   `max_tcp_connections:` (warns); passing both raises ArgumentError
       # @param trust_host_cas [Boolean, nil] trust the host's CA bundle for upstream TLS
       # @param strict [Boolean, nil] strict hostname-policy mode (runtime
-      #   v0.6.18, default false): a hostname-rule allow must be backed by an
+      #   v0.6.18; ON by default since runtime v0.7 — pass `false` to opt
+      #   out): a hostname-rule allow must be backed by an
       #   inspectable request authority — plain-HTTP `Host`, or SNI/authority
       #   under TLS interception. Without that visibility (e.g. bypassed or
       #   non-intercepted HTTPS) a flow allowed only by a hostname rule is
       #   denied before the upstream dial. Create-only; `modify` cannot change it.
+      # @param http [Hash, nil] how a request the network policy denies is
+      #   answered (runtime v0.7). By default a denied plain-HTTP request — or
+      #   an HTTPS one under TLS interception — gets a JSON `403`. Keys:
+      #   `deny_response:` (Boolean; `false` closes the connection instead),
+      #   `format:` (`:json`, the default, or `:text`), `network_message:` and
+      #   `secret_message:` (the JSON `message` for a network-policy or a
+      #   secret-policy denial; JSON format only). Create-only and local-only:
+      #   a cloud create accepts only the defaults or `deny_response: false`.
       # @param rate_limiter [Hash, nil] per-sandbox egress/ingress token-bucket
       #   limits (runtime v0.6.9, local backend):
       #   `{ egress: { bandwidth: { size: 1_048_576, refill_time_ms: 1000,
@@ -435,8 +484,8 @@ module Microsandbox
       #   sockets), or an Array of
       #   `{ host_socket:, port:, socket_type: :stream|:dgram }` Hashes. Guests
       #   connect to host CID 2 on the given port; no in-guest proxy required.
-      # @param from_snapshot [String, nil] boot from a snapshot name or digest
-      #   instead of an image (mutually exclusive with `image:`)
+      # @param from_snapshot [nil] removed in 0.18.0 — use {Sandbox.restore};
+      #   passing it raises ArgumentError
       # @param fstype [String, nil] inner filesystem type (e.g. "ext4") when
       #   `image:` is a disk-image rootfs path whose filesystem can't be
       #   auto-probed; ignored for OCI images
@@ -478,16 +527,22 @@ module Microsandbox
       #   instead of HTTPS (for local/self-hosted registries)
       # @param registry_ca_certs [String, Array<String>, nil] extra PEM-encoded CA
       #   root certificate(s) to trust (for a registry with a private CA)
-      # @param secrets [Array<Hash>, nil] placeholder-protected secrets injected by
-      #   the TLS proxy (auto-enables TLS interception). Each Hash needs `env:` and
-      #   `value:` plus an allow list — `host:` (single), `hosts:` (Array), and/or
-      #   `host_patterns:` (wildcards like "*.stripe.com"). Optional per-secret:
-      #   `placeholder:`, `require_tls:`, injection toggles `inject_headers:` /
-      #   `inject_basic_auth:` / `inject_query:` / `inject_body:`, and `on_violation:`.
-      # @param on_secret_violation [String, Symbol, Hash, nil] sandbox-wide
-      #   secret-leak policy: "block", "block_and_log", "block_and_terminate",
-      #   "passthrough" (passthrough-all-hosts), or a Hash
-      #   `{ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }`
+      # @param secrets [Array<Hash>, nil] placeholder-protected secrets substituted
+      #   by the TLS proxy (auto-enables TLS interception). Each Hash needs `env:`,
+      #   `value:`, and a non-empty `allow:` list of hosts that may receive the
+      #   real value (`"*.example.com"` wildcards; `"*"` allows ANY host).
+      #   Optional per-secret: `allow_placeholder_for:` (hosts that may receive
+      #   the unchanged placeholder; `passthrough:` is a deprecated alias),
+      #   `placeholder:`, `require_tls_identity:` (default true),
+      #   `violation_action:` (:block, :block_and_log, :block_and_terminate), and
+      #   `substitution: { headers:, header_fields:, query:, body: }` (default:
+      #   headers only). The 0.17 keys (`host:`/`hosts:`/`host_patterns:`,
+      #   `inject_*:`, `require_tls:`, `on_violation:`) raise ArgumentError.
+      # @param secret_violation_action [String, Symbol, nil] sandbox-wide
+      #   secret-leak action: :block, :block_and_log, or :block_and_terminate
+      #   (kebab-case spellings accepted)
+      # @param on_secret_violation [nil] removed in 0.18.0 — use
+      #   `secret_violation_action:`; passing it raises ArgumentError
       # @param detached [Boolean] keep running after this process exits
       # @param replace [Boolean] replace an existing sandbox with the same name
       # @param replace_with_timeout [Numeric, nil] replace, waiting up to N seconds
@@ -505,11 +560,7 @@ module Microsandbox
         begin
           yield sandbox
         ensure
-          begin
-            sandbox.stop
-          rescue Microsandbox::Error
-            # best-effort cleanup; ignore stop failures during teardown
-          end
+          teardown(sandbox)
         end
       end
 
@@ -563,11 +614,7 @@ module Microsandbox
         begin
           yield sandbox
         ensure
-          begin
-            sandbox.stop if sandbox.owns_lifecycle?
-          rescue Microsandbox::Error
-            # best-effort cleanup; ignore stop failures during teardown
-          end
+          teardown(sandbox, only_if_owned: true)
         end
       end
 
@@ -647,9 +694,13 @@ module Microsandbox
       # callers, {create} included: a sandbox this call does not own is never
       # stopped here. Its reference is just let go (GC closes the handle, the
       # sandbox keeps running).
+      #
+      # {restore} passes `always_stop: true`: its sandbox is always new, but
+      # upstream starts it detached, so it never reports lifecycle ownership.
+      # @param always_stop [Boolean] stop even a sandbox this call does not own
       # @yieldreturn [Native::Sandbox]
       # @return [Sandbox]
-      def acquire
+      def acquire(always_stop: false)
         native = nil
         handed_off = false
         begin
@@ -662,7 +713,7 @@ module Microsandbox
         ensure
           if native && !handed_off
             begin
-              native.stop if native.owns_lifecycle
+              bounded_stop(native) if always_stop || native.owns_lifecycle
             rescue Microsandbox::Error
               # best-effort cleanup; the interrupt is what the caller must see
             end
@@ -680,31 +731,32 @@ module Microsandbox
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
         entrypoint: nil, cmd: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
-        max_connections: nil, trust_host_cas: nil, strict: nil, rate_limiter: nil, proxy: nil,
+        max_connections: nil, max_tcp_connections: nil, max_udp_connections: nil,
+        trust_host_cas: nil, strict: nil, http: nil, rate_limiter: nil, proxy: nil,
         vsock: nil,
         patches: nil,
         from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
         log_level: nil, quiet_logs: false, security: nil,
         root_disk: nil, oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
         pull_policy: nil, registry_auth: nil, registry_insecure: false,
-        registry_ca_certs: nil, secrets: nil, on_secret_violation: nil,
+        registry_ca_certs: nil, secrets: nil, secret_violation_action: nil,
+        on_secret_violation: nil,
         detached: false, replace: false, replace_with_timeout: nil)
-        # A sandbox boots from exactly one rootfs source. The core would reject a
-        # contradictory pair, but only after a runtime round-trip; fail fast and
-        # clearly here (the Python SDK validates this the same way).
-        if image && from_snapshot
-          raise ArgumentError, "provide either image: or from_snapshot:, not both"
+        # Removed in 0.18.0 (runtime v0.7). Kept as keywords so the old
+        # spelling fails with directions instead of "unknown keyword".
+        unless from_snapshot.nil?
+          raise ArgumentError,
+            "from_snapshot: was removed in 0.18.0 (runtime v0.7); boot from a snapshot with " \
+            "Sandbox.restore(snapshot, name: ...), selecting it by id or path"
+        end
+        unless on_secret_violation.nil?
+          raise ArgumentError,
+            "on_secret_violation: was removed in 0.18.0 (runtime v0.7); use secret_violation_action: " \
+            "(:block, :block_and_log, or :block_and_terminate) — a passthrough is now each secret's " \
+            "allow_placeholder_for: host list"
         end
         if root_disk && oci_upper_size
           raise ArgumentError, "pass either root_disk: or oci_upper_size:, not both"
-        end
-        # The core refuses patches on a snapshot-booted sandbox, but only after
-        # it has claimed the sandbox name on disk. Refuse the pair before any
-        # side effect.
-        if from_snapshot && patches && !Array(patches).empty?
-          raise ArgumentError,
-            "patches: cannot be combined with from_snapshot: (a snapshot restores its own " \
-            "root disk; apply changes after boot with sandbox.fs instead)"
         end
         # `fstype:` names the inner filesystem of a disk-image rootfs, so it only
         # applies when `image:` is a disk-image path (a local path ending in
@@ -720,7 +772,6 @@ module Microsandbox
         end
         opts = {}
         opts["image"] = image.to_s if image
-        opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
         opts["fstype"] = fstype.to_s if fstype
         opts["cpus"] = Integer(cpus) if cpus
         opts["max_cpus"] = Integer(max_cpus) if max_cpus
@@ -747,9 +798,10 @@ module Microsandbox
         opts["tls"] = normalize_tls(tls) if tls
         opts["ipv4_pool"] = ipv4_pool.to_s if ipv4_pool
         opts["ipv6_pool"] = ipv6_pool.to_s if ipv6_pool
-        opts["max_connections"] = Integer(max_connections) if max_connections
+        apply_connection_limits(opts, max_connections, max_tcp_connections, max_udp_connections)
         set_bool(opts, "trust_host_cas", trust_host_cas)
         set_bool(opts, "strict", strict)
+        opts["http"] = normalize_http(http) unless http.nil?
         opts["rate_limiter"] = normalize_rate_limiter(rate_limiter) if rate_limiter
         opts["proxy"] = OutboundProxy.coerce(proxy) unless proxy.nil?
         opts["vsock"] = normalize_vsock(vsock) if vsock
@@ -770,7 +822,9 @@ module Microsandbox
         opts["pull_policy"] = pull_policy.to_s if pull_policy
         apply_registry_opts(opts, registry_auth, registry_insecure, registry_ca_certs)
         opts["secrets"] = normalize_secrets(secrets) if secrets
-        opts["on_secret_violation"] = normalize_violation(on_secret_violation) if on_secret_violation
+        unless secret_violation_action.nil?
+          opts["secret_violation_action"] = normalize_violation_action(secret_violation_action, "secret_violation_action")
+        end
         opts["init"] = normalize_init(init) unless init.nil?
         opts["ephemeral"] = true if ephemeral
         opts["detached"] = true if detached
@@ -781,6 +835,68 @@ module Microsandbox
         end
 
         opts
+      end
+
+      # Boot a new sandbox from a snapshot (runtime v0.7; replaces 0.17's
+      # `create(from_snapshot:)`). A disk snapshot cold-boots its captured
+      # disk; a full snapshot ({Snapshot.create}'s `full:`) resumes the
+      # captured execution unless `disk_only: true`.
+      #
+      # The snapshot keeps its image, command, environment and network
+      # configuration; restore takes only destination choices. The network
+      # policy, security profile, vsock routes and connection caps of the
+      # source are not overridable here (planned for a later release).
+      #
+      # Upstream restores **detached**: without a block the sandbox keeps
+      # running after this process exits, until {Sandbox#stop}/{Sandbox#destroy}
+      # (or `max_duration:`/`idle_timeout:`). The block form stops it on exit,
+      # like {create}'s.
+      #
+      # @param snapshot [String, Pathname, SnapshotInfo] the snapshot: an id,
+      #   `"<group>:<member>"`, a digest, or an artifact path (a relative path
+      #   is anchored to the current directory now); a bare name selects a
+      #   group head. A {SnapshotInfo} restores by its {SnapshotInfo#reference}.
+      # @param name [String] the new sandbox's name
+      # @param cpus [Integer, nil] guest vCPUs (disk boot; a full restore takes
+      #   only the captured count)
+      # @param memory [Integer, nil] guest memory in MiB (same rule as `cpus:`)
+      # @param user [String, nil] default user for new execs
+      # @param log_level [String, Symbol, nil] host runtime log level
+      # @param max_duration [Integer, nil] maximum lifetime in seconds
+      # @param idle_timeout [Integer, nil] auto-stop after this many idle seconds
+      # @param volumes [Hash, nil] destination backing for captured mounts,
+      #   in {create}'s `volumes:` shape, keyed by the captured guest path. By
+      #   default every captured bind/named mount must be given one.
+      # @param ports [Hash, nil] new published TCP ports (host => guest)
+      # @param disable_network [Boolean] no network device (disk boot only)
+      # @param cow_memory [Boolean] map captured RAM copy-on-write (full restore)
+      # @param forked [Boolean, nil] deprecated alias of `cow_memory:`
+      # @param disk_only [Boolean] cold-boot a full snapshot's disk instead of
+      #   resuming it
+      # @param snapshot_base [String, nil] the exact base snapshot for a
+      #   dependent snapshot archive
+      # @param allow_missing_resources [Boolean] restore even when captured
+      #   external resources have no destination backing (they stay unavailable)
+      # @param external_mount_policy [Symbol, String, nil] `:strict` (default)
+      #   or `:relaxed` validation of supplied mount mappings
+      # @yieldparam sandbox [Sandbox]
+      # @return [Sandbox, Object] the sandbox, or the block's return value
+      def restore(snapshot, name:, **kwargs, &block)
+        reference, kind = snapshot_reference(snapshot)
+        opts = build_restore_opts(name: name, **kwargs)
+        opts["snapshot_kind"] = kind
+        Microsandbox.ensure_runtime!
+        # Upstream restores detached, so the restored sandbox never reports
+        # lifecycle ownership; it is always new, so the interrupt cleanup stops
+        # it regardless.
+        sandbox = acquire(always_stop: true) { Native::Sandbox.restore(reference, opts) }
+        return sandbox unless block_given?
+
+        begin
+          yield sandbox
+        ensure
+          teardown(sandbox)
+        end
       end
 
       # Restart a previously-defined sandbox by name.
@@ -828,6 +944,23 @@ module Microsandbox
 
       private
 
+      # max_tcp_connections: / max_udp_connections: (runtime v0.7), with the
+      # deprecated max_connections: alias of the TCP cap, as in the Python SDK.
+      # 0 selects unlimited; nil leaves the runtime default.
+      def apply_connection_limits(opts, legacy, tcp, udp)
+        unless legacy.nil?
+          raise ArgumentError, "max_connections: and max_tcp_connections: are mutually exclusive" unless tcp.nil?
+          warn "Microsandbox: max_connections: is deprecated; use max_tcp_connections:", uplevel: 3
+          tcp = legacy
+        end
+        {"max_tcp_connections" => tcp, "max_udp_connections" => udp}.each do |key, value|
+          next if value.nil?
+          limit = Integer(value)
+          raise ArgumentError, "#{key}: must be >= 0 (0 means unlimited), got #{value.inspect}" if limit.negative?
+          opts[key] = limit
+        end
+      end
+
       # Coerce a seconds value to a finite, non-negative Float. Rejects negatives,
       # NaN, and infinities *here* (a clean ArgumentError) rather than letting them
       # reach the native layer, where `Duration::from_secs_f64` panics across the
@@ -872,6 +1005,113 @@ module Microsandbox
         opts = {}
         opts["force"] = true if force
         opts["timeout"] = coerce_duration(timeout, "timeout") if timeout
+        opts
+      end
+
+      # Block-form teardown shared by {create}, {connect_or_create} and
+      # {restore}: a bounded stop (see {bounded_stop}) — only when this call
+      # owns the lifecycle, for {connect_or_create} — best-effort.
+      def teardown(sandbox, only_if_owned: false)
+        bounded_stop(sandbox) if !only_if_owned || sandbox.owns_lifecycle?
+      rescue Microsandbox::Error
+        # best-effort cleanup; ignore stop failures during teardown
+      end
+
+      # Stop `target` (a {Sandbox} or its native object) without hanging: a
+      # graceful stop with a {BLOCK_STOP_TIMEOUT} budget, then a kill with a
+      # BLOCK_KILL_TIMEOUT budget. Both budgets are enforced natively and
+      # cover the name's transition lock too: since runtime v0.7 a plain stop
+      # waits forever and never escalates, and a plain kill waits for that
+      # lock without a deadline. A kill that fails or runs out of time is
+      # reported with a warning, never raised: the caller's own result or
+      # exception must win.
+      def bounded_stop(target)
+        target.stop_with_timeout(BLOCK_STOP_TIMEOUT.to_f)
+      rescue StopTimeoutError
+        begin
+          target.kill_with_timeout(BLOCK_KILL_TIMEOUT.to_f)
+        rescue Microsandbox::Error => e
+          cleanup_warning(target, e)
+        end
+      end
+
+      # Report a cleanup that gave up. Best-effort from end to end: building
+      # or writing the warning (a closed `$stderr`, a broken logging pipe)
+      # must never replace the caller's own result or exception, and a failed
+      # warning is not reported through another one.
+      def cleanup_warning(target, error)
+        warn "microsandbox: cleanup gave up on sandbox #{cleanup_name(target).inspect}, which " \
+          "may still be running: the graceful stop timed out and the kill failed (#{error.class}: #{error.message})"
+      rescue
+        nil
+      end
+
+      # The name for a cleanup warning; never raises over the caller's exception.
+      def cleanup_name(target)
+        target.name
+      rescue => e
+        "<unknown: #{e.class}>"
+      end
+
+      # The `[value, kind]` pair {restore} hands the native layer: a String is
+      # read by the backend ("auto"), a Pathname is a path, and a
+      # {SnapshotInfo} keeps the kind of its reference.
+      def snapshot_reference(snapshot)
+        case snapshot
+        when SnapshotInfo
+          if snapshot.reference
+            [snapshot.reference, snapshot.reference_kind || "auto"]
+          elsif snapshot.path
+            [snapshot.path, "path"]
+          elsif snapshot.id
+            [snapshot.id, "id"]
+          else
+            [snapshot.digest, "auto"]
+          end
+        when Pathname
+          [snapshot.to_s, "path"]
+        when String, Symbol
+          [snapshot.to_s, "auto"]
+        else
+          raise ArgumentError,
+            "snapshot must be an id, \"<group>:<member>\", digest or path String, a Pathname, " \
+            "or a SnapshotInfo (got #{snapshot.class})"
+        end
+      end
+
+      RESTORE_MOUNT_POLICIES = %w[strict relaxed].freeze
+      private_constant :RESTORE_MOUNT_POLICIES
+
+      # Validation and normalization for {restore} (pure, like
+      # {build_create_opts}: a rejected option never provisions the runtime).
+      def build_restore_opts(name:, cpus: nil, memory: nil, user: nil, log_level: nil,
+        max_duration: nil, idle_timeout: nil, volumes: nil, ports: nil, disable_network: false,
+        cow_memory: false, forked: nil, disk_only: false, snapshot_base: nil,
+        allow_missing_resources: false, external_mount_policy: nil)
+        opts = {"name" => name.to_s}
+        opts["cpus"] = Integer(cpus) if cpus
+        opts["memory"] = Integer(memory) if memory
+        opts["user"] = user.to_s if user
+        opts["log_level"] = log_level.to_s if log_level
+        opts["max_duration"] = Integer(max_duration) if max_duration
+        opts["idle_timeout"] = Integer(idle_timeout) if idle_timeout
+        opts["volumes"] = normalize_volumes(volumes) if volumes
+        opts["ports"] = intify_ports(ports) if ports
+        opts["disable_network"] = true if disable_network
+        unless forked.nil?
+          warn "Microsandbox: Sandbox.restore(forked:) is deprecated; use cow_memory:", uplevel: 2
+        end
+        opts["cow_memory"] = true if cow_memory || forked
+        opts["disk_only"] = true if disk_only
+        opts["snapshot_base"] = snapshot_base.to_s if snapshot_base
+        opts["allow_missing_resources"] = true if allow_missing_resources
+        unless external_mount_policy.nil?
+          policy = external_mount_policy.to_s
+          unless RESTORE_MOUNT_POLICIES.include?(policy)
+            raise ArgumentError, "external_mount_policy: must be :strict or :relaxed, got #{external_mount_policy.inspect}"
+          end
+          opts["external_mount_policy"] = policy
+        end
         opts
       end
 
@@ -943,12 +1183,8 @@ module Microsandbox
       end
 
       # Normalize secrets into per-secret string-keyed Hashes for the native
-      # layer. Each entry is a Hash (string or symbol keys); required :env and
-      # :value, plus at least one allowed host via :host (single), :hosts (Array),
-      # or :host_patterns (Array of wildcards like "*.stripe.com"). Optional:
-      # :placeholder, :require_tls, the injection toggles :inject_headers /
-      # :inject_basic_auth / :inject_query / :inject_body, and :on_violation (see
-      # {#normalize_violation}).
+      # layer. Each entry is a Hash (string or symbol keys) in the runtime v0.7
+      # vocabulary (see {#normalize_secret}).
       def normalize_secrets(secrets)
         if secrets.is_a?(Hash)
           # One spec given bare is fine. A Hash keyed by variable name is the
@@ -956,7 +1192,7 @@ module Microsandbox
           # else (the HOST variable to read); it is not a create-time spec.
           unless secrets.key?(:env) || secrets.key?("env")
             raise ArgumentError,
-              "secrets: takes an Array of Hashes like { env:, value:, host: } at create time; " \
+              "secrets: takes an Array of Hashes like { env:, value:, allow: [...] } at create time; " \
               "the { \"NAME\" => { ... } } form belongs to #modify"
           end
           secrets = [secrets]
@@ -1017,6 +1253,12 @@ module Microsandbox
         out
       end
 
+      # Keys a modify-time secret spec accepts.
+      MODIFY_SECRET_KEYS = %w[env value store placeholder allowed_hosts].freeze
+      # Upstream's v0.7 modify policy keys, not bound yet.
+      MODIFY_SECRET_LATER_KEYS = %w[substitution violation_action require_tls_identity
+        allow_placeholder_for passthrough].freeze
+
       def normalize_modify_secret(name, spec)
         spec ||= {}
         unless spec.is_a?(Hash)
@@ -1026,6 +1268,19 @@ module Microsandbox
           # message on Ruby < 3.3.
           raise ArgumentError,
             "secret #{name.to_s.inspect}: spec must be a Hash (e.g. { value: ... } or { env: ... }), got #{spec.class}"
+        end
+        keys = spec.keys.map(&:to_s)
+        later = keys & MODIFY_SECRET_LATER_KEYS
+        unless later.empty?
+          raise ArgumentError,
+            "secret #{name.to_s.inspect}: #{later.map { |k| ":#{k}" }.join(", ")} not yet supported on modify " \
+            "(planned for 0.19.0); modify accepts #{MODIFY_SECRET_KEYS.map { |k| ":#{k}" }.join(", ")}"
+        end
+        unknown = keys - MODIFY_SECRET_KEYS
+        unless unknown.empty?
+          raise ArgumentError,
+            "secret #{name.to_s.inspect}: unknown modify key(s) #{unknown.map { |k| ":#{k}" }.join(", ")} " \
+            "(expected #{MODIFY_SECRET_KEYS.map { |k| ":#{k}" }.join(", ")})"
         end
         env = fetch_opt(spec, :env)
         value = fetch_opt(spec, :value)
@@ -1062,37 +1317,131 @@ module Microsandbox
         s
       end
 
+      # Keys a create-time secret spec accepts (runtime v0.7 vocabulary, aligned
+      # with the Python SDK's `Secret.env`).
+      SECRET_KEYS = %w[env value allow allow_placeholder_for passthrough placeholder
+        require_tls_identity violation_action substitution].freeze
+
+      # Keys of the 0.17.x (runtime v0.6) secret vocabulary, each with its
+      # replacement. Rejected loudly: silently ignoring one would weaken the
+      # policy the caller asked for (e.g. a dropped `on_violation:`).
+      REMOVED_SECRET_KEYS = {
+        "host" => "use allow: [...] (exact hosts and \"*.example.com\" wildcards share one list)",
+        "hosts" => "use allow: [...] (exact hosts and \"*.example.com\" wildcards share one list)",
+        "host_patterns" => "use allow: [...] (exact hosts and \"*.example.com\" wildcards share one list)",
+        "inject_headers" => "use substitution: { headers: true|false }",
+        "inject_query" => "use substitution: { query: true|false }",
+        "inject_body" => "use substitution: { body: true|false }",
+        "inject_basic_auth" => "removed in runtime v0.7, which has no Basic-only substitution. The " \
+          "narrowest replacement is substitution: { headers: true, header_fields: [\"Authorization\"], " \
+          "query: false, body: false }: it substitutes only in the Authorization header, but in any " \
+          "scheme there (decoded Basic first, otherwise the literal placeholder, e.g. in a Bearer " \
+          "token). Do not use a bare headers: true, which substitutes in every header. See " \
+          "docs/configuration.md#migrating-secrets-from-017x",
+        "require_tls" => "renamed to require_tls_identity:",
+        "on_violation" => "renamed to violation_action: (:block, :block_and_log, or " \
+          ":block_and_terminate); hosts that may receive the unchanged placeholder go in " \
+          "allow_placeholder_for: [...]"
+      }.freeze
+
+      SUBSTITUTION_KEYS = %w[headers header_fields query body].freeze
+
+      # One create-time secret. Required: `env:`, `value:`, and a non-empty
+      # `allow:` (hosts that may receive the real value; `"*.example.com"`
+      # wildcards allowed; `"*"` means ANY host and maps to upstream's
+      # `allow_any_host_dangerous`). Optional: `allow_placeholder_for:` (hosts
+      # that may receive the unchanged placeholder; `passthrough:` is a
+      # deprecated alias, merged), `placeholder:`, `require_tls_identity:`,
+      # `violation_action:`, and `substitution: { headers:, header_fields:,
+      # query:, body: }`.
+      #
+      # Error messages name keys, never values: a spec carries the cleartext
+      # `:value`, and exception messages routinely land in logs.
       def normalize_secret(spec)
-        env = spec[:env] || spec["env"]
-        value = spec[:value] || spec["value"]
-        unless env && value
-          # Report only the keys given, never the values — a secret spec carries
-          # the cleartext :value, and exception messages routinely land in logs
-          # and error trackers. Mirrors apply_registry_opts above.
+        keys = spec.keys.map(&:to_s)
+        removed = keys.find { |k| REMOVED_SECRET_KEYS.key?(k) }
+        if removed
+          raise ArgumentError, "secret key :#{removed} was removed in 0.18.0 (runtime v0.7): #{REMOVED_SECRET_KEYS[removed]}"
+        end
+        unknown = keys - SECRET_KEYS
+        unless unknown.empty?
+          raise ArgumentError,
+            "unknown secret key(s) #{unknown.map { |k| ":#{k}" }.join(", ")} " \
+            "(expected #{SECRET_KEYS.map { |k| ":#{k}" }.join(", ")})"
+        end
+        if keys.size != keys.uniq.size
+          raise ArgumentError, "secret spec gives the same key as both a Symbol and a String (keys: #{spec.keys.inspect})"
+        end
+        env = fetch_opt(spec, :env)
+        value = fetch_opt(spec, :value)
+        if env.nil? || value.nil?
           raise ArgumentError, "secret spec needs :env and :value (got keys: #{spec.keys.inspect})"
         end
         out = {"env" => env.to_s, "value" => value.to_s}
-        hosts = Array(spec[:hosts] || spec["hosts"]).map(&:to_s)
-        single = spec[:host] || spec["host"]
-        hosts << single.to_s if single
-        patterns = Array(spec[:host_patterns] || spec["host_patterns"]).map(&:to_s)
-        if hosts.empty? && patterns.empty?
-          # Keys only — this branch runs after :value is confirmed present, so
-          # spec.inspect would always embed the cleartext secret value.
+        allow = secret_host_list(fetch_opt(spec, :allow), "allow")
+        if allow.empty?
           raise ArgumentError,
-            "secret spec needs :host, :hosts, or :host_patterns (got keys: #{spec.keys.inspect})"
+            "secret #{env.to_s.inspect} needs a non-empty allow: list of hosts that may receive the value " \
+            "(use allow: [\"*\"] to allow any host)"
         end
-        out["hosts"] = hosts unless hosts.empty?
-        out["host_patterns"] = patterns unless patterns.empty?
-        pl = spec[:placeholder] || spec["placeholder"]
-        out["placeholder"] = pl.to_s if pl
-        # Booleans must honor an explicit `false` (to disable a default-on toggle),
-        # so probe key presence rather than truthiness.
-        %i[require_tls inject_headers inject_basic_auth inject_query inject_body].each do |k|
-          set_bool(out, k.to_s, fetch_opt(spec, k))
+        out["allow"] = allow
+        placeholder_hosts = secret_host_list(fetch_opt(spec, :allow_placeholder_for), "allow_placeholder_for")
+        passthrough = fetch_opt(spec, :passthrough)
+        unless passthrough.nil?
+          warn "Microsandbox: secret passthrough: is deprecated; use allow_placeholder_for:", uplevel: 4
+          placeholder_hosts |= secret_host_list(passthrough, "passthrough")
         end
-        ov = spec[:on_violation] || spec["on_violation"]
-        out["on_violation"] = normalize_violation(ov) if ov
+        out["allow_placeholder_for"] = placeholder_hosts unless placeholder_hosts.empty?
+        pl = fetch_opt(spec, :placeholder)
+        out["placeholder"] = pl.to_s unless pl.nil?
+        set_bool(out, "require_tls_identity", fetch_opt(spec, :require_tls_identity))
+        action = fetch_opt(spec, :violation_action)
+        out["violation_action"] = normalize_violation_action(action, "violation_action") unless action.nil?
+        sub = fetch_opt(spec, :substitution)
+        out["substitution"] = normalize_substitution(sub, env) unless sub.nil?
+        out
+      end
+
+      # A host list (String or Array of Strings), as Strings. Empty entries are
+      # rejected: an empty host pattern matches nothing the caller meant.
+      def secret_host_list(hosts, key)
+        return [] if hosts.nil?
+        list = Array(hosts).map(&:to_s)
+        if list.any?(&:empty?)
+          raise ArgumentError, "secret #{key}: entries must be non-empty host names"
+        end
+        list
+      end
+
+      # `substitution: { headers:, header_fields:, query:, body: }` — where the
+      # real value replaces the placeholder. Defaults: headers on, query and
+      # body off. Rejects a spec that would leave no location enabled, and
+      # `header_fields:` together with `headers: false` (the upstream builder
+      # and validator refuse both; checked here so neither reaches the core).
+      def normalize_substitution(sub, env)
+        raise ArgumentError, "secret #{env.to_s.inspect}: substitution: must be a Hash" unless sub.is_a?(Hash)
+        unknown = sub.keys.map(&:to_s) - SUBSTITUTION_KEYS
+        unless unknown.empty?
+          raise ArgumentError,
+            "secret #{env.to_s.inspect}: unknown substitution key(s) #{unknown.map { |k| ":#{k}" }.join(", ")} " \
+            "(expected :headers, :header_fields, :query, :body)"
+        end
+        out = {}
+        %i[headers query body].each { |k| set_bool(out, k.to_s, fetch_opt(sub, k)) }
+        fields = fetch_opt(sub, :header_fields)
+        unless fields.nil?
+          fields = Array(fields).map(&:to_s)
+          if !fields.empty? && out["headers"] == false
+            raise ArgumentError,
+              "secret #{env.to_s.inspect}: substitution header_fields: requires headers substitution (drop headers: false)"
+          end
+          out["header_fields"] = fields
+        end
+        headers = out.fetch("headers") { true }
+        unless headers || out["query"] || out["body"]
+          raise ArgumentError,
+            "secret #{env.to_s.inspect}: substitution must leave at least one of headers, query, or body enabled"
+        end
         out
       end
 
@@ -1112,57 +1461,26 @@ module Microsandbox
         out[key] = (value ? true : false) unless value.nil?
       end
 
-      # Normalize an `on_violation`/`on_secret_violation` spec for the native
-      # layer: a String/Symbol block variant ("block"/"block_and_log"/
-      # "block_and_terminate"), or a Hash describing a passthrough action
-      # ({ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }).
-      def normalize_violation(spec)
-        case spec
-        when String, Symbol
-          # The bare "passthrough" string maps to passthrough-all-hosts, matching
-          # the Python/Node SDKs (so a string-form policy copied from another SDK
-          # ports over unchanged); block variants stay as their action string.
-          if spec.to_s.strip.downcase.tr("-", "_") == "passthrough"
-            {"passthrough_all_hosts" => true}
-          else
-            normalize_violation_action(spec)
-          end
-        when Hash
-          hosts = Array(spec[:passthrough_hosts] || spec["passthrough_hosts"]).map(&:to_s)
-          patterns = Array(spec[:passthrough_host_patterns] || spec["passthrough_host_patterns"]).map(&:to_s)
-          all = !!(spec[:passthrough_all_hosts] || spec["passthrough_all_hosts"])
-          # An empty passthrough (no hosts, no patterns, not all) passes nothing
-          # through — a no-op the native builder silently degrades to its default
-          # action. Reject it with actionable guidance rather than accept a spec
-          # that does nothing the caller intended.
-          if hosts.empty? && patterns.empty? && !all
-            raise ArgumentError,
-              "passthrough on_violation needs at least one of :passthrough_hosts, " \
-              ":passthrough_host_patterns, or :passthrough_all_hosts (use \"block\" " \
-              "if blocking is the intent)"
-          end
-          out = {}
-          out["passthrough_hosts"] = hosts unless hosts.empty?
-          out["passthrough_host_patterns"] = patterns unless patterns.empty?
-          out["passthrough_all_hosts"] = true if all
-          out
-        else
-          raise ArgumentError, "on_violation must be a String or a Hash (got #{spec.inspect})"
-        end
-      end
-
-      # Map a block-variant action onto the canonical underscore spelling the
+      # Map a secret-leak action onto the canonical underscore spelling the
       # native layer expects. Also accepts the upstream kebab-case wire spellings
       # ("block-and-log"/"block-and-terminate") used by the CLI, Go SDK, and
       # sandbox config files, so a policy copied from another SDK ports over
-      # unchanged instead of being rejected.
-      def normalize_violation_action(spec)
+      # unchanged instead of being rejected. Runtime v0.7 has no sandbox-wide
+      # passthrough action; per-secret `allow_placeholder_for:` replaces it.
+      def normalize_violation_action(spec, key)
+        unless spec.is_a?(String) || spec.is_a?(Symbol)
+          raise ArgumentError, "#{key}: must be a String or Symbol (got #{spec.class})"
+        end
         action = spec.to_s.strip.downcase.tr("-", "_")
+        if action == "passthrough"
+          raise ArgumentError,
+            "#{key}: :passthrough was removed in 0.18.0 (runtime v0.7); list the hosts that may " \
+            "receive the unchanged placeholder in each secret's allow_placeholder_for: instead"
+        end
         unless %w[block block_and_log block_and_terminate].include?(action)
           raise ArgumentError,
-            "unknown on_violation #{spec.inspect} (expected block, " \
-            "block_and_log/block-and-log, block_and_terminate/block-and-terminate, " \
-            "passthrough, or a Hash with :passthrough_hosts/:passthrough_host_patterns/:passthrough_all_hosts)"
+            "unknown #{key} #{spec.inspect} (expected block, " \
+            "block_and_log/block-and-log, or block_and_terminate/block-and-terminate)"
         end
         action
       end
@@ -1241,6 +1559,44 @@ module Microsandbox
         set_bool(out, "rebind_protection", fetch_opt(dns, :rebind_protection))
         qt = dns[:query_timeout_ms] || dns["query_timeout_ms"]
         out["query_timeout_ms"] = Integer(qt) if qt
+        out
+      end
+
+      HTTP_KEYS = %i[deny_response format network_message secret_message].freeze
+      private_constant :HTTP_KEYS
+
+      # Normalize the `http:` deny-response Hash (runtime v0.7). Validation
+      # mirrors the Python SDK's HttpConfig; the two message keys additionally
+      # need JSON responses that are switched on, the only mode that uses them.
+      def normalize_http(http)
+        unless http.is_a?(Hash)
+          raise ArgumentError, "http: must be a Hash (deny_response:, format:, network_message:, secret_message:)"
+        end
+        given = http.to_h { |key, value| [key.to_sym, value] }.compact
+        unknown = given.keys - HTTP_KEYS
+        unless unknown.empty?
+          raise ArgumentError, "unknown http: key(s) #{unknown.join(", ")} (expected #{HTTP_KEYS.join(", ")})"
+        end
+        out = {}
+        if given.key?(:deny_response)
+          value = given[:deny_response]
+          raise ArgumentError, "http: deny_response: must be true or false" unless value == true || value == false
+          out["deny_response"] = value
+        end
+        if given.key?(:format)
+          value = given[:format]
+          format = (value.is_a?(Symbol) || value.is_a?(String)) ? value.to_s.downcase : nil
+          raise ArgumentError, "http: format: must be :json or :text, got #{value.inspect}" unless %w[json text].include?(format)
+          out["format"] = format
+        end
+        %i[network_message secret_message].each do |key|
+          next unless given.key?(key)
+          value = given[key]
+          raise ArgumentError, "http: #{key}: must be a String" unless value.is_a?(String)
+          raise ArgumentError, "http: #{key}: needs the JSON format (it is the JSON `message`)" if out["format"] == "text"
+          raise ArgumentError, "http: #{key}: has no effect with deny_response: false" if out["deny_response"] == false
+          out[key.to_s] = value
+        end
         out
       end
 
@@ -1739,13 +2095,12 @@ module Microsandbox
 
     # Latest resource-usage snapshot.
     #
-    # Raises a {Microsandbox::Error} ("sandbox N has no live metrics slot") when
-    # called in the brief window right after {Sandbox.create} returns, before the
-    # runtime has registered the sandbox's metrics slot. On `v0.6.x` runtimes
-    # the spawn handshake no longer blocks create until the first sample is
-    # written, so the slot goes live a beat *after* boot (within a few hundred
-    # milliseconds); retry for that window rather than treating the first failure
-    # as fatal.
+    # Raises a {Microsandbox::Error} ("sandbox N has no verified live metrics
+    # slot" since runtime v0.7) when called in the brief window right after
+    # {Sandbox.create} returns, before the runtime has registered the
+    # sandbox's metrics slot: create does not wait for the first sample, so the
+    # slot goes live a beat *after* boot (within a few hundred milliseconds);
+    # retry for that window rather than treating the first failure as fatal.
     # @return [Metrics]
     def metrics
       Metrics.new(@native.metrics)
@@ -1829,7 +2184,8 @@ module Microsandbox
     #
     # The first tick fires immediately, so opening the stream right after
     # {Sandbox.create} can hit the same metrics-slot startup window as {#metrics}
-    # and yield a transient "no live metrics slot" error on that first tick.
+    # and yield a transient "no verified live metrics slot" error on that first
+    # tick.
     # Because the stream is single-pass (a drained or errored stream is spent),
     # make sure the slot is live *before* opening it — e.g. retry {#metrics}
     # until it succeeds (the slot goes live within a few hundred milliseconds of
@@ -1860,9 +2216,11 @@ module Microsandbox
       LogStream.new(@native.log_stream(opts))
     end
 
-    # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default) and
-    # wait for it to terminate. For a custom timeout or fire-and-return
-    # `request_*` control, fetch a {SandboxHandle} via {Sandbox.get}.
+    # Request a graceful shutdown and wait, without a deadline, until the
+    # runtime has released the sandbox. Since runtime v0.7 nothing escalates to
+    # a kill: bound the wait with {#stop_with_timeout}, force it with {#kill}.
+    # For fire-and-return `request_*` control, fetch a {SandboxHandle} via
+    # {Sandbox.get}.
     #
     # Scoped to *this exact* sandbox: as of runtime v0.6.16 the stop carries this
     # object's {#id}, so if the name has since been removed and recreated the
@@ -1882,10 +2240,36 @@ module Microsandbox
       ExitStatus.new(@native.stop_and_wait)
     end
 
-    # Force-kill the sandbox (SIGKILL).
+    # Request a graceful shutdown and wait at most `timeout` seconds (one
+    # budget for dispatch and the runtime's release; runtime v0.7). Expiry
+    # raises {StopTimeoutError} and kills nothing — the shutdown may still
+    # complete later; call {#kill} if it must end now. A zero budget times out
+    # before the request is sent. Scoped to this sandbox's {#id}, like {#stop}.
+    # @param timeout [Numeric] seconds
+    # @raise [StopTimeoutError] when the budget runs out
+    # @return [nil]
+    def stop_with_timeout(timeout)
+      @native.stop_with_timeout(coerce_duration(timeout, "timeout"))
+      nil
+    end
+
+    # Force-kill the sandbox, then wait up to 5 seconds to observe it stopped.
+    # Taking the name's transition lock first has no deadline: while another
+    # lifecycle operation holds it, this waits. Use {#kill_with_timeout} for
+    # one bound over the whole call.
     # @return [nil]
     def kill
       @native.kill
+      nil
+    end
+
+    # Force-kill under one budget of `timeout` seconds that covers the
+    # transition lock, the kill request and observing the stop. Expiry raises
+    # {Error}; the sandbox may then still be running.
+    # @param timeout [Numeric]
+    # @return [nil]
+    def kill_with_timeout(timeout)
+      @native.kill_with_timeout(coerce_duration(timeout, "timeout"))
       nil
     end
 
@@ -1928,9 +2312,10 @@ module Microsandbox
     # Stop and start *this exact* sandbox, returning the new live sandbox
     # (runtime v0.6.16). A created/stopped/crashed sandbox is started directly.
     # This handle is spent afterwards — use the returned one.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @param detached [Boolean] start the replacement detached
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [Sandbox]
@@ -1945,9 +2330,10 @@ module Microsandbox
     # Stop and remove *this exact* sandbox (runtime v0.6.16) — the convergent
     # equivalent of {#stop} followed by {Sandbox.remove}, with an identity check
     # that refuses to remove a same-name replacement.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [nil]
     def destroy(force: false, timeout: nil)

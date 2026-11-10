@@ -38,4 +38,4 @@ updates:
       # them would break that.
       - dependency-name: microsandbox
       - dependency-name: microsandbox-network
-      - dependency-name: microsandbox-runtime
+      - dependency-name: microsandbox-utils

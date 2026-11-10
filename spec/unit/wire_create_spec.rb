@@ -111,28 +111,52 @@ RSpec.describe "create options on the wire (native-serialized)" do
   end
 
   describe "secrets" do
-    it "serializes the allow list, placeholder, toggles and violation policy" do
+    it "serializes the allow list, placeholder hosts, substitution and violation actions (runtime v0.7)" do
       secrets = wire_create(
         secrets: [
-          {env: "API_KEY", value: "s3cr3t", host: "api.example.com"},
-          {env: "K2", value: "v2", hosts: ["a.example"], host_patterns: ["*.b.example"], placeholder: "PH",
-           require_tls: false, inject_headers: false, inject_query: true, on_violation: "block-and-terminate"}
+          {env: "API_KEY", value: "s3cr3t", allow: "api.example.com"},
+          {env: "K2", value: "v2", allow: ["a.example", "*.b.example"], allow_placeholder_for: ["p.example"],
+           placeholder: "PH", require_tls_identity: false, violation_action: "block-and-terminate",
+           substitution: {header_fields: ["X-Key"], query: true}},
+          {env: "K3", value: "v3", allow: ["*"], substitution: {headers: false, body: true}}
         ],
-        on_secret_violation: {passthrough_hosts: ["p.example"]}
+        secret_violation_action: :block
       ).dig("network", "secrets")
-      first, second = secrets.fetch("entries")
+      first, second, third = secrets.fetch("entries")
+      # Defaults: placeholder $MSB_<env>, TLS identity required, header
+      # substitution only, the sandbox-wide action for violations.
       expect(first).to include(
         "env_var" => "API_KEY", "placeholder" => "$MSB_API_KEY", "require_tls_identity" => true,
         "allowed_hosts" => [{"type" => "exact", "value" => "api.example.com"}],
-        "injection" => {"headers" => true, "basic_auth" => true, "query_params" => false, "body" => false}
+        "substitution" => {"headers" => true, "query" => false, "body" => false},
+        "passthrough_hosts" => []
       )
+      expect(first).not_to have_key("violation_action")
       expect(second).to include(
         "placeholder" => "PH", "require_tls_identity" => false,
         "allowed_hosts" => [{"type" => "exact", "value" => "a.example"}, {"type" => "wildcard", "value" => "*.b.example"}],
-        "injection" => {"headers" => false, "basic_auth" => true, "query_params" => true, "body" => false},
-        "on_violation" => {"type" => "block_and_terminate"}
+        "substitution" => {"headers" => true, "header_fields" => ["X-Key"], "query" => true, "body" => false},
+        "passthrough_hosts" => [{"type" => "exact", "value" => "p.example"}],
+        "violation_action" => {"type" => "block_and_terminate"}
       )
-      expect(secrets["on_violation"]).to eq("type" => "passthrough", "hosts" => [{"type" => "exact", "value" => "p.example"}])
+      # "*" is upstream's allow_any_host_dangerous.
+      expect(third).to include(
+        "allowed_hosts" => [{"type" => "any"}],
+        "substitution" => {"headers" => false, "query" => false, "body" => true}
+      )
+      expect(secrets["violation_action"]).to eq("type" => "block")
+    end
+
+    # The documented replacement for a 0.17 `inject_basic_auth:`-only secret
+    # (docs/configuration.md) must survive the builder unchanged.
+    it "serializes the Basic-auth migration recipe" do
+      entry = wire_create(
+        secrets: [{env: "K", value: "v", allow: ["api.example.com"],
+                   substitution: {headers: true, header_fields: ["Authorization"], query: false, body: false}}]
+      ).dig("network", "secrets", "entries", 0)
+      expect(entry["substitution"]).to eq(
+        "headers" => true, "header_fields" => ["Authorization"], "query" => false, "body" => false
+      )
     end
   end
 
@@ -142,7 +166,8 @@ RSpec.describe "create options on the wire (native-serialized)" do
         cpus: 2, memory: 1024, root_disk: 2048, env: {"A" => "1"}, workdir: "/w", shell: "/bin/bash",
         user: "app", labels: {team: "x"}, scripts: {hello: "echo hi"}, entrypoint: [], cmd: %w[sleep 1],
         max_duration: 60, idle_timeout: 30, rlimits: {nofile: [10, 20]}, log_level: "debug",
-        security: "restricted", ephemeral: true, pull_policy: "never", max_connections: 7,
+        security: "restricted", ephemeral: true, pull_policy: "never", max_tcp_connections: 7,
+        max_udp_connections: 3,
         registry_auth: {username: "u", password: "p"}
       )
       expect(body["resources"]).to eq("vcpus" => 2, "memory_mib" => 1024, "disk_size_mib" => 2048)
@@ -153,7 +178,9 @@ RSpec.describe "create options on the wire (native-serialized)" do
       expect(body["rlimits"]).to eq([{"resource" => "nofile", "soft" => 10, "hard" => 20}])
       expect(body["lifecycle"]).to eq("ephemeral" => true, "max_duration_secs" => 60, "idle_timeout_secs" => 30)
       expect(body).to include("pull_policy" => "never", "security_profile" => "restricted")
+      # The network config keeps the TCP cap under its pre-0.7 wire name.
       expect(body.dig("network", "max_connections")).to eq(7)
+      expect(body.dig("network", "max_udp_connections")).to eq(3), body["network"].inspect
       expect(body["registry"]).to eq("mode" => "inline", "username" => "u", "password" => "p")
     end
 

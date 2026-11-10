@@ -32,9 +32,12 @@ sb = Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/a
 begin
   # ...
 ensure
-  sb.stop          # graceful (SIGTERM→SIGKILL escalation, 10s default)
+  sb.stop          # graceful; waits without a deadline (never escalates)
+  # sb.stop_with_timeout(10) # graceful within 10s, else StopTimeoutError (no kill)
   # sb.stop_and_wait # graceful, then wait → ExitStatus(#exit_code, #success?)
-  # sb.kill          # force (SIGKILL); sb.drain for a graceful drain
+  # sb.kill          # force; then waits up to 5s to see it stopped
+  # sb.kill_with_timeout(10) # force; one 10s bound over the whole call
+  # sb.drain         # graceful drain
 end
 
 # Inspect / manage existing sandboxes. `list` returns a cursor-paginated,
@@ -44,7 +47,7 @@ Microsandbox::Sandbox.list.map(&:name)  # enumerate the page's handles
 # next page: Sandbox.list_with(cursor: page.next_cursor, limit: 50)
 h = Microsandbox::Sandbox.get("box")  # => Microsandbox::SandboxHandle
 h.status                              # :running, :stopped, :created, ...
-h.stop_with_timeout(5)                # custom escalation timeout
+h.stop_with_timeout(5)                # graceful within 5s, else StopTimeoutError
 h.request_stop                        # fire-and-return; pair with #wait_until_stopped
 h.request_kill
 h.request_drain
@@ -75,9 +78,9 @@ for `Thread#raise` and `Thread#kill`, and for `Sandbox.connect_or_create`,
   that merely connected to a sandbox already running for someone else leaves
   it running, exactly as its block form does.
 
-The cleanup stop is best-effort: if it fails, the interrupt is still the
-exception you get, and the sandbox is torn down when its now unreferenced
-object is garbage-collected.
+The cleanup stop is best-effort and bounded like a block form's (below): if
+it fails, the interrupt is still the exception you get, and the sandbox is
+torn down when its now unreferenced object is garbage-collected.
 
 A Ctrl-C (`SIGINT`) is the one interrupt that cannot be held back until the
 sandbox is in your hands: one that lands during the create is raised the
@@ -89,6 +92,51 @@ These methods hold queued interrupts back while they acquire the sandbox, so
 an exception you deferred with `Thread.handle_interrupt(X => :on_blocking)` is
 not raised by them: you get the sandbox, and the exception arrives at the
 thread's next blocking operation.
+
+### Stopping since runtime `v0.7`
+
+A graceful stop no longer escalates to a kill. `#stop` sends the shutdown
+request and waits, without a deadline, until the runtime has released the
+sandbox. `#stop_with_timeout(n)` waits at most `n` seconds and then raises
+`Microsandbox::StopTimeoutError` — it kills nothing, and the shutdown may still
+complete later (a zero budget times out before the request is sent). The
+budget covers the whole call, including waiting for the sandbox's transition
+lock while another lifecycle operation on the same name holds it.
+
+End it for sure with `#kill`. `#kill` first waits, **without a deadline**, for
+that transition lock, then sends the kill and waits up to 5 seconds to see the
+sandbox stopped. `#kill_with_timeout(n)` puts one budget of `n` seconds over
+all of it, lock included, and raises `Microsandbox::Error` when it runs out
+(the sandbox may then still be running). `restart`/`destroy` take a graceful
+budget in `timeout:` (10 seconds by default) and raise `StopTimeoutError` when
+it runs out, unless `force: true`.
+
+The block forms of `create`, `connect_or_create` and `restore` stop the sandbox
+on exit with a budget of `Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT` (10)
+seconds and, when that runs out, kill it with a further 15-second budget; both
+cover the transition lock, so leaving a block takes at most about 25 seconds
+even when a guest does not shut down or another process holds the lock.
+Errors in that teardown are swallowed (the block's own result or exception
+wins). When the kill fails or runs out of time, the SDK warns once on
+`$stderr` — `cleanup gave up on sandbox "<name>", which may still be running`
+— and leaves the sandbox as it is: stop or kill it yourself later.
+
+```ruby
+begin
+  sb.stop_with_timeout(10)
+rescue Microsandbox::StopTimeoutError
+  sb.kill
+end
+```
+
+`create(replace: true)` does not follow this model: it still escalates. When
+the name belongs to a running sandbox it sends `TERM`, waits the replacement
+grace (`replace_with_timeout:`, 10 seconds by default; `0` skips the `TERM`),
+sends `KILL`, and gives the runtime 5 seconds to prove it exited. If it has
+not, the create raises `Microsandbox::SandboxStillRunningError` rather than
+reusing the name; it raises the same when an untracked runtime endpoint may
+still be live, and a signal that fails raises its own error. None of this
+involves `stop_with_timeout` or `Snapshot.create`'s `force:`.
 
 ## Convergent lifecycle
 
@@ -126,6 +174,82 @@ scoped to that sandbox's `id`, so a name removed and recreated while the block
 ran cannot be taken down by the teardown either. `Sandbox#owns_lifecycle?`
 reports which case you are in; `Sandbox#detach` hands the VM off so it
 outlives the block.
+
+## Restoring from a snapshot
+
+`Sandbox.restore(snapshot, name:)` boots a new sandbox from a snapshot (it
+replaced 0.17's `create(from_snapshot:)`). The block form stops it on exit,
+like `create`'s. Without a block it keeps running after your process exits:
+upstream restores **detached**, so `#owns_lifecycle?` is `false` and nothing
+stops it for you. Stop it with `#stop`/`#destroy`, or bound it with
+`max_duration:`/`idle_timeout:`.
+
+```ruby
+info = Microsandbox::Snapshot.create("base", from_sandbox: "worker")
+Microsandbox::Sandbox.restore(info, name: "replay") { |sb| sb.shell("make test") }
+```
+
+Selectors, destination options and mount bindings are covered in
+[images.md](images.md#restoring-a-snapshot).
+
+## Upgrading sandboxes created before 0.18.0
+
+Runtime `v0.7` keeps a sandbox's disks in a protected storage layout. A
+sandbox created by 0.17.x or earlier still has the old layout, and it is
+moved into the new one before its first start under 0.18.0:
+
+- **Linux**: automatically, when the sandbox next starts.
+- **macOS**: not automatically. The start raises `Microsandbox::Error`
+  ("macOS legacy storage requires explicit maintenance recovery …"). Stop every pre-0.18 VM in every runtime
+  home first (old full snapshots can leave writers behind in another home),
+  make sure no older tool will start one or write to this storage, then
+  recover each stopped sandbox:
+
+```ruby
+Microsandbox::Sandbox.recover_storage("worker", legacy_writers_stopped: true)
+# => #<Microsandbox::StorageRecovery name="worker" ready=true>
+```
+
+`legacy_writers_stopped: true` is your confirmation of that maintenance
+window; the runtime cannot check it from one home's catalog, so it never
+assumes it. Recovery does not boot the sandbox, and it keeps the original
+disks (`#originals_retained?`). The sandbox must be stopped
+(`SandboxStillRunningError` otherwise). Sandboxes created under 0.18.0, and
+ones already migrated, need none of this.
+
+To see where each sandbox stands first, `Microsandbox.diagnose_storage`
+inspects the local runtime home without starting, stopping, repairing or
+migrating anything — including a home that only 0.17.x has opened so far:
+
+```ruby
+report = Microsandbox.diagnose_storage(all_sandboxes: true)   # or names: ["worker"]
+report.sandboxes.each { |s| puts "#{s.name}: #{s.status} #{s.reason}" }
+```
+
+| `status` | Meaning |
+|---|---|
+| `:ready` | already in the protected layout |
+| `:eligible` | Linux: migrates on its next start |
+| `:maintenance_required` | macOS: run `recover_storage(legacy_writers_stopped: true)` |
+| `:recovery_required` | the old metadata is ambiguous or damaged: pick a view (below) |
+| `:in_progress` | an interrupted migration; `recover_storage` resumes it |
+| `:unavailable` | the check could not finish; `reason` says why (`:not_found`, `:invalid_configuration`, `:incomplete_creation`, `:storage_unavailable`) |
+
+A sandbox whose report has a `running?` VM gets a provisional answer, and a
+recovery revalidates everything under locks anyway. For `:recovery_required`,
+`inspection.candidates` lists the complete disk views found: choose one per
+disk and acknowledge that it may lack later writes:
+
+```ruby
+candidate = report.sandboxes.first.inspection.candidates.first
+Microsandbox::Sandbox.recover_storage("worker",
+  selections: { candidate.disk_id => candidate.id }, accept_selected_view: true,
+  legacy_writers_stopped: true)   # macOS
+```
+
+Both calls are local-only and read the runtime home that `MSB_HOME` (or
+`diagnose_storage(home:)`) names; a home with no catalog yet raises
+`IoError`. `recover_storage` checks the runtime first, like a start.
 
 ## The live `Sandbox` / `SandboxHandle` split
 

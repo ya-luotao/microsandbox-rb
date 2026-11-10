@@ -523,15 +523,15 @@ where
 }
 
 /// [`block_on`] without its backend check, for the runtime installer ONLY:
-/// `Native.install` and `Native.setup` (`microsandbox::setup`).
+/// `Native.install_runtime` and `Native.setup` (`microsandbox::setup`).
 ///
 /// The check at the top of [`block_on`] is deliberate and stays there: it is
 /// what makes every other native call safe after a fork. This entry is not a
 /// cheaper alternative to it. It exists because the installer never touches
-/// the default backend or the catalog — `Setup::install` creates the
-/// `bin`/`lib` directories, runs the installed `msb --version`, copies a CI
-/// build or downloads and unpacks the release bundle, and checks that the two
-/// files exist, all under the base directory it resolves from `MSB_HOME` —
+/// the default backend or the catalog — `setup::install_runtime` downloads
+/// (or reads) the release bundle, unpacks it into a staging directory,
+/// publishes the `msb` + `libkrunfw` pair under `.runtime-install.lock` and
+/// verifies it, all under the runtime home it resolves from `MSB_HOME` —
 /// so in a forked child the check would only rebuild (and leak) a backend
 /// nothing uses, or fail the install when the inherited backend selection no
 /// longer resolves there. Skipping it leaves the backend record as it was:

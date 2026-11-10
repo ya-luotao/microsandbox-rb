@@ -36,7 +36,7 @@ bundle exec rake spec
 ```
 
 This compiles before running, so a stale `.bundle`/`.so` is rebuilt automatically. Requires stable
-Rust ≥ 1.91 on PATH.
+Rust ≥ 1.94 on PATH.
 
 ## 5. Integration specs — only if asked, or `$ARGUMENTS` contains `integration`
 

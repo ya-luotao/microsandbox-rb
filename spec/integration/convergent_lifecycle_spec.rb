@@ -209,4 +209,55 @@ RSpec.describe "convergent lifecycle", :integration do
       destroy_quietly(sandbox)
     end
   end
+
+  # Runtime v0.7: a graceful stop never escalates to a kill, so the block forms
+  # bound it (BLOCK_STOP_TIMEOUT) and kill on expiry. A zero budget times out
+  # before the shutdown is even sent, which drives the kill path for real.
+  describe "bounded block-form teardown (runtime v0.7)" do
+    it "kills the sandbox on block exit when the graceful stop runs out of time" do
+      name = unique_sandbox_name("rb-bounded")
+      stub_const("Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT", 0)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      # The bounded kill completes, so the cleanup does not give up.
+      expect { Microsandbox::Sandbox.create(name, image: image) { |sb| expect(sb.status).to eq(:running) } }
+        .not_to output(/cleanup gave up/).to_stderr
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 60
+      expect(Microsandbox::Sandbox.get(name).status).to eq(:stopped)
+    ensure
+      begin
+        Microsandbox::Sandbox.remove(name)
+      rescue Microsandbox::Error
+        nil
+      end
+    end
+
+    it "leaves the sandbox running when a live stop_with_timeout expires" do
+      sb = Microsandbox::Sandbox.create(unique_sandbox_name("rb-stoptimeout"), image: image)
+      begin
+        expect { sb.stop_with_timeout(0) }.to raise_error(Microsandbox::StopTimeoutError)
+        expect(sb.status).to eq(:running)
+        sb.kill_with_timeout(10)
+        expect(sb.status).to eq(:stopped)
+      ensure
+        destroy_quietly(sb)
+      end
+    end
+
+    it "leaves the block promptly when the guest ignores SIGTERM" do
+      name = unique_sandbox_name("rb-noterm")
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      Microsandbox::Sandbox.create(name, image: image) do |sb|
+        sb.shell("(trap '' TERM; exec sleep 600) >/dev/null 2>&1 &")
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      expect(elapsed).to be < Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT + 5 + 30
+      expect(Microsandbox::Sandbox.get(name).status).to eq(:stopped)
+    ensure
+      begin
+        Microsandbox::Sandbox.remove(name)
+      rescue Microsandbox::Error
+        nil
+      end
+    end
+  end
 end

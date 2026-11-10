@@ -15,11 +15,10 @@ name: Release
 # Publishing uses RubyGems Trusted Publishing (OIDC); configure the gem's trusted
 # publisher to this repo + workflow in the RubyGems UI before the first release.
 #
-# What the SDK gem ships (and what it does NOT): the extension it compiles
-# carries the guest-side `agentd` baked in (the core's filesystem build.rs
-# downloads agentd by *target* arch and embeds it with include_bytes!). The gem
-# does NOT carry the host-side `msb` runtime + `libkrunfw`: the SDK gem is
-# SDK-only. Those ship in the companion `microsandbox-rb-binaries` platform gems
+# What the SDK gem ships (and what it does NOT): only the extension it
+# compiles, which embeds no binaries (since runtime v0.7 the guest-side
+# `agentd` ships inside `msb` itself). The gem does NOT carry the host-side
+# `msb` runtime + `libkrunfw`: the SDK gem is SDK-only. Those ship in the companion `microsandbox-rb-binaries` platform gems
 # (built by the `binaries-gems` job below from the upstream release, verified
 # against the checksums committed under binaries/checksums/, and published on
 # the same tag) — or, without that gem, are downloaded into ~/.microsandbox on

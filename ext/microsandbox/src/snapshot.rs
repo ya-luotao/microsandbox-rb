@@ -1,21 +1,22 @@
 //! Snapshot management: `Microsandbox::Native::Snapshot`.
 //!
 //! Snapshots capture a stopped sandbox's disk state into a portable artifact
-//! that a later `Sandbox.create(from_snapshot:)` can boot from. Exposed as
+//! that a later `Sandbox.restore` can boot from. Exposed as
 //! singleton functions returning plain Hashes/Arrays (shaped into value objects
 //! by the Ruby layer) — there is no long-lived handle to own.
 //!
-//! v0.6.7 descriptor contract: an artifact is identified by its own `name`
-//! (`Snapshot::builder(name).from_sandbox(src)`), lives at `dest_dir/<name>`,
-//! and its descriptor file is `snapshot.json`. `manifest.json` artifacts from
-//! v0.6.6 are auto-migrated by the core on first backend connect.
+//! v0.7 descriptor contract: an artifact is named by the caller
+//! (`Snapshot::builder(name).from_sandbox(src)`) but carries its own stable
+//! `snapshot_id`, and the core decides where it lives (the artifact path is no
+//! longer `dest_dir/<name>`; read it back from `path`). Older artifacts are
+//! migrated by the core on first backend connect.
 
 use std::path::{Path, PathBuf};
 
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::snapshot::{
-    SaveOpts, Snapshot, SnapshotFormat, SnapshotHandle, SnapshotScope, SnapshotVerifyReport,
-    UpperVerifyStatus,
+    GuestFlush, SaveOpts, Snapshot, SnapshotFormat, SnapshotHandle, SnapshotReference,
+    SnapshotScope, SnapshotVerifyReport, UpperVerifyStatus,
 };
 
 use crate::conv;
@@ -32,7 +33,7 @@ fn format_str(format: SnapshotFormat) -> &'static str {
 fn scope_str(scope: SnapshotScope) -> &'static str {
     match scope {
         SnapshotScope::Disk => "disk",
-        SnapshotScope::Resumable => "resumable",
+        SnapshotScope::Full => "full",
     }
 }
 
@@ -41,6 +42,26 @@ fn created_at_ms(rfc3339: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(rfc3339)
         .ok()
         .map(|dt| dt.timestamp_millis())
+}
+
+/// The backend-neutral reference `Sandbox.restore` takes back: its value and
+/// how the backend reads it ("auto", "id" or "path"; a local artifact is
+/// referenced by its absolute path).
+fn set_reference(hash: &RHash, reference: &SnapshotReference) {
+    let _ = hash.aset("reference", reference.value().to_string());
+    let _ = hash.aset("reference_kind", reference.kind());
+}
+
+/// Parse `guest_flush:` (`auto`/`required`/`skip`).
+fn guest_flush_from_str(s: &str) -> Result<GuestFlush, Error> {
+    match s {
+        "auto" => Ok(GuestFlush::Auto),
+        "required" => Ok(GuestFlush::Required),
+        "skip" => Ok(GuestFlush::Skip),
+        other => Err(error::base_error(format!(
+            "unknown guest_flush {other:?} (expected auto/required/skip)"
+        ))),
+    }
 }
 
 /// Convert a fully-opened `Snapshot` into the `SnapshotInfo` Hash. Unlike a
@@ -57,24 +78,35 @@ pub(crate) fn snapshot_to_hash(snap: &Snapshot) -> RHash {
     let checkpoint = state.as_checkpoint();
     let hash = ruby().hash_new();
     let _ = hash.aset("digest", snap.digest().to_string());
-    let _ = hash.aset("path", snap.path().to_string_lossy().into_owned());
+    let _ = hash.aset("id", snap.id().as_str().to_string());
+    set_reference(&hash, &snap.reference());
+    // A cloud artifact has no local path (`path()` is `Unsupported` there).
+    let _ = hash.aset(
+        "path",
+        snap.path().ok().map(|p| p.to_string_lossy().into_owned()),
+    );
     let _ = hash.aset("size_bytes", snap.size_bytes());
     let _ = hash.aset("scope", scope_str(m.scope));
     let _ = hash.aset("state_kind", state.kind());
     let _ = hash.aset("image_ref", m.image.reference.clone());
     let _ = hash.aset("image_manifest_digest", m.image.manifest_digest.clone());
-    let _ = hash.aset("format", file.map(|f| format_str(f.format)));
-    let _ = hash.aset("fstype", file.map(|f| f.fstype.clone()));
+    let _ = hash.aset("format", file.map(|f| format_str(f.disk_format)));
+    let _ = hash.aset("fstype", file.map(|f| f.filesystem.clone()));
     let _ = hash.aset("checkpoint_id", checkpoint.map(|c| c.checkpoint_id.clone()));
     let _ = hash.aset(
         "checkpoint_manifest_digest",
-        checkpoint.map(|c| c.manifest.clone()),
+        checkpoint.map(|c| c.checkpoint_root.clone()),
     );
-    let _ = hash.aset("parent_digest", m.parent.clone());
-    let _ = hash.aset("created_at_ms", created_at_ms(&m.created_at));
-    let _ = hash.aset("source_sandbox", m.source_sandbox.clone());
+    // v0.7 descriptors link their parent by stable id, not by digest.
+    let _ = hash.aset("parent_digest", None::<String>);
+    let _ = hash.aset(
+        "parent_id",
+        m.parent.as_ref().map(|p| p.as_str().to_string()),
+    );
+    let _ = hash.aset("created_at_ms", created_at_ms(&m.capture.created_at));
+    let _ = hash.aset("source_sandbox", m.capture.source_lineage.clone());
     let labels = ruby().hash_new();
-    for (k, v) in &m.labels {
+    for (k, v) in snap.labels() {
         let _ = labels.aset(k.as_str(), v.as_str());
     }
     let _ = hash.aset("labels", labels);
@@ -83,7 +115,7 @@ pub(crate) fn snapshot_to_hash(snap: &Snapshot) -> RHash {
 
 /// Create a snapshot artifact named `name` from a stopped sandbox. `opts`:
 /// from_sandbox (required), dest_dir, labels, force, record_integrity,
-/// resumable. Returns the full SnapshotInfo Hash.
+/// full, guest_flush. Returns the full SnapshotInfo Hash.
 fn create(name: String, opts: RHash) -> Result<RHash, Error> {
     let mut b = Snapshot::builder(name);
     match conv::opt_string(opts, "from_sandbox")? {
@@ -106,8 +138,11 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
     if conv::opt_bool(opts, "record_integrity")? {
         b = b.record_integrity();
     }
-    if conv::opt_bool(opts, "resumable")? {
-        b = b.resumable();
+    if conv::opt_bool(opts, "full")? {
+        b = b.full();
+    }
+    if let Some(policy) = conv::opt_string(opts, "guest_flush")? {
+        b = b.guest_flush(guest_flush_from_str(&policy)?);
     }
 
     let snap = block_on(b.create())?.map_err(error::to_ruby)?;
@@ -197,6 +232,7 @@ fn save(name_or_path: String, out_path: String, opts: RHash) -> Result<(), Error
         with_parents: conv::opt_bool(opts, "with_parents")?,
         with_image: conv::opt_bool(opts, "with_image")?,
         plain_tar: conv::opt_bool(opts, "plain_tar")?,
+        ..Default::default()
     };
     block_on(Snapshot::save(
         &name_or_path,
@@ -221,6 +257,10 @@ fn load(archive_path: String, dest: Option<String>) -> Result<RHash, Error> {
 fn handle_to_hash(handle: &SnapshotHandle) -> RHash {
     let hash = ruby().hash_new();
     let _ = hash.aset("digest", handle.digest().to_string());
+    // The stable portable identity: unlike the member `name` alias, it resolves
+    // as a selector on its own (a bare name only selects a group head in v0.7).
+    let _ = hash.aset("id", handle.id().to_string());
+    set_reference(&hash, &handle.reference());
     let _ = hash.aset("name", handle.name().map(str::to_string));
     let _ = hash.aset("parent_digest", handle.parent_digest().map(str::to_string));
     let _ = hash.aset("scope", scope_str(handle.scope()));
@@ -240,7 +280,10 @@ fn handle_to_hash(handle: &SnapshotHandle) -> RHash {
         "migration_error_code",
         handle.migration_error_code().map(str::to_string),
     );
-    let _ = hash.aset("path", handle.path().to_string_lossy().into_owned());
+    let _ = hash.aset(
+        "path",
+        handle.path().ok().map(|p| p.to_string_lossy().into_owned()),
+    );
     let _ = hash.aset(
         "created_at_ms",
         handle.created_at().and_utc().timestamp_millis(),

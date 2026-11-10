@@ -14,7 +14,11 @@
 unless ENV["MICROSANDBOX_INTEGRATION"]
   require "tmpdir"
   require "fileutils"
-  unit_home = Dir.mktmpdir("msb-rb-", File.directory?("/tmp") ? "/tmp" : nil)
+  # realpath: on macOS /tmp is a symlink to /private/tmp. The home must be a
+  # real directory, not a path through a symlink: since runtime v0.7.12 the core
+  # checks the catalog directory is private, and the fake runtime's sockets live
+  # under it.
+  unit_home = Dir.mktmpdir("msb-rb-", File.directory?("/tmp") ? File.realpath("/tmp") : nil)
   ENV["MSB_HOME"] = unit_home
   %w[MSB_BACKEND MSB_PROFILE MSB_API_URL MSB_API_KEY MSB_PATH MSB_LIBKRUNFW_PATH
     MICROSANDBOX_NO_AUTO_INSTALL].each { |name| ENV.delete(name) }
@@ -58,7 +62,7 @@ RSpec.configure do |config|
   # .install) in the example instead; reaching the native installer is a bug.
   config.before(:each) do |example|
     next if example.metadata[:integration]
-    %i[install setup].each do |installer|
+    %i[install_runtime setup].each do |installer|
       allow(Microsandbox::Native).to receive(installer) do
         raise "unit example reached Microsandbox::Native.#{installer} — stub Microsandbox.ensure_runtime!"
       end
@@ -120,17 +124,17 @@ end
 
 # Block until a freshly-created sandbox's metrics slot is live, returning the
 # first successful Metrics snapshot. The per-sandbox metrics slot goes live a
-# beat AFTER Sandbox.create returns on v0.6.x runtimes — the spawn handshake
-# (upstream #1036) no longer blocks create until the first sample is written, so
-# `metrics`/`metrics_stream` briefly raise "sandbox N has no live metrics slot"
-# right after boot. Poll past that startup window so streaming assertions don't
+# beat AFTER Sandbox.create returns — the spawn handshake (upstream #1036) does
+# not block create until the first sample is written, so `metrics`/
+# `metrics_stream` briefly raise "sandbox N has no verified live metrics slot"
+# (runtime v0.7; "no live metrics slot" on v0.6.x) right after boot. Poll past that startup window so streaming assertions don't
 # race it; this mirrors how a real caller must treat the window (see the metrics
 # docs). Only the transient slot error is retried — any other error propagates.
 def wait_for_metrics_slot(sandbox, attempts: 50, delay: 0.1)
   attempts.times do
     return sandbox.metrics
   rescue Microsandbox::Error => e
-    raise unless e.message.include?("no live metrics slot")
+    raise unless e.message.match?(/no (verified )?live metrics slot/)
     sleep delay
   end
   raise "metrics slot never went live after #{attempts} attempts"

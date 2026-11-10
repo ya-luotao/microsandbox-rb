@@ -20,14 +20,12 @@ RSpec.describe "argument guards and cleanup semantics" do
   end
 
   describe "create-time validation" do
-    it "rejects patches: together with from_snapshot: before anything is created" do
+    it "rejects the removed from_snapshot: (with or without patches:) before anything is created" do
       expect { Microsandbox::Sandbox.create("box", from_snapshot: "snap", patches: [Microsandbox::Patch.mkdir("/d")]) }
-        .to raise_error(ArgumentError, /patches: cannot be combined with from_snapshot:/)
+        .to raise_error(ArgumentError, /from_snapshot: was removed in 0\.18\.0/)
+      expect { Microsandbox::Sandbox.create("box", from_snapshot: "snap", patches: []) }
+        .to raise_error(ArgumentError, /from_snapshot: was removed in 0\.18\.0/)
       expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
-    end
-
-    it "still allows from_snapshot: with no patches" do
-      expect(create_opts(from_snapshot: "snap", patches: [])).to include("from_snapshot" => "snap")
     end
 
     it "does not provision the runtime when an option is rejected" do
@@ -56,8 +54,8 @@ RSpec.describe "argument guards and cleanup semantics" do
     end
 
     it "accepts one bare spec Hash as a list of one" do
-      opts = create_opts(image: "python", secrets: {env: "API_KEY", value: "v", host: "api.example.com"})
-      expect(opts["secrets"]).to eq([{"env" => "API_KEY", "value" => "v", "hosts" => ["api.example.com"]}])
+      opts = create_opts(image: "python", secrets: {env: "API_KEY", value: "v", allow: "api.example.com"})
+      expect(opts["secrets"]).to eq([{"env" => "API_KEY", "value" => "v", "allow" => ["api.example.com"]}])
     end
 
     it "names the class of a non-Hash spec, never its content" do
@@ -195,9 +193,13 @@ RSpec.describe "argument guards and cleanup semantics" do
 
     it "runs the installer once when several threads hit a first create together" do
       allow(Microsandbox).to receive(:ensure_runtime!).and_call_original
-      allow(Microsandbox).to receive(:installed?).and_return(true)
+      # Missing runtime: the branch that installs (and warns once).
+      allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
+      allow(Microsandbox::Native).to receive(:backend_runtime_home_pair).and_return(["/h/bin/msb", "/h/lib/libkrunfw"])
+      stub_const("ENV", ENV.to_h.except("MICROSANDBOX_NO_AUTO_INSTALL"))
+      allow(Microsandbox).to receive(:warn)
       installs = 0
-      allow(Microsandbox).to receive(:install) do
+      allow(Microsandbox).to receive(:bootstrap_install) do
         installs += 1
         sleep 0.05
       end

@@ -4,11 +4,11 @@ require "mkmf"
 require "rb_sys/mkmf"
 require "shellwords"
 
-# Preflight: the embedded microsandbox core is edition 2024 and pulls smoltcp,
-# which sets a Minimum Supported Rust Version of 1.91. An older rustc (commonly
-# Homebrew's, which shadows a newer rustup on PATH and ignores this gem's
-# rust-toolchain.toml) fails deep in the build with a cryptic "rustc X is not
-# supported by smoltcp" error. Detect it up front and explain the fix instead.
+# Preflight: the embedded microsandbox core is edition 2024 and (since runtime
+# v0.7) pulls sea-orm 2 / sqlx 0.9, which set a Minimum Supported Rust Version
+# of 1.94. An older rustc (commonly Homebrew's, which shadows a newer rustup on
+# PATH and ignores this gem's rust-toolchain.toml) fails deep in the build with
+# a cryptic "rustc X is not supported by <crate>" error. Detect it up front and explain the fix instead.
 #
 # Probe the *same* rustc the build will invoke. create_rust_makefile drives the
 # build through `cargo`, and cargo resolves its compiler exactly as: the `RUSTC`
@@ -22,7 +22,7 @@ require "shellwords"
 # neither false-passes (the trap of checking the cargo sibling, which stays a
 # valid rustup shim while the build silently uses the stale PATH rustc) nor
 # false-aborts (when `RUSTC` points at a newer compiler than the PATH `rustc`).
-MSRV = Gem::Version.new("1.91")
+MSRV = Gem::Version.new("1.94")
 
 def build_rustc
   rustc = ENV["RUSTC"].to_s.strip
@@ -67,6 +67,7 @@ end
 #
 # Cargo features for the embedded microsandbox runtime (e.g. "ssh") are enabled
 # directly on the dependency in ext/microsandbox/Cargo.toml, mirroring the official
-# Python/Node SDKs. The crate's "prebuilt" default feature provisions the msb
-# runtime + libkrunfw into ~/.microsandbox at build time.
+# Python/Node SDKs, with default features off: the build provisions nothing. The
+# host runtime (msb + libkrunfw, which embeds the guest agent) comes from the
+# microsandbox-rb-binaries gem or the first-use install into the runtime home.
 create_rust_makefile("microsandbox/microsandbox_rb")

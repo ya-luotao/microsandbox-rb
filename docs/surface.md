@@ -6,8 +6,10 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 
 ## Implemented
 
-- **Sandbox lifecycle** — the live `Sandbox` (`stop`/`stop_and_wait`/`kill`/
-  `drain`/`wait`/`status`/`detach`/`owns_lifecycle?`), the `SandboxHandle`
+- **Sandbox lifecycle** — the live `Sandbox` (`stop`/`stop_with_timeout`/
+  `stop_and_wait`/`kill`/`kill_with_timeout`/`drain`/`wait`/`status`/`detach`/
+  `owns_lifecycle?`; block forms stop within `BLOCK_STOP_TIMEOUT`, then kill),
+  the `SandboxHandle`
   controls from `Sandbox.get` (`stop_with_timeout`/`request_stop`/
   `request_kill`/`request_drain`/`wait_until_stopped`/`config`/`config_json`/
   `snapshot`), the cursor-paginated `list`/`list_with` with label filters, and
@@ -32,8 +34,25 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   (`Sandbox.create_with_progress` → `PullSession`).
 - **Named volumes** — `Volume.create`/`get`/`list`/`remove`/`get_default`, plus
   host-side `Volume.fs`/`VolumeInfo#fs` read/write.
-- **Snapshots** — create/open/list/list_dir/reindex/verify/save/load, boot from
-  snapshot, opt-in `record_integrity:`.
+- **Snapshots** — create (disk scope, or `full:` for a resumable checkpoint;
+  `guest_flush:`)/open/list/list_dir/reindex/verify/save/load, opt-in
+  `record_integrity:`, `SnapshotInfo#reference`/`#reference_kind`.
+  Selectors follow runtime `v0.7` snapshot groups (a bare name selects a group
+  head; `group:member`, id, digest or path select one artifact — see
+  [images.md](images.md#snapshots)); the group surface itself (`group:`, head
+  selection) is not bound yet.
+- **Restore** — `Sandbox.restore(snapshot, name:)` boots a new (upstream:
+  detached) sandbox from a snapshot, with the destination options `cpus`/
+  `memory`/`user`/`log_level`/`max_duration`/`idle_timeout`/`volumes`/`ports`/
+  `disable_network`/`cow_memory` (`forked` deprecated)/`disk_only`/
+  `snapshot_base`/`allow_missing_resources`/`external_mount_policy` (see
+  [images.md](images.md#restoring-a-snapshot)). It replaced create's
+  `from_snapshot:`.
+- **Storage upgrade** — `Microsandbox.diagnose_storage` (read-only
+  inspection → `StorageDiagnosis`) and `Sandbox.recover_storage` (import a
+  stopped pre-0.18 sandbox's disks into the runtime `v0.7` protected layout →
+  `StorageRecovery`; macOS needs `legacy_writers_stopped: true`). See
+  [lifecycle.md](lifecycle.md#upgrading-sandboxes-created-before-0180).
 - **Rootfs patches** — `Microsandbox::Patch` (text/file/append/copy_file/
   copy_dir/symlink/mkdir/remove) via `create(patches:)`.
 - **Root disk** — structured `root_disk:` (managed / tmpfs / disk / flat via
@@ -42,18 +61,30 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 - **Network configuration** — composable profiles, custom per-rule
   `Microsandbox::NetworkPolicy`/`Rule`/`Destination`, custom DNS (`dns:`),
   TLS-interception tuning (`tls:`), guest address pools (`ipv4_pool:`/
-  `ipv6_pool:`), `max_connections`, `trust_host_cas`, `strict` hostname mode,
+  `ipv6_pool:`), `max_tcp_connections`/`max_udp_connections` (the deprecated
+  `max_connections` aliases the TCP cap), `trust_host_cas`, `strict` hostname mode,
+  the HTTP deny response (`http:` — JSON or text `403`, custom messages, or
+  off; see [configuration.md](configuration.md#http-deny-response)),
   outbound SOCKS4/SOCKS5 `proxy:` (`OutboundProxy`/`SecretSource`),
   `rate_limiter:`, `vsock:`.
-- **Secrets** — multi-host / wildcard allow-lists, injection toggles,
-  per-secret `on_violation:` and sandbox-level `on_secret_violation:` policy.
+- **Secrets** — per-secret `allow:` lists (exact hosts, `*.example.com`
+  wildcards, or `"*"` for any host), `allow_placeholder_for:` hosts that may
+  receive the unchanged placeholder, `placeholder:`, `require_tls_identity:`,
+  `substitution:` locations (headers / named header fields / query / body),
+  per-secret `violation_action:` and the sandbox-wide `secret_violation_action:`
+  (`block` / `block_and_log` / `block_and_terminate`). See
+  [configuration.md](configuration.md#secrets) for the 0.17 → 0.18 key map;
+  the removed keys and `on_secret_violation:` raise with their replacement.
 - **SSH** — `Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`, with
   `inactivity_timeout:`.
 - **Raw agent client** — `Microsandbox::AgentClient` → `AgentStream`/
   `AgentFrame`.
-- **Runtime provisioning** — `install`/`installed?`/`ensure_runtime!`/
-  `runtime_path`/`libkrunfw_path`, customizable via `Microsandbox.setup`; the
-  companion `microsandbox-rb-binaries` gem.
+- **Runtime provisioning** — `install(force:)`/`installed?`/`ensure_runtime!`/
+  `runtime_path`/`libkrunfw_path`, `runtime_info` → `RuntimeInfo` (the
+  resolved `msb` + `libkrunfw` pair, its gem-classified `origin` and embedded
+  `version`), customizable via `Microsandbox.setup`; the version-aware
+  bootstrap (the `msb` must be exactly `RUNTIME_VERSION`); the companion
+  `microsandbox-rb-binaries` gem.
 - **Registries** — `registry_auth`/`registry_insecure`/`registry_ca_certs` on
   `create`.
 - **Errors** — the typed hierarchy in [errors.md](errors.md).
@@ -70,12 +101,22 @@ Create options span resources (`cpus`/`memory`/`max_cpus`/`max_memory`),
 disk-image `fstype`, `ports`/`ports_udp`, network policy + config,
 `log_level`/`quiet_logs`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches`/`volumes`
 (bind/named/tmpfs/disk with mount policies, `uid`/`gid`, `quota_mib`),
-`idle_timeout`/`max_duration`, `from_snapshot`, `detached`, and
-`replace`/`replace_with_timeout`.
+`secret_violation_action`, `idle_timeout`/`max_duration`, `detached`, and
+`replace`/`replace_with_timeout`. Two keywords remain only to fail loudly
+since 0.18.0: `from_snapshot` and `on_secret_violation`.
 
 ## Not yet exposed
 
 A few secondary upstream knobs are not yet exposed: per-published-port host
-bind address (ports always bind loopback), network interface overrides, and
+bind address (ports always bind loopback), network interface overrides,
 inline named-volume create-mode (pre-create the volume with `Volume.create`,
-then mount it with `{ named: "…" }`).
+then mount it with `{ named: "…" }`), HTTP CONNECT outbound proxies (`proxy:`
+takes SOCKS4/SOCKS5), the inbound published-port caps
+(`max_inbound_tcp_connections`, `tcp_accept_queue_size`), `nested_virt`, and
+detached jobs.
+
+Restore does not yet take the network policy, security profile, vsock routes,
+connection caps, UDP ports, captured-disk selection (`captured`), resource
+inheritance (`dangerously_inherit_resources`), `guest_clock`, or a progress
+stream; snapshot groups, live branches/forks and `restore_warnings` are not
+bound either (planned for 0.19.0).

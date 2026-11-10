@@ -25,11 +25,15 @@ options) raises a plain `ArgumentError` before the native layer is reached.
 | Class | `#code` | Raised when |
 |-------|---------|-------------|
 | `Error` | `microsandbox-error` | Base class; unmapped core errors |
-| `InvalidConfigError` | `invalid-config` | Bad create options, invalid backend/cloud configuration |
+| `InvalidConfigError` | `invalid-config` | Bad create options, invalid backend/cloud configuration, a restore whose captured mounts lack a destination binding |
+| `RuntimeNotInstalledError` | `runtime-not-installed` | No `msb` + `libkrunfw` runtime pair was found anywhere |
+| `RuntimeIncompleteError` | `runtime-incomplete` | The selected runtime pair is partial, or `MSB_PATH` / `runtime_path` names an `msb` with no matching `libkrunfw` |
 | `SandboxNotFoundError` | `sandbox-not-found` | No sandbox with that name |
 | `SandboxNotRunningError` | `sandbox-not-running` | Operation needs a running guest (`ping`/`touch`/`exec` on a stopped sandbox) |
 | `SandboxAlreadyExistsError` | `sandbox-already-exists` | Name clash on `create` without `replace:` |
 | `SandboxStillRunningError` | `sandbox-still-running` | `remove` on a running sandbox |
+| `StopTimeoutError` | `stop-timeout` | A graceful stop (`stop_with_timeout`, or `restart`/`destroy`'s `timeout:`) did not complete within its budget; the stop may still complete and no kill was requested. The block forms catch it and kill |
+| `SandboxStopTimedOutError` | `sandbox-stop-timed-out` | Reserved for parity; not raised at the pinned runtime |
 | `SandboxReplacedError` | `sandbox-replaced` | The identity a handle was bound to no longer owns the name (see [lifecycle.md](lifecycle.md#convergent-lifecycle)) |
 | `ExecTimeoutError` | `exec-timeout` | `exec(timeout:)` / `shell(timeout:)` deadline hit |
 | `ExecFailedError` | `exec-failed` | Spawn-time failure (e.g. command not found) — a non-zero exit is **not** an error |
@@ -47,14 +51,16 @@ options) raises a plain `ArgumentError` before the native layer is reached.
 | `SnapshotImageMissingError` | `snapshot-image-missing` | Restore needs an image that is not cached |
 | `SnapshotIntegrityError` | `snapshot-integrity` | Snapshot payload failed verification |
 | `SnapshotMigrationError` | `snapshot-migration` | Automatic snapshot-descriptor migration was blocked and needs repair |
+| `SnapshotSourceRecoveryError` | `snapshot-source-recovery` | A `full:` capture completed but the source sandbox failed to recover; carries `#source_sandbox`, `#checkpoint_id`, `#checkpoint_root`, `#checkpoint_path`, `#artifact` (nil unless published), `#detail`, `#publication_error` |
 | `NetworkPolicyError` | `network-policy-error` | Invalid network policy or `NetworkBuilder` validation failure (an invalid `proxy:` is `InvalidConfigError`) |
 | `SecretViolationError` | `secret-violation` | Reserved for parity; not raised by the current native mapping |
 | `TlsError` | `tls-error` | Reserved for parity; not raised by the current native mapping |
 | `IoError` | `io-error` | Host-side I/O failure |
 | `MetricsDisabledError` | `metrics-disabled` | Metrics turned off for this sandbox |
-| `MetricsUnavailableError` | `metrics-unavailable` | Reserved for parity; not raised at the pinned runtime. The transient "no live metrics slot" window right after boot raises the base `Microsandbox::Error` — match on the message |
+| `MetricsUnavailableError` | `metrics-unavailable` | Reserved for parity; not raised at the pinned runtime. The transient "no verified live metrics slot" window right after boot raises the base `Microsandbox::Error` — match on the message |
 | `UnsupportedOperationError` | `unsupported-operation` | The runtime version does not support the operation |
 | `CloudHttpError` | `cloud-http` | Cloud backend HTTP failure |
+| `ModificationNotConfirmedError` | `modification-not-confirmed` | Cloud only: a `modify` was saved but is not in effect, or its outcome is unknown (the message says which) |
 | `UnsupportedError` | `unsupported` | The selected backend does not implement the operation; carries `#operation` (e.g. `"sandbox.kill"`) and `#hint` |
 | `ForkedHandleError` | `forked-handle` | A handle was used in a process forked from the one that created it; open a new one in the child (see [runtime.md](runtime.md#forking-puma-resque-solid-queue)) |
 

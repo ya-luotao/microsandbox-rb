@@ -8,6 +8,330 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-10
+
+Adopts upstream runtime `v0.7.14` (from `v0.6.18`). **Breaking.** Runtime
+`v0.7` replaces the secrets vocabulary and the snapshot model, refuses to
+launch any `msb` other than the exact release this gem pins, and turns strict
+hostname enforcement on by default. Migration notes are below.
+
+### Breaking
+
+- **Ruby 3.3 or newer is required** (both gems). Ruby 3.1 and 3.2 are
+  end-of-life, and on the `ubuntu-26.04` image setup-ruby ships no 3.1 build
+  while rb-sys's bindgen step fails on the 3.2 headers. CI now runs Ruby 3.3
+  and 3.4 on `ubuntu-latest` and `macos-15`.
+- **Building the source gem needs Rust 1.94 or newer** (was 1.91): runtime
+  `v0.7` pulls sea-orm 2 / sqlx 0.9. The `extconf.rb` preflight says so up
+  front.
+- **The runtime must be exactly `v0.7.14`.** The core reads the version
+  embedded in the `msb` executable and refuses every other runtime at launch
+  ("does not advertise protected sandbox state" for a `0.6.x` or older `0.7.x`
+  one). `msb` wrapper scripts (`#!`) carry no version and are refused too.
+  The first-use bootstrap is now version-aware: a stale runtime in the runtime
+  home is replaced (`install(force: true)`, with a warning), while a stale
+  runtime from `MSB_PATH`, `runtime_path=` or the config file is never
+  touched — the SDK warns that every local sandbox start will be refused.
+  With `MICROSANDBOX_NO_AUTO_INSTALL` nothing is installed or replaced, and a
+  missing runtime surfaces as `RuntimeNotInstalledError` from the operation.
+  A runtime home holding only one of `bin/msb` and `lib/<libkrunfw>` raises
+  `RuntimeIncompleteError` naming the files to delete.
+- **`Microsandbox.installed?` reports any complete runtime pair** (from
+  `MSB_PATH`, the binaries gem, configured paths or the runtime home), not
+  only one in `~/.microsandbox`, and says nothing about its version; see
+  `Microsandbox.runtime_info`. `msb` on `PATH` is no longer a runtime source.
+- **Secrets use the runtime `v0.7` vocabulary.** A spec takes `env:`, `value:`
+  and a required, non-empty `allow:` list (exact hosts, `*.example.com`
+  wildcards, or `"*"` for any host), plus `allow_placeholder_for:`,
+  `placeholder:`, `require_tls_identity:`, `violation_action:` and
+  `substitution: { headers:, header_fields:, query:, body: }`. The 0.17 keys
+  (`host:`/`hosts:`/`host_patterns:`, `inject_*:`, `require_tls:`,
+  `on_violation:`) raise `ArgumentError` naming their replacement.
+  `inject_basic_auth:` is gone and has no Basic-only equivalent: the
+  narrowest replacement, `substitution: { headers: true, header_fields:
+  ["Authorization"], query: false, body: false }`, also substitutes a
+  non-Basic placeholder in that header (`Bearer`, `token`, …). The first
+  `v0.7` open of a 0.17.x home widens saved Basic-only secrets to every
+  header; see the migration notes.
+- **`Sandbox.create(on_secret_violation:)` → `secret_violation_action:`**
+  (`:block`, `:block_and_log` — the default — or `:block_and_terminate`). The
+  passthrough policy is gone; list the hosts that may receive the unchanged
+  placeholder in each secret's `allow_placeholder_for:`.
+- **`Sandbox.create(from_snapshot:)` is removed** and raises with directions:
+  boot from a snapshot with `Sandbox.restore(snapshot, name:)`. A restored
+  sandbox is detached upstream, so without a block it outlives your process.
+- **`Snapshot.create(resumable:)` → `full:`.** `SnapshotInfo` gains `#id` and
+  `#parent_id`; `#scope` is `:disk` or `:full`; `#path` may be `nil`, and
+  `#parent_digest` is always `nil` (v0.7 descriptors link parents by id).
+- **Snapshots live in groups, and a bare name selects a group head.**
+  `Snapshot.create(name, from_sandbox: src)` (and `SandboxHandle#snapshot`)
+  publishes the artifact into the group named after `src`, as member `name`,
+  and makes it the head. `open`/`get`/`verify`/`save`/`remove` therefore no
+  longer accept the create `name` on its own: select `"src:name"`, the
+  returned `SnapshotInfo#id` (now set on every local path, including
+  `get`/`list`/`load`), the digest, or the path. A loaded archive lands in a
+  fresh group with no head, so address it by id or path. `create(force: true)`
+  is rejected (grouped snapshots are immutable).
+- **Strict hostname policy is on by default** (upstream #1643): a
+  hostname-rule allow must be backed by an inspectable request authority.
+  Pass `strict: false` to opt out.
+- **`MSB_PATH` must name a complete runtime pair.** The core resolves `msb`
+  and `libkrunfw` together: the library must sit next to the executable (or
+  in `../lib/`), or be given with `MSB_LIBKRUNFW_PATH`; `MSB_LIBKRUNFW_PATH`
+  alone is an error. `Microsandbox.runtime_path` raises when no complete pair
+  resolves, and the local backend reads `MSB_PATH` (like `MSB_HOME` and the
+  config file) once, when it is first used in a process. When they change
+  after that, the first-use bootstrap raises `InvalidConfigError` instead of
+  checking or replacing a runtime the backend will not launch;
+  `Microsandbox.set_default_backend(:local)` rebuilds the backend.
+- **A bind mount whose host path goes through a symlink is refused** unless
+  the mount sets `follow_root_symlinks: true` (e.g. macOS's `/tmp`, `/var`);
+  pass the resolved path.
+- `Microsandbox.default_backend_kind` / `default_backend_info` raise on a
+  misconfigured backend selection instead of reporting `:cloud`.
+- Ruby `ExecStdin#write("")` is a no-op; it used to send EOF. Call `#close`.
+
+### Added
+
+- **`Sandbox.restore(snapshot, name:, ...)`** boots a new sandbox from a
+  snapshot (a `SnapshotInfo`, id, `"group:member"`, digest or path; a relative
+  path is anchored when called). Destination options: `cpus:`, `memory:`,
+  `user:`, `log_level:`, `max_duration:`, `idle_timeout:`, `volumes:`,
+  `ports:`, `disable_network:`, `cow_memory:` (`forked:` is a deprecated
+  alias), `disk_only:`, `snapshot_base:`, `allow_missing_resources:`,
+  `external_mount_policy:`. A captured bind or named mount needs a
+  destination in `volumes:` (or `allow_missing_resources: true`), otherwise
+  `InvalidConfigError`. The block form stops the sandbox on exit. See
+  `docs/images.md#restoring-a-snapshot`.
+- **`Sandbox#stop_with_timeout(seconds)` / `#kill_with_timeout(seconds)`** on
+  the live sandbox (they were on `SandboxHandle` only; on both, the budget now
+  covers the whole call, waiting for the transition lock included), and
+  **`Sandbox::BLOCK_STOP_TIMEOUT`** (10).
+- **`Snapshot.create(guest_flush:)`** (`:auto`, `:required`, `:skip`) and
+  **`SnapshotInfo#reference`** / **`#reference_kind`**, the reference
+  `Sandbox.restore` takes back.
+- **`Microsandbox.runtime_info`** → `Microsandbox::RuntimeInfo`: the resolved
+  `msb` + `libkrunfw` pair, where it came from (`origin`: `:environment`,
+  `:sdk_package`, `:configuration`, `:home` or `:installed` — classified by the
+  SDK, see `docs/runtime.md`), and the version embedded in the `msb`
+  (`version`, `legacy?`, `matches_sdk?`). Reads files only.
+- **`Microsandbox.install(force: true)`** reinstalls the runtime into the home.
+- **`Sandbox.recover_storage(name, selections:, accept_selected_view:,
+  legacy_writers_stopped:)`** and **`Microsandbox.diagnose_storage(names:,
+  all_sandboxes:, home:)`** (→ `StorageRecovery` / `StorageDiagnosis`):
+  inspect and import the storage of sandboxes created before 0.18.0 into the
+  runtime `v0.7` protected layout without booting them. Linux migrates on the
+  next start; macOS needs the explicit recovery. See
+  `docs/lifecycle.md#upgrading-sandboxes-created-before-0180`.
+- **`Sandbox.create(max_tcp_connections:, max_udp_connections:)`**: caps on
+  proxied TCP connections and UDP relay sessions (`0` = unlimited, omitted =
+  the runtime default).
+- **`Sandbox.create(http:)`**: how a denied request is answered —
+  `deny_response:` (`false` closes the connection, as before 0.18.0),
+  `format:` (`:json` or `:text`), and the JSON `network_message:` /
+  `secret_message:`. Local-only: a cloud create accepts only the defaults or
+  `deny_response: false`. See `docs/configuration.md#http-deny-response`.
+- **Error classes for the v0.7 core variants**, mirroring the Python SDK:
+  `RuntimeNotInstalledError` (`runtime-not-installed`),
+  `RuntimeIncompleteError` (`runtime-incomplete` — e.g. an `MSB_PATH` with no
+  matching `libkrunfw`), `StopTimeoutError`
+  (`stop-timeout`), `SnapshotSourceRecoveryError`
+  (`snapshot-source-recovery`, with the recovery locator as attributes) and
+  the cloud-only `ModificationNotConfirmedError`
+  (`modification-not-confirmed`). `SandboxStopTimedOutError`
+  (`sandbox-stop-timed-out`) is reserved: the core does not raise it yet.
+
+### Changed
+
+- **A graceful stop never escalates to a kill** (runtime `v0.7`). `#stop`
+  waits without a deadline; `stop_with_timeout` and `restart`/`destroy`'s
+  `timeout:` raise `StopTimeoutError` on expiry and kill nothing. The block
+  forms of `create`, `connect_or_create` and `restore` therefore stop with a
+  `BLOCK_STOP_TIMEOUT` budget and then kill with a 15-second budget, both
+  covering the sandbox's transition lock, so a block exit cannot hang; an
+  interrupted create does the same. When that kill fails or runs out of time
+  the SDK warns (`cleanup gave up on sandbox "<name>", which may still be
+  running`) instead of raising over the block's own result or exception.
+  `#kill` keeps upstream's behaviour: it waits for the transition lock without
+  a deadline, then up to 5 seconds to see the sandbox stopped;
+  `#kill_with_timeout(n)` bounds the whole call, lock included.
+  `create(replace: true)` is the exception and still escalates when the name
+  is held by a running sandbox: `TERM`, a grace of `replace_with_timeout:`
+  (10 seconds by default; `0` skips the `TERM`), `KILL`, then 5 seconds to
+  prove the runtime exited. If it has not, the create raises
+  `SandboxStillRunningError`, as it does when an untracked runtime endpoint
+  may still be live; a failed signal raises its own error. This is separate
+  from `stop_with_timeout` and from `Snapshot.create`'s `force:`.
+- **A request the network policy denies gets an HTTP `403` with a JSON body**
+  (`code: "network_policy_denied"`) instead of a reset, when it is plain HTTP
+  or HTTPS under TLS interception; a secret-policy block is answered the same
+  way. This applies to sandboxes created by 0.17.x too, from their next start.
+  Pass `http: { deny_response: false }` for the old behaviour.
+- The transient error right after boot, before a sandbox's metrics slot is
+  live, now reads `sandbox N has no verified live metrics slot` (it was
+  `… has no live metrics slot`); code that retries on the message must match
+  the new text (`/no (verified )?live metrics slot/`). See
+  `docs/observability.md`.
+- Execution flow control is fixed by the runtime: at most 128 executions per
+  sandbox (exited streams with unread output included), 64 KiB of pending
+  stdin, 1 MiB of unread output, 16 KiB chunks. See `docs/execution.md`.
+- `Microsandbox.install` checks the runtime home itself (the exact two files
+  the resolver expects there) and downloads only when the pair is missing or
+  another version; a current pair is kept, as documented. Non-forced
+  `Microsandbox.setup` keeps any complete pair in the target home, and
+  `setup(version:)` warns when the version is not the SDK's runtime.
+- The `microsandbox-rb-binaries` gem now claims the `libkrunfw` SDK slot as
+  well as the `msb` one (unless `MSB_PATH` is set when `microsandbox` is
+  required), so `Microsandbox.libkrunfw_path=` is a no-op with it, like
+  `runtime_path=`.
+- **SSH `exec`/`attach` report abnormal exits** (upstream #2011) instead of
+  a success: the guest agent's exit code `-1` (a command killed by a signal,
+  or a lost exit notification) becomes status `1` — `exec("kill -KILL $$")`
+  returns `1` —, an exit signal the SSH channel reports becomes
+  `128 + <signal number>` (`128` for an unknown signal name), and a channel
+  that closes with no exit status raises.
+- The runtime's cloud backend now implements `modify` for secrets (upstream
+  #1849): `secrets:`/`remove_secrets:` on a cloud sandbox go to the cloud API
+  (no gem change; not exercised by this gem's tests), other fields still
+  raise `UnsupportedError` there, and a change the cloud did not confirm
+  raises `ModificationNotConfirmedError`.
+- `modify(labels:)` on a running sandbox applies live (upstream #1881) instead
+  of at the next start. `modify` refuses an empty label key and the reserved
+  `sandbox.`/`microsandbox.`/`service.` prefixes (#1857), and `create`/`modify`
+  refuse env the guest cannot boot with: an empty key, a key containing `=`
+  or NUL, or a value containing NUL (#1863). Nothing is saved; removing such
+  a key stays allowed.
+- The runtime configuration can restrict backends (`allowed_backends`,
+  upstream #1898, in the user or managed config file); resolving a backend it
+  does not allow raises a configuration error.
+- Published ports: finished inbound TCP connections free their slot at once,
+  and the inbound limit (256 before) is unlimited by default (upstream #1815;
+  the knob itself is not bound yet).
+
+### Fixed
+
+- On a runtime home where no install ever ran (the runtime came from
+  `MSB_PATH` or the binaries gem), creating a sandbox from a directory or disk
+  image failed with `No such file or directory`: runtime `v0.7.14` creates the
+  sandboxes directory only on the OCI path
+  ([superradcompany/microsandbox#2041](https://github.com/superradcompany/microsandbox/issues/2041)).
+  The SDK creates `<home>/sandboxes` before every local create once a runtime
+  resolves.
+- Runtime fixes that clear the known issues of 0.17.x: on macOS hosts a guest
+  `fallocate` no longer truncates a file on a bind mount or directory-backed
+  volume (upstream `v0.7.0`); `modify(secrets:)` that adds a sandbox's first
+  secret turns TLS interception on, so the value is substituted (`v0.7.3`);
+  `patches:` keeps the image's owner and mode on parent directories that
+  already exist (`v0.7.5`).
+
+### Deprecated
+
+- `Sandbox.create(max_connections:)`: an alias of `max_tcp_connections:` that
+  warns; passing both raises `ArgumentError`.
+- A secret's `passthrough:` key: an alias of `allow_placeholder_for:` that
+  warns; the two lists are merged.
+
+### Security
+
+- `deny.toml` ignores RUSTSEC-2026-0459 (libsqlite3-sys): sqlx-sqlite 0.9.0
+  caps it below the fixed release, exploiting it needs a less-trusted writer
+  of the catalog database and its WAL, and the catalog directory has been
+  owner-only since runtime `v0.7.12`. The three zstd ignores of 0.17.5 are
+  gone: the runtime's external-kernel path (msb_krun_vmm 0.1.45) now pulls
+  zstd 0.13.4 / zstd-safe 7.4.0, which carry the fixes.
+
+### Known issues
+
+- On Linux, a detached sandbox (`detached: true`, `Sandbox.start(detached:
+  true)`, `#detach`, or a no-block `Sandbox.restore`) leaves a `<defunct>` VM
+  child in the SDK process after it stops, until that process exits
+  ([superradcompany/microsandbox#1950](https://github.com/superradcompany/microsandbox/issues/1950),
+  open upstream). macOS reaps them. Long-running Ruby processes that create
+  many detached sandboxes accumulate zombies.
+
+### Migration notes
+
+- Rewrite secret specs with the table in
+  `docs/configuration.md#migrating-secrets-from-017x`.
+- **Basic-only secrets** (`inject_basic_auth: true` without `inject_headers:
+  true`): rewrite them with `substitution: { headers: true, header_fields:
+  ["Authorization"], query: false, body: false }`, never a bare `headers:
+  true`. Saved sandboxes need more: the first `v0.7` runtime to open a 0.17.x
+  home converts each saved Basic-only secret to substitution in every header,
+  with no allowlist (upstream migration `migrate_secret_config`), and
+  `modify` cannot narrow it. List those sandboxes with 0.17.x before
+  upgrading, then remove and recreate each with the recipe before it starts
+  again; `docs/configuration.md#basic-only-secrets-inject_basic_auth` has the
+  listing snippet.
+- Replace `on_secret_violation:` with `secret_violation_action:`, and
+  `Snapshot.create(resumable: true)` with `full: true`.
+- Keep `SnapshotInfo#id` from `Snapshot.create` and pass it (or
+  `"<source-sandbox>:<name>"`) wherever a snapshot name was passed before.
+- Select a snapshot made by 0.17.x by its path, or pass the `SnapshotInfo`
+  from `Snapshot.list`: it is in no group, so its bare name raises
+  `InvalidConfigError` (the message names the path), and runtime `v0.7`
+  re-indexes it under a new digest and a `snap_…` id, so a digest recorded
+  under 0.17.x stops selecting it once the snapshot has been opened
+  (`Snapshot.list` reports a digest-shaped `sha256:…` id for it until it is
+  first opened, and a `snap_…` id afterwards). Its
+  files stay where they were. When the same artifact exists twice in a home
+  (for example after `Snapshot.load` of its own archive), its id and digest
+  are ambiguous: select it by path.
+- Replace `Sandbox.create(name, from_snapshot: snap)` with
+  `Sandbox.restore(snap_info_or_id, name: name)`. Pass only destination
+  options; give captured bind/named mounts a destination in `volumes:`. Stop
+  a sandbox restored without a block yourself (or use the block form).
+- Give `MSB_PATH` its `libkrunfw` (next to it, in `../lib/`, or via
+  `MSB_LIBKRUNFW_PATH`).
+- Pass `strict: false` where a hostname-rule allow must keep working without
+  an inspectable authority.
+- An older runtime in the runtime home is replaced on first use (or run
+  `Microsandbox.install` ahead of time). Point `MSB_PATH`, `runtime_path=` or
+  configured paths at a `v0.7.14` runtime yourself; with
+  `MICROSANDBOX_NO_AUTO_INSTALL`, provision `v0.7.14` out of band.
+- Code that provisions the runtime home should call `Microsandbox.install`
+  unconditionally instead of guarding it with `installed?`: it is idempotent,
+  keeps a current pair and replaces a stale one, even when `MSB_PATH` or the
+  binaries gem shadows the home. `runtime_info` / `#matches_sdk?` describe
+  the *selected* pair, from whichever source wins, so they cannot tell you
+  whether the home is installed or current.
+- On macOS, before starting a sandbox created by 0.17.x or earlier: stop
+  every pre-0.18 VM in every runtime home, then run
+  `Sandbox.recover_storage(name, legacy_writers_stopped: true)` for each
+  stopped sandbox (`Microsandbox.diagnose_storage(all_sandboxes: true)` lists
+  which need it — it reads a 0.17.x home without migrating it). Until then
+  `start` raises `Microsandbox::Error` ("macOS legacy storage requires
+  explicit maintenance recovery …"). The recovery keeps the original disks
+  and does not boot the sandbox; afterwards it starts normally, secrets
+  included. On Linux the move happens on the next start.
+- A VM that 0.17.x started and that is still running keeps working for
+  `exec` and stop, but cannot be snapshotted, forked or have its disk grown
+  until it is stopped and started again under 0.18.0.
+- The upgrade is one-way. The first `v0.7` runtime to open a runtime home
+  applies eight catalog migrations (`split_snapshot_identity`,
+  `snapshot_groups`, `migrate_secret_config`, `guest_clock_config`,
+  `sandbox_caller_config_overrides`, `sandbox_creation`, `volume_creation`,
+  `protected_sandbox_state`); 0.17.x then fails there with `database schema is
+  newer than this msb binary`. The first open also makes the catalog
+  owner-only (`0700` directory, `0600` files). Back the home up first, and
+  restore a backup to the same path: the catalog and image cache store
+  absolute paths into the home. To try 0.18.0 side by side, give it a
+  separate `MSB_HOME`.
+- The runtime home must be private: no group- or world-writable ancestor
+  without the sticky bit.
+- Denied plain-HTTP (and intercepted HTTPS) requests now get a JSON `403`,
+  in old sandboxes too (a 0.17.x sandbox answers a request to a private
+  address its stored policy denies with `network_policy_denied`); pass
+  `http: { deny_response: false }` where clients relied on the reset.
+- Send EOF with `ExecStdin#close`; `write("")` no longer closes stdin.
+- SSH `exec` of a command that dies abnormally now returns a non-zero
+  status (`1`, or `128 + <signal>` when the channel reports the signal)
+  instead of `0`; check `#success?` rather than a specific code.
+- Executions are capped by the runtime (128 per sandbox, unread exited
+  streams included; 64 KiB pending stdin; 1 MiB unread output): drain or
+  close streams you start, and don't keep more than 128 open.
+- Upgrade Ruby to 3.3 or newer first; Ruby 3.1 and 3.2 are not supported.
+
 ## [0.17.5] - 2026-10-27
 
 Gem-only security release; the embedded runtime stays at **`v0.6.18`**.
@@ -1630,7 +1954,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.5...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.5...v0.18.0
 [0.17.5]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.4...v0.17.5
 [0.17.4]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.2...v0.17.3

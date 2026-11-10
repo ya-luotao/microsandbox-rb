@@ -20,6 +20,7 @@ mod runtime;
 mod sandbox;
 mod snapshot;
 mod ssh;
+mod storage;
 mod stream;
 mod volume;
 
@@ -45,54 +46,258 @@ fn all_sandbox_metrics() -> Result<RHash, Error> {
     Ok(hash)
 }
 
-/// Download and install the `msb` runtime + `libkrunfw` into `~/.microsandbox`.
-/// Never touches the backend, so a forked child does not take the inherited
-/// one over here (see `runtime::block_on_runtime_install`).
-fn install() -> Result<(), Error> {
-    runtime::block_on_runtime_install(microsandbox::setup::install())?.map_err(error::to_ruby)
+/// The effective local runtime configuration: the persisted config file, then
+/// `MSB_HOME`/`MSB_PATH`/`MSB_LIBKRUNFW_PATH`, the SDK path slots and managed
+/// policy, layered exactly as the local backend layers them (`overrides_json`
+/// adds `home`/`msb_path`/`libkrunfw_path` on top). Reads files and the
+/// environment only — no backend is built.
+fn effective_runtime_config(
+    overrides_json: &str,
+) -> microsandbox::MicrosandboxResult<microsandbox::config::GlobalConfig> {
+    microsandbox::setup::binding_runtime_config(overrides_json)
 }
 
-/// Customizable install via the core `Setup` builder. `opts`: base_dir (install
-/// root), version (pin the runtime version), force (re-download even if present
-/// — repairs a corrupt install), skip_verify. Mirrors the Node `Setup` builder.
+/// Whether the runtime HOME of `config` already holds a complete `msb` +
+/// `libkrunfw` pair — exactly the pair an install would write. Explicit paths
+/// (`MSB_PATH`, the SDK slots, `config.paths`) are cleared first so they can
+/// neither satisfy nor mask the check: `setup` targets the home. Presence
+/// only, like upstream's `is_runtime_installed` (the version-aware decision is
+/// `Microsandbox.install`'s, in Ruby).
+fn home_runtime_complete(config: &microsandbox::config::GlobalConfig) -> bool {
+    let mut home_only = config.clone();
+    home_only.paths.msb = None;
+    home_only.paths.libkrunfw = None;
+    matches!(
+        microsandbox::setup::resolve_runtime(&home_only),
+        Ok(runtime) if runtime.origin == microsandbox::setup::RuntimeOrigin::Home
+    )
+}
+
+/// A resolved runtime pair as the Ruby Hash `runtime_info` returns:
+/// `{"msb_path", "libkrunfw_path", "origin"}`, origin in upstream's snake_case
+/// `RuntimeOrigin` spelling (`environment`, `sdk_package`, `configuration`,
+/// `home`, `installed`).
+fn resolved_runtime_to_hash(
+    runtime: &microsandbox::setup::ResolvedRuntime,
+) -> Result<RHash, Error> {
+    let origin = serde_json::to_value(runtime.origin)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("{:?}", runtime.origin).to_lowercase());
+    let hash = runtime::ruby().hash_new();
+    hash.aset("msb_path", runtime.msb_path.to_string_lossy().into_owned())?;
+    hash.aset(
+        "libkrunfw_path",
+        runtime.libkrunfw_path.to_string_lossy().into_owned(),
+    )?;
+    hash.aset("origin", origin)?;
+    Ok(hash)
+}
+
+/// The `msb` + `libkrunfw` pair the local backend would launch, resolved from
+/// the effective runtime configuration (environment, SDK slots, config file,
+/// home, packaged slot — `effective_runtime_config`) without touching the
+/// network or the filesystem. Raises `RuntimeNotInstalledError` when nothing
+/// resolves and `RuntimeIncompleteError` for a partial or unpaired source.
+/// Independent of the selected backend (cloud included): it describes the host.
+fn runtime_info() -> Result<RHash, Error> {
+    let config = effective_runtime_config("{}").map_err(error::to_ruby)?;
+    let runtime = microsandbox::setup::resolve_runtime(&config).map_err(error::to_ruby)?;
+    resolved_runtime_to_hash(&runtime)
+}
+
+/// The runtime version embedded in the `msb` at `path` (its `.msbver`
+/// section), or nil when it has none: a pre-0.7 `msb`, or a wrapper script
+/// (`#!`), which the launch contract also treats as unversioned. Reads the
+/// file only; never executes it.
+fn msb_version(path: String) -> Result<Option<String>, Error> {
+    use std::io::Read as _;
+    let mut head = [0u8; 2];
+    let is_script = std::fs::File::open(&path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .map(|()| &head == b"#!")
+        .unwrap_or(false);
+    if is_script {
+        return Ok(None);
+    }
+    microsandbox::setup::resolve_runtime_version(&path)
+        .map(|version| version.map(|v| v.to_string()))
+        .map_err(error::to_ruby)
+}
+
+/// The exact pair an install writes into the runtime home:
+/// `[<home>/bin/<msb>, <home>/lib/<libkrunfw>]`, with the OS-specific file
+/// names upstream's resolver expects (`runtime_in_home`). The home comes from
+/// the effective configuration (`MSB_HOME`, the config file, default
+/// `~/.microsandbox`).
+fn runtime_home_pair() -> Result<(String, String), Error> {
+    let config = effective_runtime_config("{}").map_err(error::to_ruby)?;
+    Ok(home_pair_of(&config))
+}
+
+/// `[<home>/bin/<msb>, <home>/lib/<libkrunfw>]` of `config`'s runtime home.
+fn home_pair_of(config: &microsandbox::config::GlobalConfig) -> (String, String) {
+    let home = config.home();
+    let os = std::env::consts::OS;
+    let msb = home
+        .join(microsandbox_utils::BIN_SUBDIR)
+        .join(microsandbox_utils::msb_binary_filename(os));
+    let lib = home
+        .join(microsandbox_utils::LIB_SUBDIR)
+        .join(microsandbox_utils::libkrunfw_filename(os));
+    (
+        msb.to_string_lossy().into_owned(),
+        lib.to_string_lossy().into_owned(),
+    )
+}
+
+/// Install the runtime pair into the runtime home through upstream's
+/// installer. `opts` (all optional): source (`release_download` (default),
+/// `archive`, `directory`, `embedded_archive`), source_path, version, force,
+/// verify, expected_archive_sha256 — upstream's binding wire
+/// (`binding_install_options`). Returns the installed pair in `runtime_info`'s
+/// shape. Unconditional: the "is there anything to do" decision is
+/// `Microsandbox.install`'s. Never touches the backend, so a forked child does
+/// not take the inherited one over here (see `runtime::block_on_runtime_install`).
+fn install_runtime(opts: RHash) -> Result<RHash, Error> {
+    let options = install_options(opts)?;
+    let config = effective_runtime_config("{}").map_err(error::to_ruby)?;
+    let runtime = runtime::block_on_runtime_install(async move {
+        microsandbox::setup::install_runtime(&config, options).await
+    })?
+    .map_err(error::to_ruby)?;
+    resolved_runtime_to_hash(&runtime)
+}
+
+/// `install_runtime`'s option Hash decoded through upstream's binding wire.
+fn install_options(opts: RHash) -> Result<microsandbox::setup::InstallOptions, Error> {
+    let mut install_opts = serde_json::Map::new();
+    for key in [
+        "source",
+        "source_path",
+        "version",
+        "expected_archive_sha256",
+    ] {
+        if let Some(value) = conv::opt_string(opts, key)? {
+            install_opts.insert(key.into(), value.into());
+        }
+    }
+    if conv::opt_bool(opts, "force")? {
+        install_opts.insert("force".into(), true.into());
+    }
+    if let Some(verify) = conv::opt::<bool>(opts, "verify")? {
+        install_opts.insert("verify".into(), verify.into());
+    }
+    microsandbox::setup::binding_install_options(
+        &serde_json::Value::Object(install_opts).to_string(),
+    )
+    .map_err(error::to_ruby)
+}
+
+/// The runtime configuration the active local backend captured when it was
+/// built (building the default backend now if nothing has yet). `None` for a
+/// non-local backend. Immutable for that backend's lifetime: unlike
+/// `effective_runtime_config`, later changes to the environment or the config
+/// file do not reach it.
+fn captured_local_config() -> Result<Option<microsandbox::config::GlobalConfig>, Error> {
+    backend::ensure_this_process_backend()?;
+    let backend = microsandbox::default_backend();
+    Ok(backend.as_local().map(|local| local.config().clone()))
+}
+
+fn require_captured_local_config() -> Result<microsandbox::config::GlobalConfig, Error> {
+    captured_local_config()?.ok_or_else(|| error::local_only("ensure_runtime!"))
+}
+
+/// `runtime_info` resolved from the local backend's captured configuration:
+/// the pair `create` will launch. Same Hash and errors as `runtime_info`.
+fn backend_runtime_info() -> Result<RHash, Error> {
+    let config = require_captured_local_config()?;
+    let runtime = microsandbox::setup::resolve_runtime(&config).map_err(error::to_ruby)?;
+    resolved_runtime_to_hash(&runtime)
+}
+
+/// `runtime_home_pair` of the local backend's captured configuration: the
+/// pair a bootstrap install writes.
+fn backend_runtime_home_pair() -> Result<(String, String), Error> {
+    Ok(home_pair_of(&require_captured_local_config()?))
+}
+
+/// The first-use bootstrap's install (`Microsandbox.ensure_runtime!`): into
+/// the home of the configuration the local backend captured, never into one
+/// read afresh, so a change to `MSB_HOME`/`MSB_PATH` after the decision cannot
+/// redirect the write. `expected_msb` is the home `msb` path the decision was
+/// made for (`backend_runtime_home_pair`); a backend rebuilt in between with
+/// another home is refused. `opts` as `install_runtime`. The explicit
+/// `Microsandbox.install` keeps using `install_runtime` (ambient, backend-free).
+fn install_backend_runtime(expected_msb: String, opts: RHash) -> Result<RHash, Error> {
+    let options = install_options(opts)?;
+    let config = require_captured_local_config()?;
+    let (msb, _) = home_pair_of(&config);
+    if msb != expected_msb {
+        return Err(error::to_ruby(
+            microsandbox::MicrosandboxError::InvalidConfig(format!(
+                "the local backend changed during the runtime bootstrap: it now installs to \
+                 {msb}, not the {expected_msb} the bootstrap checked; retry"
+            )),
+        ));
+    }
+    let runtime = runtime::block_on_runtime_install(async move {
+        microsandbox::setup::install_runtime(&config, options).await
+    })?
+    .map_err(error::to_ruby)?;
+    resolved_runtime_to_hash(&runtime)
+}
+
+/// Customizable install. `opts`: base_dir (the runtime home to install into),
+/// version (the release to download), force (replace a complete installation —
+/// repairs a corrupt one; without it a complete pair in the home is kept, as
+/// with `install`), skip_verify. Built on upstream's language-SDK
+/// bindings (`binding_runtime_config` / `binding_install_options`), the same
+/// wire the official SDKs use.
 fn setup(opts: RHash) -> Result<(), Error> {
-    use microsandbox::setup::Setup;
-    let base_dir = conv::opt_string(opts, "base_dir")?;
-    let version = conv::opt_string(opts, "version")?;
-    let skip_verify = conv::opt_bool(opts, "skip_verify")?;
-    let force = conv::opt_bool(opts, "force")?;
-    // `Setup` uses a typed-builder whose `strip_option` setters change the type
-    // on each call, so optional fields can't be set conditionally on one binding
-    // — branch on presence instead (matching the Node binding).
-    let setup = match (base_dir, version) {
-        (Some(d), Some(v)) => Setup::builder()
-            .base_dir(d)
-            .version(v)
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-        (Some(d), None) => Setup::builder()
-            .base_dir(d)
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-        (None, Some(v)) => Setup::builder()
-            .version(v)
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-        (None, None) => Setup::builder()
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-    };
+    let mut runtime_cfg = serde_json::Map::new();
+    if let Some(dir) = conv::opt_string(opts, "base_dir")? {
+        runtime_cfg.insert("home".into(), dir.into());
+    }
+    let mut install_opts = serde_json::Map::new();
+    if let Some(version) = conv::opt_string(opts, "version")? {
+        install_opts.insert("version".into(), version.into());
+    }
+    if conv::opt_bool(opts, "force")? {
+        install_opts.insert("force".into(), true.into());
+    }
+    if conv::opt_bool(opts, "skip_verify")? {
+        install_opts.insert("verify".into(), false.into());
+    }
+    let force = install_opts.contains_key("force");
+    let config = effective_runtime_config(&serde_json::Value::Object(runtime_cfg).to_string())
+        .map_err(error::to_ruby)?;
+    // As `install`: a complete pair in the target home is kept unless forced.
+    if !force && home_runtime_complete(&config) {
+        return Ok(());
+    }
+    let options = microsandbox::setup::binding_install_options(
+        &serde_json::Value::Object(install_opts).to_string(),
+    )
+    .map_err(error::to_ruby)?;
     // Backend-free, like `install`.
-    runtime::block_on_runtime_install(setup.install())?.map_err(error::to_ruby)
+    runtime::block_on_runtime_install(async move {
+        microsandbox::setup::install_runtime(&config, options)
+            .await
+            .map(|_| ())
+    })?
+    .map_err(error::to_ruby)
 }
 
-/// Whether the `msb` runtime + `libkrunfw` are installed and resolvable.
+/// Whether a complete `msb` + `libkrunfw` pair resolves from any source the
+/// local backend would use (environment, SDK slots, config, home, packaged).
+/// Presence only: it says nothing about the version (see `Microsandbox.ensure_runtime!`).
+/// A configuration that cannot be loaded counts as "not installed".
 fn is_installed() -> bool {
-    microsandbox::setup::is_installed()
+    effective_runtime_config("{}")
+        .map(|config| microsandbox::setup::is_runtime_installed(&config))
+        .unwrap_or(false)
 }
 
 /// Override the resolved `msb` runtime path (SDK tier of the resolver).
@@ -120,6 +325,56 @@ fn resolved_msb_path() -> Result<String, Error> {
         .ok_or_else(|| error::local_only("runtime_path"))?;
     let path = local.config().resolve_msb_path().map_err(error::to_ruby)?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// One side of `verify_backend_runtime_config`'s comparison: a configuration's
+/// runtime home and the pair it resolves (or the resolver's error, rendered).
+fn runtime_selection(config: &microsandbox::config::GlobalConfig) -> (std::path::PathBuf, String) {
+    let pair = match microsandbox::setup::resolve_runtime(config) {
+        Ok(runtime) => format!(
+            "msb {} with libkrunfw {}",
+            runtime.msb_path.display(),
+            runtime.libkrunfw_path.display()
+        ),
+        Err(error) => format!("no runtime ({error})"),
+    };
+    (config.home(), pair)
+}
+
+/// Refuse to bootstrap a runtime the active local backend would not launch.
+/// The backend captures its configuration (runtime home, `MSB_PATH`,
+/// `MSB_LIBKRUNFW_PATH`, the SDK slots, the config file) once, when it is
+/// first built — this call builds it if nothing has yet — while `runtime_info`,
+/// `runtime_home_pair` and `install_runtime` read the configuration afresh.
+/// When the two disagree on the home or the resolved pair, the readiness
+/// check and any install would target a runtime `create` does not use, so
+/// this raises `InvalidConfigError` instead; when they agree, every later
+/// bootstrap decision is the backend's. A non-local backend has nothing to
+/// compare.
+fn verify_backend_runtime_config() -> Result<(), Error> {
+    backend::ensure_this_process_backend()?;
+    let backend = microsandbox::default_backend();
+    let Some(local) = backend.as_local() else {
+        return Ok(());
+    };
+    let current = effective_runtime_config("{}").map_err(error::to_ruby)?;
+    let (captured_home, captured_pair) = runtime_selection(local.config());
+    let (current_home, current_pair) = runtime_selection(&current);
+    if captured_home == current_home && captured_pair == current_pair {
+        return Ok(());
+    }
+    Err(error::to_ruby(
+        microsandbox::MicrosandboxError::InvalidConfig(format!(
+            "the runtime configuration changed after this process's local backend was created: \
+         the backend uses runtime home {} and {captured_pair}, but the current configuration \
+         selects runtime home {} and {current_pair}. The backend reads MSB_HOME, MSB_PATH, \
+         MSB_LIBKRUNFW_PATH and the config file once, when it is first used; restore the \
+         earlier setting, or call Microsandbox.set_default_backend(:local) to rebuild it \
+         from the current configuration",
+            captured_home.display(),
+            current_home.display()
+        )),
+    ))
 }
 
 /// This process's fork generation (see `runtime::ProcessIdentity`): how many
@@ -172,7 +427,10 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     let native = module.define_module("Native")?;
 
     native.define_singleton_method("version", function!(version, 0))?;
-    native.define_singleton_method("install", function!(install, 0))?;
+    native.define_singleton_method("runtime_info", function!(runtime_info, 0))?;
+    native.define_singleton_method("msb_version", function!(msb_version, 1))?;
+    native.define_singleton_method("runtime_home_pair", function!(runtime_home_pair, 0))?;
+    native.define_singleton_method("install_runtime", function!(install_runtime, 1))?;
     native.define_singleton_method("setup", function!(setup, 1))?;
     native.define_singleton_method("installed?", function!(is_installed, 0))?;
     native.define_singleton_method("set_runtime_msb_path", function!(set_runtime_msb_path, 1))?;
@@ -181,6 +439,19 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
         function!(set_runtime_libkrunfw_path, 1),
     )?;
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
+    native.define_singleton_method(
+        "verify_backend_runtime_config",
+        function!(verify_backend_runtime_config, 0),
+    )?;
+    native.define_singleton_method("backend_runtime_info", function!(backend_runtime_info, 0))?;
+    native.define_singleton_method(
+        "backend_runtime_home_pair",
+        function!(backend_runtime_home_pair, 0),
+    )?;
+    native.define_singleton_method(
+        "install_backend_runtime",
+        function!(install_backend_runtime, 2),
+    )?;
     native.define_singleton_method("all_sandbox_metrics", function!(all_sandbox_metrics, 0))?;
     native.define_singleton_method("fork_generation", function!(fork_generation, 0))?;
     native.define_singleton_method("fork_identity_equal", function!(fork_identity_equal, 4))?;
@@ -196,6 +467,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     volume::define(ruby, &native)?;
     agent::define(ruby, &native)?;
     ssh::define(ruby, &native)?;
+    storage::define(ruby, &native)?;
 
     Ok(())
 }

@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
-# A fake `msb sandbox` runtime + agent relay, for driving the Ruby SDK's LOCAL
-# backend with no microVM. It is exec'd by the generated `fake_msb` script (see
-# fake_runtime.rb), which has already printed the startup JSON on stdout.
+# A fake `msb machine` runtime + agent relay, for driving the Ruby SDK's LOCAL
+# backend with no microVM. It is exec'd by the generated `fake_msb.sh` script
+# (see fake_runtime.rb), which has already printed the startup JSON on the
+# startup fd or stdout. The argv is the machine contract's visible labels
+# (`machine [--restore] [--<log level>] --name <n> --sandbox-id <id> ...`); it
+# is logged so a spec can check how the core launched the runtime.
 #
 #   * reads the LaunchConfig JSON the SDK hands over on fd 96 to learn the agent
 #     socket path
@@ -51,7 +54,14 @@ FS_ACK_DELAY = ENV["FAKE_RELAY_FS_ACK_DELAY"].to_f
 
 launch = JSON.parse(IO.for_fd(CONFIG_FD, autoclose: false).read)
 sock_path = launch.fetch("agent_sock")
-log "started; args=#{ARGV.first(5).inspect} agent_sock=#{sock_path}"
+# The machine contract hands the runtime the sandbox's lifecycle lock on fd 99;
+# it must stay open for the runtime's whole life (exec keeps it).
+lock_fd = begin
+  IO.for_fd(99, autoclose: false).stat && "open"
+rescue SystemCallError
+  "closed"
+end
+log "started; args=#{JSON.generate(ARGV)} agent_sock=#{sock_path} lifecycle_lock_fd=#{lock_fd}"
 FileUtils.mkdir_p(File.dirname(sock_path))
 File.unlink(sock_path) if File.exist?(sock_path)
 server = UNIXServer.new(sock_path)
