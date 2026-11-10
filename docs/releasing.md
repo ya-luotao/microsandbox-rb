@@ -24,7 +24,7 @@ or credential setup is needed.
    everywhere it is named:
    - `ext/microsandbox/Cargo.toml` — the `tag = "vX.Y.Z"` on **all three**
      upstream git deps (`microsandbox`, `microsandbox-network`,
-     `microsandbox-runtime`);
+     `microsandbox-utils`);
    - `lib/microsandbox/version.rb` — `Microsandbox::RUNTIME_VERSION`;
    - `binaries/lib/microsandbox/binaries.rb` —
      `Microsandbox::Binaries::RUNTIME_VERSION`;

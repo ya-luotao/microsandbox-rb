@@ -194,7 +194,9 @@ RSpec.describe "argument guards and cleanup semantics" do
     it "runs the installer once when several threads hit a first create together" do
       allow(Microsandbox).to receive(:ensure_runtime!).and_call_original
       # Missing runtime: the branch that installs (and warns once).
-      allow(Microsandbox).to receive(:installed?).and_return(false)
+      allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
+      allow(Microsandbox::Native).to receive(:runtime_home_pair).and_return(["/h/bin/msb", "/h/lib/libkrunfw"])
+      stub_const("ENV", ENV.to_h.except("MICROSANDBOX_NO_AUTO_INSTALL"))
       allow(Microsandbox).to receive(:warn)
       installs = 0
       allow(Microsandbox).to receive(:install) do

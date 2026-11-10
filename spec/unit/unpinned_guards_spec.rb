@@ -115,13 +115,30 @@ RSpec.describe "guards no other spec pins" do
   end
 
   describe "Microsandbox.setup option mapping" do
-    before { allow(Microsandbox::Native).to receive(:setup) }
+    before do
+      allow(Microsandbox::Native).to receive(:setup)
+      allow(Microsandbox).to receive(:warn)
+    end
 
     it "forwards base_dir/version/force/skip_verify" do
       Microsandbox.setup(base_dir: "/opt/msb", version: "0.6.18", force: true, skip_verify: true)
       expect(Microsandbox::Native).to have_received(:setup).with(
         "base_dir" => "/opt/msb", "version" => "0.6.18", "force" => true, "skip_verify" => true
       )
+    end
+
+    # The v0.7 launch contract accepts only an msb of exactly the SDK's runtime.
+    it "warns that any other runtime version will be refused at every start" do
+      Microsandbox.setup(version: "0.6.18")
+      expect(Microsandbox).to have_received(:warn).with(
+        a_string_matching(/setup\(version: "0\.6\.18"\).*only runtime #{Regexp.escape(Microsandbox::RUNTIME_VERSION.delete_prefix("v"))}.*refused at every local sandbox start/)
+      )
+    end
+
+    it "does not warn for the SDK's own runtime version (with or without the v)" do
+      Microsandbox.setup(version: Microsandbox::RUNTIME_VERSION)
+      Microsandbox.setup(version: Microsandbox::RUNTIME_VERSION.delete_prefix("v"))
+      expect(Microsandbox).not_to have_received(:warn)
     end
 
     it "sends an empty Hash by default (no accidental force/skip)" do
@@ -140,7 +157,8 @@ RSpec.describe "guards no other spec pins" do
     before do
       allow(Microsandbox).to receive(:ensure_runtime!).and_call_original
       # Missing runtime, so "not disabled" is observable as an install.
-      allow(Microsandbox).to receive(:installed?).and_return(false)
+      allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
+      allow(Microsandbox::Native).to receive(:runtime_home_pair).and_return(["/h/bin/msb", "/h/lib/libkrunfw"])
       allow(Microsandbox).to receive(:install)
       allow(Microsandbox).to receive(:warn)
     end

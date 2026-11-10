@@ -21,6 +21,7 @@
 require "fileutils"
 require "json"
 require "microsandbox"
+require_relative "fake_runtime/fake_runtime"
 
 $stdout.sync = true
 
@@ -57,17 +58,19 @@ module ForkProbe
   end
 
   # Put a runtime where `install` and `setup` look for it (MSB_HOME), so that
-  # they return without downloading anything: an `msb` that reports this gem's
-  # runtime version, and a file named like the platform's libkrunfw. The spec
-  # also points every proxy variable at a closed port, so an install that
-  # misses this and tries to download fails at once instead.
+  # they return without downloading anything: an `msb` carrying this gem's
+  # runtime version in its `.msbver` section (the fake runtime's compiled stub;
+  # `install` reads the embedded version, a `#!` script has none), and a file
+  # named like the platform's libkrunfw. The spec also points every proxy
+  # variable at a closed port, so an install that misses this and tries to
+  # download fails at once instead.
   def fake_installed_runtime
     home = ENV.fetch("MSB_HOME")
     bin = File.join(home, "bin")
     lib = File.join(home, "lib")
     FileUtils.mkdir_p([bin, lib])
     msb = File.join(bin, "msb")
-    File.write(msb, "#!/bin/sh\necho 'msb #{Microsandbox::RUNTIME_VERSION.delete_prefix("v")}'\n")
+    FileUtils.cp(FakeRuntime.send(:stub_binary), msb)
     File.chmod(0o755, msb)
     # libkrunfw's ABI 5 / 5.6.1, as named by the core (microsandbox_utils::libkrunfw_filename).
     firmware = RUBY_PLATFORM.include?("darwin") ? "libkrunfw.5.dylib" : "libkrunfw.so.5.6.1"

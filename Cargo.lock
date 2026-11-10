@@ -3417,6 +3417,7 @@ dependencies = [
  "magnus",
  "microsandbox",
  "microsandbox-network",
+ "microsandbox-utils",
  "rb-sys",
  "serde_json",
  "tokio",

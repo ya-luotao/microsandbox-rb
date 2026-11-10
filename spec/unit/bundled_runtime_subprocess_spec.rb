@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "open3"
 require "rbconfig"
 require "tmpdir"
@@ -99,6 +100,51 @@ RSpec.describe "bundled runtime activation (subprocess)" do
     end
   end
 
+  # Child-side probe: the resolved pair and its (gem-classified) origin.
+  let(:info_report) do
+    'require "microsandbox"; require "json"; i = Microsandbox.runtime_info; ' \
+      "print JSON.generate([i.origin, i.msb_path, i.libkrunfw_path])"
+  end
+
+  it "claims both SDK slots: the pair is the companion's, origin :sdk_package" do
+    Dir.mktmpdir do |dir|
+      msb = fake_companion(dir)
+      out, err, status = run_child(dir, info_report)
+      expect(status).to be_success, err
+      expect(JSON.parse(out)).to eq(["sdk_package", msb, File.join(dir, "vendor", "lib", "libkrunfw.5.dylib")])
+    end
+  end
+
+  # The resolver prefers the library slot over the library next to an
+  # MSB_PATH runtime, so with MSB_PATH set the companion leaves that slot free.
+  it "pairs an MSB_PATH runtime with its own library, not the companion's (origin :environment)" do
+    Dir.mktmpdir do |dir|
+      fake_companion(dir)
+      msb = custom_pair(dir)
+      out, err, status = run_child(dir, info_report, "MSB_PATH" => msb)
+      expect(status).to be_success, err
+      origin, resolved_msb, lib = JSON.parse(out)
+      expect([origin, resolved_msb]).to eq(["environment", msb])
+      expect(File.realpath(lib)).to eq(File.realpath(Dir[File.join(dir, "custom", "lib", "libkrunfw*")].first))
+    end
+  end
+
+  it "classifies a relative MSB_PATH as :environment" do
+    Dir.mktmpdir do |dir|
+      custom_pair(dir)
+      gems = File.join(dir, "empty-gem-home")
+      FileUtils.mkdir_p(gems)
+      env = {"MSB_PATH" => "custom/bin/msb", "RUBYOPT" => nil, "BUNDLE_GEMFILE" => nil, "BUNDLER_SETUP" => nil,
+             "MICROSANDBOX_NO_AUTO_INSTALL" => "1", "GEM_HOME" => gems, "GEM_PATH" => gems}
+      out, err, status = Open3.capture3(env, RbConfig.ruby, "-I", lib_dir, "-e", info_report, chdir: dir)
+      expect(status).to be_success, err
+      origin, msb = JSON.parse(out)
+      expect(origin).to eq("environment")
+      # The core anchors it against the working directory.
+      expect(File.realpath(msb)).to eq(File.realpath(File.join(dir, "custom", "bin", "msb")))
+    end
+  end
+
   it "refuses a companion gem built for another runtime and says so" do
     Dir.mktmpdir do |dir|
       msb = fake_companion(dir, runtime_version: "v0.0.1")
@@ -114,7 +160,9 @@ RSpec.describe "bundled runtime activation (subprocess)" do
       msb = fake_companion(dir)
       code = <<~RUBY
         require "microsandbox"
-        Microsandbox.define_singleton_method(:install) { raise "install must not run" }
+        Microsandbox.define_singleton_method(:install) { |**| raise "install must not run" }
+        Microsandbox::Native.define_singleton_method(:install_runtime) { |*| raise "install_runtime must not run" }
+        Microsandbox.define_singleton_method(:warn) { |*args| raise "unexpected warning: \#{args.inspect}" }
         Microsandbox.ensure_runtime!
         print Microsandbox.runtime_path
       RUBY

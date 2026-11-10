@@ -61,6 +61,11 @@ libc = "0.2"
 # this extension (the SDK depends on it the same way).
 microsandbox = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.7.14", default-features = false, features = ["cloud", "keyring", "local", "net", "ssh"] }
 microsandbox-network = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.7.14", default-features = false }
+# `microsandbox-utils` is a direct dependency only for `msb_binary_filename` /
+# `libkrunfw_filename`, which the SDK does not re-export: the runtime-home
+# self-check (`Native.runtime_home_pair`) must name exactly the files the
+# resolver's `runtime_in_home` expects. Already in the dependency graph.
+microsandbox-utils = { git = "https://github.com/superradcompany/microsandbox", tag = "v0.7.14" }
 
 # Async core bridged to Ruby's synchronous API via a blocking tokio runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

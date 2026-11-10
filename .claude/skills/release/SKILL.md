@@ -29,7 +29,7 @@ version with the user before pushing the tag.
 3. **Upstream runtime tag — only if this release adopts a new upstream runtime.** This is a
    SEPARATE axis from the gem version. If adopting a new runtime, update the `tag = "vX.Y.Z"` on
    ALL THREE upstream git deps in `ext/microsandbox/Cargo.toml` — `microsandbox`,
-   `microsandbox-network` and `microsandbox-runtime` — to the same tag, then ALSO update
+   `microsandbox-network` and `microsandbox-utils` — to the same tag, then ALSO update
    `Microsandbox::RUNTIME_VERSION` in `lib/microsandbox/version.rb` and
    `Microsandbox::Binaries::RUNTIME_VERSION` in `binaries/lib/microsandbox/binaries.rb` to match
    (`version_spec.rb` asserts both constants equal the Cargo tag), commit the new release's

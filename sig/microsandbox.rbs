@@ -15,9 +15,10 @@ module Microsandbox
 
   def self.version: () -> String
   def self.runtime_version: () -> String
-  def self.install: () -> nil
+  def self.install: (?force: bool) -> nil
   def self.setup: (?base_dir: String?, ?version: String?, ?force: bool, ?skip_verify: bool) -> nil
   def self.installed?: () -> bool
+  def self.runtime_info: () -> RuntimeInfo
   def self.ensure_runtime!: () -> nil
   def self.runtime_path: () -> String
   def self.runtime_path=: (String path) -> void
@@ -625,6 +626,17 @@ module Microsandbox
     def profile: () -> String?
     def local?: () -> bool
     def cloud?: () -> bool
+  end
+
+  # The resolved host runtime pair (runtime v0.7).
+  class RuntimeInfo
+    def initialize: (Hash[String, untyped] data) -> void
+    attr_reader msb_path: String
+    attr_reader libkrunfw_path: String
+    def origin: () -> Symbol
+    def version: () -> String?
+    def legacy?: () -> bool
+    def matches_sdk?: () -> bool
   end
 
   # Host-side secret source (runtime v0.6.17): only `env` exists.

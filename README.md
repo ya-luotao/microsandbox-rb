@@ -43,18 +43,21 @@ gem compiles the Rust extension, so the first install takes a few minutes.
   Precompiled extension gems are not published; see
   [docs/releasing.md](docs/releasing.md).
 - The `msb` runtime and `libkrunfw` firmware, from the companion gem above or
-  downloaded on first use. Provision ahead of time (a Docker layer, an
-  air-gapped host) with:
+  downloaded on first use. The runtime must be exactly the version the SDK
+  embeds (`Microsandbox::RUNTIME_VERSION`); an older one left in
+  `~/.microsandbox` is replaced on first use. Provision ahead of time (a Docker
+  layer, an air-gapped host) with:
 
 ```ruby
-Microsandbox.install unless Microsandbox.installed?
+Microsandbox.install               # no-op when the home already holds this runtime
+Microsandbox.runtime_info          # => which msb + libkrunfw, from where, which version
 ```
 
 The companion gem ships one platform gem each for `arm64-darwin`,
 `x86_64-linux-gnu`, and `aarch64-linux-gnu`, must match the SDK version, and is
 found automatically at `require "microsandbox"`. See
-[docs/runtime.md](docs/runtime.md) for the resolution order, `MSB_PATH`, and
-disabling the first-use download.
+[docs/runtime.md](docs/runtime.md) for the resolution order, the exact-version
+rule, `MSB_PATH`, and disabling the first-use download.
 
 ## Quick start
 

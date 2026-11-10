@@ -65,13 +65,13 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the p
    change bumps the minor and a fix bumps the patch. See the Versioning section of `README.md` for
    the gem→runtime map.
 2. **Upstream runtime tag** — the THREE upstream git deps in `ext/microsandbox/Cargo.toml` —
-   `microsandbox`, `microsandbox-network`, and `microsandbox-runtime` (the last one exists only to
-   turn on the prebuilt-agentd feature) — are pinned to a `tag` (see
+   `microsandbox`, `microsandbox-network`, and `microsandbox-utils` (the last one only for the
+   runtime-home file names, `msb_binary_filename`/`libkrunfw_filename`) — are pinned to a `tag` (see
    `Microsandbox::RUNTIME_VERSION` for the current pin — the hardcoded value here kept going
    stale). This tracks the upstream runtime, NOT the gem version. Bump it only when adopting a new
    upstream release, keep all three deps on the same tag, AND update `Microsandbox::RUNTIME_VERSION`
    in `lib/microsandbox/version.rb` to match — `spec/unit/version_spec.rb` asserts the constant
-   equals the tag on all three deps, so none can silently go stale.
+   equals the tag on every upstream git dep, so none can silently go stale.
 3. **Companion binaries gem** — `Microsandbox::Binaries::VERSION`
    (`binaries/lib/microsandbox/binaries.rb`) MUST equal `Microsandbox::VERSION`, and
    `Microsandbox::Binaries::RUNTIME_VERSION` MUST equal `Microsandbox::RUNTIME_VERSION`.

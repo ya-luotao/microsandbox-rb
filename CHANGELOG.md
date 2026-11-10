@@ -22,11 +22,21 @@ hostname enforcement on by default. Migration notes are below.
   while rb-sys's bindgen step fails on the 3.2 headers. CI now runs Ruby 3.3
   and 3.4 on `ubuntu-latest` and `macos-15`.
 - **The runtime must be exactly `v0.7.14`.** The core reads the version
-  embedded in the `msb` executable and refuses a runtime that does not
-  advertise protected sandbox state ("upgrade required … does not advertise
-  protected sandbox state"); a `0.6.x` runtime left in `~/.microsandbox` or
-  named by `MSB_PATH` is refused at launch. `msb` wrapper scripts (`#!`) are
-  treated as legacy runtimes.
+  embedded in the `msb` executable and refuses every other runtime at launch
+  ("does not advertise protected sandbox state" for a `0.6.x` or older `0.7.x`
+  one). `msb` wrapper scripts (`#!`) carry no version and are refused too.
+  The first-use bootstrap is now version-aware: a stale runtime in the runtime
+  home is replaced (`install(force: true)`, with a warning), while a stale
+  runtime from `MSB_PATH`, `runtime_path=` or the config file is never
+  touched — the SDK warns that every local sandbox start will be refused.
+  With `MICROSANDBOX_NO_AUTO_INSTALL` nothing is installed or replaced, and a
+  missing runtime surfaces as `RuntimeNotInstalledError` from the operation.
+  A runtime home holding only one of `bin/msb` and `lib/<libkrunfw>` raises
+  `RuntimeIncompleteError` naming the files to delete.
+- **`Microsandbox.installed?` reports any complete runtime pair** (from
+  `MSB_PATH`, the binaries gem, configured paths or the runtime home), not
+  only one in `~/.microsandbox`, and says nothing about its version; see
+  `Microsandbox.runtime_info`. `msb` on `PATH` is no longer a runtime source.
 - **Secrets use the runtime `v0.7` vocabulary.** A spec takes `env:`, `value:`
   and a required, non-empty `allow:` list (exact hosts, `*.example.com`
   wildcards, or `"*"` for any host), plus `allow_placeholder_for:`,
@@ -71,6 +81,12 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Added
 
+- **`Microsandbox.runtime_info`** → `Microsandbox::RuntimeInfo`: the resolved
+  `msb` + `libkrunfw` pair, where it came from (`origin`: `:environment`,
+  `:sdk_package`, `:configuration`, `:home` or `:installed` — classified by the
+  SDK, see `docs/runtime.md`), and the version embedded in the `msb`
+  (`version`, `legacy?`, `matches_sdk?`). Reads files only.
+- **`Microsandbox.install(force: true)`** reinstalls the runtime into the home.
 - **Error classes for the v0.7 core variants**, mirroring the Python SDK:
   `RuntimeNotInstalledError` (`runtime-not-installed`),
   `RuntimeIncompleteError` (`runtime-incomplete` — e.g. an `MSB_PATH` with no
@@ -88,9 +104,25 @@ hostname enforcement on by default. Migration notes are below.
 - Execution flow control is fixed by the runtime: at most 128 executions per
   sandbox (exited streams with unread output included), 64 KiB of pending
   stdin, 1 MiB of unread output, 16 KiB chunks. See `docs/execution.md`.
-- `Microsandbox.install` and non-forced `Microsandbox.setup` keep a complete
-  runtime pair already in the target home, as documented: upstream's `v0.7`
-  installer would otherwise download the bundle before deciding.
+- `Microsandbox.install` checks the runtime home itself (the exact two files
+  the resolver expects there) and downloads only when the pair is missing or
+  another version; a current pair is kept, as documented. Non-forced
+  `Microsandbox.setup` keeps any complete pair in the target home, and
+  `setup(version:)` warns when the version is not the SDK's runtime.
+- The `microsandbox-rb-binaries` gem now claims the `libkrunfw` SDK slot as
+  well as the `msb` one (unless `MSB_PATH` is set when `microsandbox` is
+  required), so `Microsandbox.libkrunfw_path=` is a no-op with it, like
+  `runtime_path=`.
+
+### Fixed
+
+- On a runtime home where no install ever ran (the runtime came from
+  `MSB_PATH` or the binaries gem), creating a sandbox from a directory or disk
+  image failed with `No such file or directory`: runtime `v0.7.14` creates the
+  sandboxes directory only on the OCI path
+  ([superradcompany/microsandbox#2041](https://github.com/superradcompany/microsandbox/issues/2041)).
+  The SDK creates `<home>/sandboxes` before every local create once a runtime
+  resolves.
 
 ### Deprecated
 
@@ -117,8 +149,12 @@ hostname enforcement on by default. Migration notes are below.
   `MSB_LIBKRUNFW_PATH`).
 - Pass `strict: false` where a hostname-rule allow must keep working without
   an inspectable authority.
-- Upgrade or remove an older runtime in `~/.microsandbox`
-  (`Microsandbox.setup(force: true)`).
+- An older runtime in the runtime home is replaced on first use (or run
+  `Microsandbox.install` ahead of time). Point `MSB_PATH`, `runtime_path=` or
+  configured paths at a `v0.7.14` runtime yourself; with
+  `MICROSANDBOX_NO_AUTO_INSTALL`, provision `v0.7.14` out of band.
+- Replace any `installed?` check that meant "the home holds a runtime" with
+  `runtime_info` (and `#matches_sdk?`).
 
 ## [0.17.5] - 2026-10-27
 

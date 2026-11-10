@@ -51,6 +51,33 @@ use crate::stream::{LogStream, MetricsStream};
 /// bound, so a large finite value would still reach (and panic) the native
 /// layer; this keeps the native layer panic-free regardless of the Ruby layer,
 /// mirroring `agent::dur`.
+/// Workaround for runtime v0.7.14 (docs/runtime.md, "Known issues at the
+/// pinned runtime"): only the OCI-image path of a local create runs
+/// `create_dir_all` on the sandbox directory; the directory- and disk-image
+/// paths create `<sandboxes>/<name>` with a non-recursive mkdir, so on a
+/// fresh runtime home (no install ever ran there: the runtime came from
+/// `MSB_PATH` or the binaries gem) they fail with ENOENT. Create the
+/// sandboxes directory first, the same way the OCI path does (a plain
+/// `create_dir_all`, so the same mode: `0o777 & !umask`).
+///
+/// Upstream issue: https://github.com/superradcompany/microsandbox/issues/2041
+///
+/// Only for a local backend whose own captured configuration resolves a
+/// runtime pair: when nothing resolves, the create is about to fail with
+/// `RuntimeNotInstalledError` and must leave the home untouched. A no-op for
+/// a cloud backend and on the OCI path (the directory then already exists).
+fn prepare_local_sandboxes_dir() -> Result<(), Error> {
+    crate::backend::ensure_this_process_backend()?;
+    let backend = microsandbox::default_backend();
+    let Some(local) = backend.as_local() else {
+        return Ok(());
+    };
+    if microsandbox::setup::resolve_runtime(local.config()).is_err() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(local.sandboxes_dir()).map_err(|error| error::to_ruby(error.into()))
+}
+
 fn secs_to_duration(secs: f64) -> Result<Duration, Error> {
     Duration::try_from_secs_f64(secs).map_err(|e| {
         error::base_error(format!(
@@ -549,6 +576,7 @@ impl Sandbox {
     /// Create and boot a sandbox. `opts` is a string-keyed options Hash.
     fn create(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let b = Self::build_builder(name, opts)?;
+        prepare_local_sandboxes_dir()?;
         let inner = block_on(b.create())?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
@@ -559,6 +587,7 @@ impl Sandbox {
     /// Node `createWithPullProgress`.
     fn create_with_progress(name: String, opts: RHash) -> Result<PullSession, Error> {
         let b = Self::build_builder(name, opts)?;
+        prepare_local_sandboxes_dir()?;
         // `create_with_pull_progress` spawns a tokio task, so it must run inside
         // the runtime context even though the call itself is synchronous.
         let (handle, join) =
@@ -572,6 +601,7 @@ impl Sandbox {
     /// the combination with `replace`.
     fn connect_or_create(name: String, opts: RHash) -> Result<Sandbox, Error> {
         let b = Self::build_builder(name, opts)?;
+        prepare_local_sandboxes_dir()?;
         let inner = block_on(b.connect_or_create())?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }

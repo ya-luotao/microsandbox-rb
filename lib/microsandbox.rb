@@ -20,6 +20,7 @@ end
 
 require_relative "microsandbox/errors"
 require_relative "microsandbox/backend_info"
+require_relative "microsandbox/runtime_info"
 require_relative "microsandbox/exec_output"
 require_relative "microsandbox/exec_handle"
 require_relative "microsandbox/fs"
@@ -71,97 +72,150 @@ module Microsandbox
       RUNTIME_VERSION
     end
 
-    # Download and install the `msb` runtime + `libkrunfw` into
-    # `~/.microsandbox` (idempotent).
+    # Install the runtime this SDK was built for — `msb` + `libkrunfw` of
+    # upstream {RUNTIME_VERSION} — into the runtime home (`MSB_HOME`, default
+    # `~/.microsandbox`).
     #
     # This gem is SDK-only: nothing is provisioned at build/install time. The
     # runtime comes from the companion `microsandbox-rb-binaries` gem when it is
-    # installed (see {ensure_runtime!}); otherwise it is fetched into
-    # `~/.microsandbox` on first use. Call this explicitly to provision ahead of
-    # time (e.g. while baking a container image) so the first {Sandbox.create}
-    # doesn't pay the download. Not needed — and not used — when the binaries
-    # gem supplies the runtime.
+    # installed (see {ensure_runtime!}); otherwise it is fetched into the home
+    # on first use. Call this explicitly to provision ahead of time (e.g. while
+    # baking a container image) so the first {Sandbox.create} doesn't pay the
+    # download.
+    #
+    # Version-aware and idempotent. It checks the home itself — the exact two
+    # files the resolver expects there — whatever `MSB_PATH` or a configured
+    # path would select instead:
+    #
+    # - both present and `msb` is exactly {RUNTIME_VERSION}: nothing to do (no
+    #   download), unless +force+;
+    # - absent: download and install;
+    # - present but another version (a pre-0.7 `msb` carries none): replace both;
+    # - only one of the two present: raise — the installer never repairs a
+    #   partial home; the message names the files to delete.
+    #
+    # @param force [Boolean] reinstall even when the home is already current
     # @return [nil]
-    def install
-      RUNTIME_SETUP_LOCK.synchronize { Native.install }
+    # @raise [RuntimeIncompleteError] when the home holds only half of the pair
+    def install(force: false)
+      RUNTIME_SETUP_LOCK.synchronize do
+        msb, lib = Native.runtime_home_pair
+        case home_runtime_state(msb, lib)
+        when :partial then raise RuntimeIncompleteError, partial_home_message(msb, lib)
+        when :absent then Native.install_runtime({})
+        when :stale then Native.install_runtime({"force" => true})
+        when :current then Native.install_runtime({"force" => true}) if force
+        end
+      end
       nil
     end
 
-    # Customizable install via the core `Setup` builder. Like {install} but with
+    # Customizable install via upstream's installer. Like {install} but with
     # control over where and what to install — mirrors the Node `Setup` builder.
+    # Presence-only: a complete pair already in the target home is kept unless
+    # +force+, whatever its version.
     #
     # @param base_dir [String, nil] install root (default `~/.microsandbox`)
-    # @param version [String, nil] pin the runtime version to download
+    # @param version [String, nil] the runtime release to download. Runtime
+    #   v0.7 launches only an `msb` of exactly {RUNTIME_VERSION}: any other
+    #   version is refused at every local sandbox start, so this warns.
     # @param force [Boolean] re-download even if binaries already exist — the way
-    #   to repair a corrupt/incomplete `~/.microsandbox`
+    #   to repair a corrupt `~/.microsandbox`
     # @param skip_verify [Boolean] skip the post-install verification step
     # @return [nil]
     def setup(base_dir: nil, version: nil, force: false, skip_verify: false)
       opts = {}
       opts["base_dir"] = base_dir.to_s if base_dir
-      opts["version"] = version.to_s if version
+      if version
+        opts["version"] = version.to_s
+        unless version.to_s.delete_prefix("v") == sdk_runtime_version
+          warn "[microsandbox] setup(version: #{version.to_s.inspect}): this SDK launches only runtime " \
+               "#{sdk_runtime_version}; a #{version.to_s.delete_prefix("v")} runtime will be refused " \
+               "at every local sandbox start"
+        end
+      end
       opts["force"] = true if force
       opts["skip_verify"] = true if skip_verify
       RUNTIME_SETUP_LOCK.synchronize { Native.setup(opts) }
       nil
     end
 
-    # @return [Boolean] whether the runtime is installed and resolvable
+    # Whether a complete `msb` + `libkrunfw` pair resolves from any source the
+    # local backend would use (`MSB_PATH`, the binaries gem, configured paths,
+    # the runtime home). Presence only: says nothing about the version — see
+    # {runtime_info} and {RuntimeInfo#matches_sdk?}.
+    # @return [Boolean]
     def installed?
       Native.installed?
     end
 
-    # Ensure the `msb` runtime + `libkrunfw` are present *and version-matched*,
-    # provisioning them on first use if not. Called automatically by
-    # {Sandbox.create}/{Sandbox.start} so a freshly installed gem gets a working
-    # runtime without a manual {install} step.
+    # The runtime pair local sandboxes would launch with, and where it came
+    # from. Reads files and the environment only (nothing is downloaded,
+    # created or run); independent of the selected backend.
+    # @return [RuntimeInfo]
+    # @raise [RuntimeNotInstalledError] when no pair resolves from any source
+    # @raise [RuntimeIncompleteError] when the selected source is partial or
+    #   unpaired (e.g. `MSB_PATH` with no `libkrunfw` beside it)
+    def runtime_info
+      data = Native.runtime_info
+      RuntimeInfo.new(data.merge("origin" => classify_runtime_origin(data)))
+    end
+
+    # Make sure local sandboxes can start: the runtime pair resolves and its
+    # `msb` is exactly the version this SDK was built for (runtime v0.7 refuses
+    # every other one at launch). Called automatically by {Sandbox.create},
+    # {Sandbox.start} and the other calls that boot a microVM, so a freshly
+    # installed gem gets a working runtime without a manual {install} step.
     #
-    # Runs at most once per process. When the companion `microsandbox-rb-binaries`
-    # gem supplies the runtime (it was activated at load time and its `msb` is
-    # what the resolver now returns from {runtime_path}), nothing is downloaded
-    # or touched in `~/.microsandbox` — the bundled binaries are already the
-    # matching version. Opt out of the download by setting
-    # `MICROSANDBOX_NO_AUTO_INSTALL` (e.g. air-gapped hosts that provision the
-    # runtime out of band); the runtime is then left untouched and a missing or
-    # stale one surfaces at the operation itself.
+    # Runs at most once per process (successful outcomes are memoized):
     #
-    # NOTE (transitional): the v0.7 installer downloads the release bundle
-    # before it checks whether a complete pair is already installed, so this
-    # only calls {install} when {installed?} reports nothing resolvable. A
-    # version-aware bootstrap (replace a stale home runtime, refuse other
-    # mismatched sources) replaces this check.
+    # - cloud backend, or the binaries gem's runtime is the one selected:
+    #   nothing to do;
+    # - `MICROSANDBOX_NO_AUTO_INSTALL` set: never downloads or writes. A
+    #   mismatched runtime is reported with a warning; a missing or partial one
+    #   is left for the operation itself to raise;
+    # - nothing resolves: warn, then {install} into the runtime home;
+    # - the runtime home's own `msb` is another version: warn, then
+    #   `install(force: true)` replaces the pair;
+    # - another source (`MSB_PATH`, configured paths) is another version:
+    #   never touched — warn that every local start will be refused;
+    # - a partial pair: raise with the files to delete or the variable to set.
     # @return [nil]
+    # @raise [RuntimeIncompleteError] for a partial runtime (unless opted out)
     def ensure_runtime!
       return if @runtime_ready
       RUNTIME_SETUP_LOCK.synchronize do
         # Re-check under the lock: another thread may have finished meanwhile.
         return if @runtime_ready
-        # A cloud backend has no local msb/libkrunfw runtime to provision: skip the
-        # presence check and the first-use download entirely. Resolving the kind
-        # uses the same lazy env/profile/config ladder every operation already
-        # consults, so this adds no work for local hosts (the common case).
+        # A cloud backend has no local msb/libkrunfw runtime to provision.
         return if default_backend_kind == :cloud
-        # The binaries gem won the resolver: its vendored msb (and the libkrunfw
-        # beside it) are exactly the version this gem was built for, so there is
-        # nothing to verify or download. (If `MSB_PATH` overrides it, the user owns
-        # the runtime and we fall through to the existing behaviour.)
+        # The binaries gem won the resolver: its vendored pair is exactly the
+        # version this gem was built for, so there is nothing to check.
         if bundled_runtime_active?
           @runtime_ready = true
           return
         end
-        # Opted out: the caller manages the runtime out of band, so don't fetch,
-        # verify, or repair it here. Memoize the decision (the env var is stable for
-        # the process); the operation resolves `msb` itself and surfaces any problem.
+        info = bootstrap_runtime_info
+        return if @runtime_ready # opted out with an incomplete runtime
         if auto_install_disabled?
-          @runtime_ready = true
-          return
-        end
-
-        unless installed?
+          # Opted out: the caller manages the runtime out of band. Never write;
+          # a missing runtime surfaces at the operation itself.
+          warn_runtime_mismatch(info) if info && !info.matches_sdk?
+        elsif info.nil?
           warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
-               "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip, " \
-               "or install the microsandbox-rb-binaries gem to ship it with your bundle)..."
+               "downloading runtime #{sdk_runtime_version} to #{File.dirname(Native.runtime_home_pair.first, 2)} " \
+               "(set MICROSANDBOX_NO_AUTO_INSTALL to skip, or install the microsandbox-rb-binaries gem " \
+               "to ship it with your bundle)..."
           install
+        elsif !info.matches_sdk?
+          if replaceable_home_runtime?(info)
+            warn "[microsandbox] runtime #{describe_runtime_version(info)} in #{File.dirname(info.msb_path, 2)} " \
+                 "is not the #{sdk_runtime_version} this SDK launches; replacing it " \
+                 "(set MICROSANDBOX_NO_AUTO_INSTALL to keep it)..."
+            install(force: true)
+          else
+            warn_runtime_mismatch(info)
+          end
         end
         @runtime_ready = true
       end
@@ -196,12 +250,19 @@ module Microsandbox
     # Override the `libkrunfw` shared-library path (SDK tier of the resolver,
     # below the `MSB_LIBKRUNFW_PATH` environment variable). Process-level and
     # set-once: a second call is silently ignored, and the env var still wins.
-    # Mirrors {runtime_path=} for libkrunfw.
+    # Mirrors {runtime_path=} for libkrunfw. The companion
+    # `microsandbox-rb-binaries` gem claims this slot too (unless `MSB_PATH` is
+    # set when `microsandbox` is required), which makes this a no-op.
     # @param path [String]
     # @return [void]
     # @raise [ArgumentError] for nil or an empty path (the slot cannot be cleared)
     def libkrunfw_path=(path)
       require_runtime_path!(:libkrunfw_path=, path)
+      if @bundled_libkrunfw_claimed && path.to_s != @bundled_libkrunfw_path
+        warn "[microsandbox] libkrunfw_path= ignored: the microsandbox-rb-binaries gem already " \
+             "claimed the set-once SDK slot (#{@bundled_libkrunfw_path}); set MSB_PATH (and " \
+             "MSB_LIBKRUNFW_PATH) to override it"
+      end
       Native.set_runtime_libkrunfw_path(path.to_s)
     end
 
@@ -360,6 +421,8 @@ module Microsandbox
     # @return [String, nil] the activated msb path
     def activate_bundled_runtime!
       @bundled_msb_path = nil
+      @bundled_libkrunfw_path = nil
+      @bundled_libkrunfw_claimed = false
       begin
         # Pin the lockstep version when RubyGems (not Bundler) picks the gem, so
         # a newer/older companion left around doesn't get activated over the
@@ -405,6 +468,16 @@ module Microsandbox
       end
       Native.set_runtime_msb_path(msb)
       @bundled_msb_path = msb
+      @bundled_libkrunfw_path = Binaries.libkrunfw_path
+      # Pair the library explicitly too (msb first: a library slot with no
+      # msb slot would pair a home msb with this library). Not when `MSB_PATH`
+      # is set: the resolver takes the library slot over the one next to an
+      # `MSB_PATH` runtime, which would pair that runtime with this library.
+      unless ENV.key?("MSB_PATH")
+        Native.set_runtime_libkrunfw_path(@bundled_libkrunfw_path)
+        @bundled_libkrunfw_claimed = true
+      end
+      msb
     rescue StandardError, ScriptError => e
       # ScriptError too: a corrupt or newer-syntax binaries.rb raises
       # SyntaxError (not a StandardError) out of `require`, and the optional
@@ -436,13 +509,114 @@ module Microsandbox
       raise ArgumentError, "#{setter} needs a non-empty path (the slot is set-once and cannot be cleared)"
     end
 
-    # Whether the binaries gem's msb is what the resolver actually returns — i.e.
-    # it was activated and nothing higher in the ladder (`MSB_PATH`) overrides it.
+    # Whether the binaries gem's pair is what the resolver actually returns —
+    # it was activated, nothing higher in the ladder (`MSB_PATH`) overrides it,
+    # and the library paired with its msb is its own.
     def bundled_runtime_active?
       return false unless @bundled_msb_path
-      runtime_path == @bundled_msb_path
+      info = runtime_info
+      info.origin == :sdk_package && same_path?(info.libkrunfw_path, @bundled_libkrunfw_path)
     rescue Microsandbox::Error
       false
+    end
+
+    # Runtime v0.7.14 layers `MSB_PATH` and the SDK path slots into the
+    # configuration before it resolves, so it reports both as `configuration`.
+    # Tell them apart by the resolved msb, in the precedence the layering uses
+    # (the environment wins over the slot). Every other origin is passed
+    # through untouched — `home` above all, which the forced reinstall keys on.
+    def classify_runtime_origin(data)
+      origin = data["origin"]
+      return origin unless origin == "configuration"
+      msb = data["msb_path"]
+      # `key?`, not non-empty: the core reads an empty MSB_PATH as set.
+      return "environment" if ENV.key?("MSB_PATH") && same_path?(msb, ENV["MSB_PATH"])
+      return "sdk_package" if @bundled_msb_path && same_path?(msb, @bundled_msb_path)
+      origin
+    end
+
+    # Whether two runtime paths name the same file: equal once expanded (the
+    # core makes a relative MSB_PATH absolute against the working directory),
+    # or with the same real path.
+    def same_path?(a, b)
+      return false if a.nil? || b.nil? || a.to_s.empty? || b.to_s.empty?
+      return true if File.expand_path(a) == File.expand_path(b)
+      File.realpath(a) == File.realpath(b)
+    rescue SystemCallError
+      false
+    end
+
+    # "0.7.14", the runtime version this SDK launches.
+    def sdk_runtime_version = RUNTIME_VERSION.delete_prefix("v")
+
+    # The state of the runtime home itself — the exact two files the resolver
+    # expects there (no glob: an unrelated `libkrunfw.backup` is not the
+    # library) — whatever a higher-priority source would select instead.
+    def home_runtime_state(msb, lib)
+      has_msb = File.file?(msb)
+      has_lib = File.file?(lib)
+      return :absent unless has_msb || has_lib
+      return :partial unless has_msb && has_lib
+      (home_msb_version(msb) == sdk_runtime_version) ? :current : :stale
+    end
+
+    # An unreadable home msb counts as stale: the installer replaces it.
+    def home_msb_version(msb)
+      Native.msb_version(msb)
+    rescue Microsandbox::Error
+      nil
+    end
+
+    def partial_home_message(msb, lib)
+      present, missing = [msb, lib].partition { |path| File.file?(path) }
+      "partial runtime installation in #{File.dirname(msb, 2)}: found #{present.join(", ")} " \
+        "but not #{missing.join(", ")}. The installer never repairs a partial home; " \
+        "delete #{msb} and #{lib} (whichever exist) and retry"
+    end
+
+    # runtime_info for ensure_runtime!: nil when nothing resolves. A partial
+    # runtime raises with directions — unless opted out, when the operation
+    # is left to raise it (and the process is marked ready).
+    def bootstrap_runtime_info
+      runtime_info
+    rescue RuntimeNotInstalledError
+      nil
+    rescue RuntimeIncompleteError => e
+      if auto_install_disabled?
+        @runtime_ready = true
+        return nil
+      end
+      # The error comes from the first source the resolver consulted: the
+      # environment when it is set, otherwise (no configured paths) the home.
+      hint = runtime_env_hint || begin
+        msb, lib = Native.runtime_home_pair
+        partial_home_message(msb, lib) if home_runtime_state(msb, lib) == :partial
+      end
+      raise unless hint
+      raise RuntimeIncompleteError, "#{e.message} — #{hint}"
+    end
+
+    def runtime_env_hint
+      return nil unless ENV.key?("MSB_PATH") || ENV.key?("MSB_LIBKRUNFW_PATH")
+      "MSB_PATH needs libkrunfw beside it (in its directory or ../lib) or MSB_LIBKRUNFW_PATH " \
+        "naming it; MSB_LIBKRUNFW_PATH alone is not enough"
+    end
+
+    # The forced reinstall replaces files in the user's home, so only when the
+    # resolved pair provably IS the home pair.
+    def replaceable_home_runtime?(info)
+      info.origin == :home && same_path?(info.msb_path, Native.runtime_home_pair.first)
+    end
+
+    def describe_runtime_version(info)
+      info.version || "with no embedded version (pre-0.7 msb or a wrapper script)"
+    end
+
+    # The one mismatch warning (4c / 7): a runtime this SDK did not install
+    # and will not touch.
+    def warn_runtime_mismatch(info)
+      warn "[microsandbox] runtime #{info.version || "no embedded version (pre-0.7 msb or a wrapper script)"} " \
+           "at #{info.msb_path} ≠ SDK #{sdk_runtime_version}: every local sandbox start will be refused"
     end
   end
 

@@ -62,7 +62,7 @@ RSpec.configure do |config|
   # .install) in the example instead; reaching the native installer is a bug.
   config.before(:each) do |example|
     next if example.metadata[:integration]
-    %i[install setup].each do |installer|
+    %i[install_runtime setup].each do |installer|
       allow(Microsandbox::Native).to receive(installer) do
         raise "unit example reached Microsandbox::Native.#{installer} — stub Microsandbox.ensure_runtime!"
       end

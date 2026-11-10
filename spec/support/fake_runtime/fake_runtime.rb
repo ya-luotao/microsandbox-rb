@@ -53,8 +53,9 @@ module FakeRuntime
     # it and Unix socket paths are limited to ~104 bytes) and point the SDK at
     # the fake runtime. Must run before the first native call: the local
     # backend captures MSB_PATH once, so a different capability set needs a
-    # separate process (see launch_probe.rb).
-    def setup!(home = ENV.fetch("MSB_HOME"), capabilities: :default)
+    # separate process (see launch_probe.rb). +sandboxes_dir: false+ leaves
+    # `<home>/sandboxes` for the SDK to create (a fresh home, see below).
+    def setup!(home = ENV.fetch("MSB_HOME"), capabilities: :default, sandboxes_dir: true)
       @home = home
       @rootfs = File.join(home, "rootfs")
       @log_path = File.join(home, "relay.log")
@@ -62,9 +63,11 @@ module FakeRuntime
       # An empty directory is a valid "directory image" for the local backend.
       FileUtils.mkdir_p(@rootfs)
       # Runtime v0.7.14 creates <home>/sandboxes/<name> with a non-recursive
-      # mkdir; only the OCI path creates <home>/sandboxes first. A fresh home
-      # with a directory image therefore fails with ENOENT, so lay it out here.
-      FileUtils.mkdir_p(File.join(home, "sandboxes"))
+      # mkdir; only the OCI path creates <home>/sandboxes first
+      # (superradcompany/microsandbox#2041). The SDK works around it before
+      # every local create; lay it out here anyway unless a spec exercises
+      # exactly that workaround (fresh_home_spec).
+      FileUtils.mkdir_p(File.join(home, "sandboxes")) if sandboxes_dir
       # Metrics sampling off => the core never creates the POSIX shm metrics registry.
       File.write(File.join(home, "config.json"),
         JSON.generate({"sandbox_defaults" => {"metrics_sample_interval_ms" => 0}}))

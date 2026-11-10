@@ -63,9 +63,12 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   `inactivity_timeout:`.
 - **Raw agent client** — `Microsandbox::AgentClient` → `AgentStream`/
   `AgentFrame`.
-- **Runtime provisioning** — `install`/`installed?`/`ensure_runtime!`/
-  `runtime_path`/`libkrunfw_path`, customizable via `Microsandbox.setup`; the
-  companion `microsandbox-rb-binaries` gem.
+- **Runtime provisioning** — `install(force:)`/`installed?`/`ensure_runtime!`/
+  `runtime_path`/`libkrunfw_path`, `runtime_info` → `RuntimeInfo` (the
+  resolved `msb` + `libkrunfw` pair, its gem-classified `origin` and embedded
+  `version`), customizable via `Microsandbox.setup`; the version-aware
+  bootstrap (the `msb` must be exactly `RUNTIME_VERSION`); the companion
+  `microsandbox-rb-binaries` gem.
 - **Registries** — `registry_auth`/`registry_insecure`/`registry_ca_certs` on
   `create`.
 - **Errors** — the typed hierarchy in [errors.md](errors.md).
