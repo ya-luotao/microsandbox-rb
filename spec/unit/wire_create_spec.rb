@@ -154,7 +154,8 @@ RSpec.describe "create options on the wire (native-serialized)" do
         cpus: 2, memory: 1024, root_disk: 2048, env: {"A" => "1"}, workdir: "/w", shell: "/bin/bash",
         user: "app", labels: {team: "x"}, scripts: {hello: "echo hi"}, entrypoint: [], cmd: %w[sleep 1],
         max_duration: 60, idle_timeout: 30, rlimits: {nofile: [10, 20]}, log_level: "debug",
-        security: "restricted", ephemeral: true, pull_policy: "never", max_connections: 7,
+        security: "restricted", ephemeral: true, pull_policy: "never", max_tcp_connections: 7,
+        max_udp_connections: 3,
         registry_auth: {username: "u", password: "p"}
       )
       expect(body["resources"]).to eq("vcpus" => 2, "memory_mib" => 1024, "disk_size_mib" => 2048)
@@ -165,7 +166,9 @@ RSpec.describe "create options on the wire (native-serialized)" do
       expect(body["rlimits"]).to eq([{"resource" => "nofile", "soft" => 10, "hard" => 20}])
       expect(body["lifecycle"]).to eq("ephemeral" => true, "max_duration_secs" => 60, "idle_timeout_secs" => 30)
       expect(body).to include("pull_policy" => "never", "security_profile" => "restricted")
+      # The network config keeps the TCP cap under its pre-0.7 wire name.
       expect(body.dig("network", "max_connections")).to eq(7)
+      expect(body.dig("network", "max_udp_connections")).to eq(3), body["network"].inspect
       expect(body["registry"]).to eq("mode" => "inline", "username" => "u", "password" => "p")
     end
 

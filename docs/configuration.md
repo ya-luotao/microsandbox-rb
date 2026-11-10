@@ -37,7 +37,10 @@ is documented in [surface.md](surface.md) and typed in
 `network:` takes composable profiles (`:public`, `:private`, `:host`, `:none`)
 or a custom `Microsandbox::NetworkPolicy` with per-rule CIDR/IP/domain/suffix/
 group allow-deny rules, per-direction defaults, DNS and TLS-interception
-settings, IPv4/IPv6 pools, `max_connections`, and `trust_host_cas`.
+settings, IPv4/IPv6 pools, connection caps (`max_tcp_connections:` for
+proxied TCP connections, `max_udp_connections:` for UDP relay sessions; `0`
+means unlimited, omit to keep the runtime default; `max_connections:` is a
+deprecated alias of the TCP cap), and `trust_host_cas`.
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",

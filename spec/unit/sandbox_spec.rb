@@ -389,14 +389,14 @@ RSpec.describe Microsandbox::Sandbox do
       )
     end
 
-    it "normalizes dns/tls/pools/max_connections/trust_host_cas" do
+    it "normalizes dns/tls/pools/connection caps/trust_host_cas" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
         dns: {nameservers: ["1.1.1.1"], rebind_protection: true, query_timeout_ms: 2000},
         tls: {bypass: ["pinned.example.com"], verify_upstream: false,
               intercepted_ports: [443, 8443], block_quic: true, intercept_ca_cert: "/ca.pem"},
         ipv4_pool: "10.0.0.0/24", ipv6_pool: "fd00::/64",
-        max_connections: 128, trust_host_cas: true
+        max_tcp_connections: 128, max_udp_connections: 64, trust_host_cas: true
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
@@ -407,9 +407,43 @@ RSpec.describe Microsandbox::Sandbox do
                     "intercepted_ports" => [443, 8443], "block_quic" => true,
                     "intercept_ca_cert" => "/ca.pem"},
           "ipv4_pool" => "10.0.0.0/24", "ipv6_pool" => "fd00::/64",
-          "max_connections" => 128, "trust_host_cas" => true
+          "max_tcp_connections" => 128, "max_udp_connections" => 64, "trust_host_cas" => true
         )
       )
+    end
+
+    describe "connection caps (runtime v0.7)" do
+      it "maps the deprecated max_connections: onto the TCP cap, with a warning" do
+        allow(Microsandbox::Sandbox).to receive(:warn)
+        Microsandbox::Sandbox.create("box", image: "x", max_connections: 7)
+        expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+          "box", satisfy { |opts| opts["max_tcp_connections"] == 7 && !opts.key?("max_connections") }
+        )
+        expect(Microsandbox::Sandbox).to have_received(:warn)
+          .with(/max_connections: is deprecated; use max_tcp_connections:/, uplevel: 3)
+      end
+
+      it "refuses max_connections: together with max_tcp_connections:" do
+        expect {
+          Microsandbox::Sandbox.create("box", image: "x", max_connections: 7, max_tcp_connections: 8)
+        }.to raise_error(ArgumentError, /mutually exclusive/)
+        expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+      end
+
+      it "passes 0 (unlimited) through and leaves nil unset" do
+        Microsandbox::Sandbox.create("box", image: "x", max_tcp_connections: 0)
+        expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+          "box", satisfy { |opts| opts["max_tcp_connections"] == 0 && !opts.key?("max_udp_connections") }
+        )
+      end
+
+      it "rejects a negative or non-integer cap before any native call" do
+        expect { Microsandbox::Sandbox.create("box", image: "x", max_udp_connections: -1) }
+          .to raise_error(ArgumentError, /max_udp_connections: must be >= 0/)
+        expect { Microsandbox::Sandbox.create("box", image: "x", max_tcp_connections: "many") }
+          .to raise_error(ArgumentError)
+        expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+      end
     end
 
     it "normalizes the resource/limit scalar options" do
@@ -611,7 +645,7 @@ RSpec.describe Microsandbox::Sandbox do
         "box",
         satisfy { |opts|
           opts["strict"] == true &&
-            (opts.keys & %w[dns tls ipv4_pool ipv6_pool max_connections trust_host_cas]).empty?
+            (opts.keys & %w[dns tls ipv4_pool ipv6_pool max_tcp_connections max_udp_connections trust_host_cas]).empty?
         }
       )
     end

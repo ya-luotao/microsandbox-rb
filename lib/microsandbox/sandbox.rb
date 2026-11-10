@@ -408,7 +408,12 @@ module Microsandbox
       #   this to inject `secrets:` on non-443 ports or to trust a private CA.
       # @param ipv4_pool [String, nil] guest IPv4 address pool CIDR (e.g. "10.0.0.0/24")
       # @param ipv6_pool [String, nil] guest IPv6 address pool CIDR
-      # @param max_connections [Integer, nil] cap on concurrent proxied connections
+      # @param max_tcp_connections [Integer, nil] cap on concurrent proxied TCP
+      #   connections; 0 means unlimited, nil leaves the runtime default
+      # @param max_udp_connections [Integer, nil] cap on concurrent UDP relay
+      #   sessions; 0 means unlimited, nil leaves the runtime default
+      # @param max_connections [Integer, nil] deprecated alias of
+      #   `max_tcp_connections:` (warns); passing both raises ArgumentError
       # @param trust_host_cas [Boolean, nil] trust the host's CA bundle for upstream TLS
       # @param strict [Boolean, nil] strict hostname-policy mode (runtime
       #   v0.6.18; ON by default since runtime v0.7 — pass `false` to opt
@@ -689,7 +694,8 @@ module Microsandbox
         shell: nil, user: nil, hostname: nil, labels: nil, scripts: nil,
         entrypoint: nil, cmd: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
-        max_connections: nil, trust_host_cas: nil, strict: nil, rate_limiter: nil, proxy: nil,
+        max_connections: nil, max_tcp_connections: nil, max_udp_connections: nil,
+        trust_host_cas: nil, strict: nil, rate_limiter: nil, proxy: nil,
         vsock: nil,
         patches: nil,
         from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
@@ -755,7 +761,7 @@ module Microsandbox
         opts["tls"] = normalize_tls(tls) if tls
         opts["ipv4_pool"] = ipv4_pool.to_s if ipv4_pool
         opts["ipv6_pool"] = ipv6_pool.to_s if ipv6_pool
-        opts["max_connections"] = Integer(max_connections) if max_connections
+        apply_connection_limits(opts, max_connections, max_tcp_connections, max_udp_connections)
         set_bool(opts, "trust_host_cas", trust_host_cas)
         set_bool(opts, "strict", strict)
         opts["rate_limiter"] = normalize_rate_limiter(rate_limiter) if rate_limiter
@@ -837,6 +843,23 @@ module Microsandbox
       end
 
       private
+
+      # max_tcp_connections: / max_udp_connections: (runtime v0.7), with the
+      # deprecated max_connections: alias of the TCP cap, as in the Python SDK.
+      # 0 selects unlimited; nil leaves the runtime default.
+      def apply_connection_limits(opts, legacy, tcp, udp)
+        unless legacy.nil?
+          raise ArgumentError, "max_connections: and max_tcp_connections: are mutually exclusive" unless tcp.nil?
+          warn "Microsandbox: max_connections: is deprecated; use max_tcp_connections:", uplevel: 3
+          tcp = legacy
+        end
+        {"max_tcp_connections" => tcp, "max_udp_connections" => udp}.each do |key, value|
+          next if value.nil?
+          limit = Integer(value)
+          raise ArgumentError, "#{key}: must be >= 0 (0 means unlimited), got #{value.inspect}" if limit.negative?
+          opts[key] = limit
+        end
+      end
 
       # Coerce a seconds value to a finite, non-negative Float. Rejects negatives,
       # NaN, and infinities *here* (a clean ArgumentError) rather than letting them

@@ -87,6 +87,9 @@ hostname enforcement on by default. Migration notes are below.
   SDK, see `docs/runtime.md`), and the version embedded in the `msb`
   (`version`, `legacy?`, `matches_sdk?`). Reads files only.
 - **`Microsandbox.install(force: true)`** reinstalls the runtime into the home.
+- **`Sandbox.create(max_tcp_connections:, max_udp_connections:)`**: caps on
+  proxied TCP connections and UDP relay sessions (`0` = unlimited, omitted =
+  the runtime default).
 - **Error classes for the v0.7 core variants**, mirroring the Python SDK:
   `RuntimeNotInstalledError` (`runtime-not-installed`),
   `RuntimeIncompleteError` (`runtime-incomplete` — e.g. an `MSB_PATH` with no
@@ -99,8 +102,6 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Changed
 
-- `max_connections:` maps to the runtime's `max_tcp_connections` (same
-  meaning).
 - Execution flow control is fixed by the runtime: at most 128 executions per
   sandbox (exited streams with unread output included), 64 KiB of pending
   stdin, 1 MiB of unread output, 16 KiB chunks. See `docs/execution.md`.
@@ -126,6 +127,8 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Deprecated
 
+- `Sandbox.create(max_connections:)`: an alias of `max_tcp_connections:` that
+  warns; passing both raises `ArgumentError`.
 - A secret's `passthrough:` key: an alias of `allow_placeholder_for:` that
   warns; the two lists are merged.
 

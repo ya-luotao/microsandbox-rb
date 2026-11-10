@@ -435,7 +435,10 @@ impl Sandbox {
                     .map_err(|e| error::base_error(format!("invalid ipv6_pool {s:?}: {e}")))
             })
             .transpose()?;
-        let max_connections = conv::opt::<usize>(opts, "max_connections")?;
+        // Connection caps (runtime v0.7): 0 selects unlimited. The Ruby layer
+        // maps the deprecated `max_connections:` onto the TCP cap.
+        let max_tcp_connections = conv::opt::<usize>(opts, "max_tcp_connections")?;
+        let max_udp_connections = conv::opt::<usize>(opts, "max_udp_connections")?;
         let trust_host_cas = conv::opt::<bool>(opts, "trust_host_cas")?;
         // strict: fail-closed hostname-policy enforcement (v0.6.18). A
         // hostname-rule allow must be backed by an inspectable request
@@ -450,7 +453,8 @@ impl Sandbox {
             || tls.is_some()
             || ipv4_pool.is_some()
             || ipv6_pool.is_some()
-            || max_connections.is_some()
+            || max_tcp_connections.is_some()
+            || max_udp_connections.is_some()
             || trust_host_cas.is_some()
             || strict.is_some()
         {
@@ -501,8 +505,11 @@ impl Sandbox {
                 if let Some(p) = ipv6_pool {
                     n = n.ipv6_pool(p);
                 }
-                if let Some(m) = max_connections {
+                if let Some(m) = max_tcp_connections {
                     n = n.max_tcp_connections(m);
+                }
+                if let Some(m) = max_udp_connections {
+                    n = n.max_udp_connections(m);
                 }
                 if let Some(t) = trust_host_cas {
                     n = n.trust_host_cas(t);

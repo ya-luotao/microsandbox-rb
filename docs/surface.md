@@ -48,7 +48,8 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 - **Network configuration** — composable profiles, custom per-rule
   `Microsandbox::NetworkPolicy`/`Rule`/`Destination`, custom DNS (`dns:`),
   TLS-interception tuning (`tls:`), guest address pools (`ipv4_pool:`/
-  `ipv6_pool:`), `max_connections`, `trust_host_cas`, `strict` hostname mode,
+  `ipv6_pool:`), `max_tcp_connections`/`max_udp_connections` (the deprecated
+  `max_connections` aliases the TCP cap), `trust_host_cas`, `strict` hostname mode,
   outbound SOCKS4/SOCKS5 `proxy:` (`OutboundProxy`/`SecretSource`),
   `rate_limiter:`, `vsock:`.
 - **Secrets** — per-secret `allow:` lists (exact hosts, `*.example.com`
