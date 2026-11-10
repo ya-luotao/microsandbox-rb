@@ -147,7 +147,7 @@ hostname enforcement on by default. Migration notes are below.
   waits without a deadline; `stop_with_timeout` and `restart`/`destroy`'s
   `timeout:` raise `StopTimeoutError` on expiry and kill nothing. The block
   forms of `create`, `connect_or_create` and `restore` therefore stop with a
-  `BLOCK_STOP_TIMEOUT` budget and then kill with a 10-second budget, both
+  `BLOCK_STOP_TIMEOUT` budget and then kill with a 15-second budget, both
   covering the sandbox's transition lock, so a block exit cannot hang; an
   interrupted create does the same. When that kill fails or runs out of time
   the SDK warns (`cleanup gave up on sandbox "<name>", which may still be

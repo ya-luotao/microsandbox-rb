@@ -113,8 +113,8 @@ it runs out, unless `force: true`.
 
 The block forms of `create`, `connect_or_create` and `restore` stop the sandbox
 on exit with a budget of `Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT` (10)
-seconds and, when that runs out, kill it with a further 10-second budget; both
-cover the transition lock, so leaving a block takes at most about 20 seconds
+seconds and, when that runs out, kill it with a further 15-second budget; both
+cover the transition lock, so leaving a block takes at most about 25 seconds
 even when a guest does not shut down or another process holds the lock.
 Errors in that teardown are swallowed (the block's own result or exception
 wins). When the kill fails or runs out of time, the SDK warns once on

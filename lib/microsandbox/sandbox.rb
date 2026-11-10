@@ -364,9 +364,11 @@ module Microsandbox
     BLOCK_STOP_TIMEOUT = 10
 
     # Seconds the same cleanup gives the kill that follows an expired
-    # {BLOCK_STOP_TIMEOUT}, transition lock and dispatch included (the kill's
-    # own waits for the process to exit and release take up to 5 s each).
-    BLOCK_KILL_TIMEOUT = 10
+    # {BLOCK_STOP_TIMEOUT}, transition lock and dispatch included. Upstream's
+    # kill itself waits up to 5 s for the process to exit and up to 5 s more
+    # for its lifecycle lock, so a slow but successful kill needs headroom
+    # above 10 s.
+    BLOCK_KILL_TIMEOUT = 15
     private_constant :BLOCK_KILL_TIMEOUT
 
     class << self
@@ -374,7 +376,7 @@ module Microsandbox
       #
       # When a block is given the sandbox is yielded and stopped automatically
       # when the block returns (the block's value is returned): a graceful stop
-      # with a {BLOCK_STOP_TIMEOUT} budget, then a kill with its own 10-second
+      # with a {BLOCK_STOP_TIMEOUT} budget, then a kill with its own 15-second
       # budget, both covering the name's transition lock, so leaving the block
       # never hangs (a kill that cannot finish is reported with a warning and
       # the sandbox may still be running). Otherwise the live {Sandbox} is returned and you are

@@ -218,7 +218,9 @@ RSpec.describe "convergent lifecycle", :integration do
       name = unique_sandbox_name("rb-bounded")
       stub_const("Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT", 0)
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      Microsandbox::Sandbox.create(name, image: image) { |sb| expect(sb.status).to eq(:running) }
+      # The bounded kill completes, so the cleanup does not give up.
+      expect { Microsandbox::Sandbox.create(name, image: image) { |sb| expect(sb.status).to eq(:running) } }
+        .not_to output(/cleanup gave up/).to_stderr
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 60
       expect(Microsandbox::Sandbox.get(name).status).to eq(:stopped)
     ensure

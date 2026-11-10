@@ -896,7 +896,7 @@ RSpec.describe Microsandbox::Sandbox do
       allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
       expect { expect(Microsandbox::Sandbox.create("box", image: "x") { :done }).to eq(:done) }
         .not_to output.to_stderr
-      expect(native).to have_received(:kill_with_timeout).with(10.0)
+      expect(native).to have_received(:kill_with_timeout).with(15.0)
       expect(native).not_to have_received(:kill)
     end
 

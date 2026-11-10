@@ -232,7 +232,7 @@ end
 
 Then, after upgrading and before any of them is started again, remove each
 one (`Sandbox.remove`) and create it again with the recipe above. The new
-sandbox starts from a fresh root disk; named volumes are kept. If you already
+sandbox starts from a fresh root disk. If you already
 upgraded without the list, treat every saved secret whose `substitution` has
 `headers: true` and no `header_fields` (in `SandboxHandle#config`) as a
 candidate.
