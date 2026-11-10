@@ -261,6 +261,8 @@ module Microsandbox
   class Sandbox
     STATUSES: Array[Symbol]
 
+    # `from_snapshot:` and `on_secret_violation:` were removed in 0.18.0; they
+    # stay as `nil`-only keywords so passing one raises with directions.
     def self.create: (String name, ?image: String?, ?cpus: Integer?, ?max_cpus: Integer?,
                       ?memory: Integer?, ?max_memory: Integer?,
                       ?env: Hash[untyped, untyped]?, ?workdir: String?, ?shell: String?,
@@ -275,7 +277,7 @@ module Microsandbox
                       ?rate_limiter: Hash[untyped, untyped]?,
                       ?proxy: (OutboundProxy | Hash[untyped, untyped])?,
                       ?vsock: (Hash[untyped, untyped] | Array[Hash[untyped, untyped]])?,
-                      ?patches: Array[Hash[untyped, untyped]]?, ?from_snapshot: String?,
+                      ?patches: Array[Hash[untyped, untyped]]?, ?from_snapshot: nil,
                       ?fstype: String?, ?init: (String | Symbol | Hash[untyped, untyped])?, ?ephemeral: bool,
                       ?log_level: (String | Symbol)?, ?quiet_logs: bool, ?security: (String | Symbol)?,
                       ?root_disk: (Integer | Hash[untyped, untyped])?,
@@ -283,8 +285,9 @@ module Microsandbox
                       ?rlimits: Hash[untyped, untyped]?, ?pull_policy: (String | Symbol)?,
                       ?registry_auth: Hash[untyped, untyped]?, ?registry_insecure: bool,
                       ?registry_ca_certs: (String | Array[String])?,
-                      ?secrets: Array[Hash[untyped, untyped]]?,
-                      ?on_secret_violation: (String | Symbol | Hash[untyped, untyped])?,
+                      ?secrets: (Array[Hash[untyped, untyped]] | Hash[untyped, untyped])?,
+                      ?secret_violation_action: (String | Symbol)?,
+                      ?on_secret_violation: nil,
                       ?detached: bool,
                       ?replace: bool, ?replace_with_timeout: Numeric?)
                       ?{ (Sandbox) -> untyped } -> untyped
@@ -504,7 +507,9 @@ module Microsandbox
   class SnapshotInfo
     def initialize: (Hash[String, untyped] data) -> void
     def digest: () -> String
-    def path: () -> String
+    def id: () -> String?
+    def parent_id: () -> String?
+    def path: () -> String?
     def name: () -> String?
     def parent_digest: () -> String?
     def image_ref: () -> String?
@@ -538,9 +543,12 @@ module Microsandbox
   end
 
   class Snapshot
+    # `resumable:` was renamed to `full:` in 0.18.0; it stays as a `nil`-only
+    # keyword so passing it raises with directions.
     def self.create: (String name, from_sandbox: String, ?dest_dir: String?,
                       ?labels: Hash[untyped, untyped]?, ?force: bool, ?record_integrity: bool,
-                      ?resumable: bool) -> SnapshotInfo
+                      ?full: bool,
+                      ?resumable: nil) -> SnapshotInfo
     def self.open: (String name_or_path) -> SnapshotInfo
     def self.get: (String name_or_digest) -> SnapshotInfo
     def self.list: () -> Array[SnapshotInfo]

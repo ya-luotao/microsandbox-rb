@@ -62,7 +62,8 @@ module Microsandbox
       @native = native
     end
 
-    # Write data to the process stdin.
+    # Write data to the process stdin. An empty String is a no-op (since
+    # 0.18.0 / runtime v0.7; it used to send EOF) — call {#close} for EOF.
     # @param data [String] raw bytes to write (binary-safe)
     # @raise [TypeError] if +data+ is not a String
     # @return [self]

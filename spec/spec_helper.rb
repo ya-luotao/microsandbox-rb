@@ -14,7 +14,11 @@
 unless ENV["MICROSANDBOX_INTEGRATION"]
   require "tmpdir"
   require "fileutils"
-  unit_home = Dir.mktmpdir("msb-rb-", File.directory?("/tmp") ? "/tmp" : nil)
+  # realpath: on macOS /tmp is a symlink to /private/tmp. The home must be a
+  # real directory, not a path through a symlink: since runtime v0.7.12 the core
+  # checks the catalog directory is private, and the fake runtime's sockets live
+  # under it.
+  unit_home = Dir.mktmpdir("msb-rb-", File.directory?("/tmp") ? File.realpath("/tmp") : nil)
   ENV["MSB_HOME"] = unit_home
   %w[MSB_BACKEND MSB_PROFILE MSB_API_URL MSB_API_KEY MSB_PATH MSB_LIBKRUNFW_PATH
     MICROSANDBOX_NO_AUTO_INSTALL].each { |name| ENV.delete(name) }

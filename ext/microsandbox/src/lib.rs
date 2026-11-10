@@ -45,54 +45,103 @@ fn all_sandbox_metrics() -> Result<RHash, Error> {
     Ok(hash)
 }
 
-/// Download and install the `msb` runtime + `libkrunfw` into `~/.microsandbox`.
-/// Never touches the backend, so a forked child does not take the inherited
-/// one over here (see `runtime::block_on_runtime_install`).
+/// The effective local runtime configuration: the persisted config file, then
+/// `MSB_HOME`/`MSB_PATH`/`MSB_LIBKRUNFW_PATH`, the SDK path slots and managed
+/// policy, layered exactly as the local backend layers them (`overrides_json`
+/// adds `home`/`msb_path`/`libkrunfw_path` on top). Reads files and the
+/// environment only — no backend is built.
+fn effective_runtime_config(
+    overrides_json: &str,
+) -> microsandbox::MicrosandboxResult<microsandbox::config::GlobalConfig> {
+    microsandbox::setup::binding_runtime_config(overrides_json)
+}
+
+/// Whether the runtime HOME of `config` already holds a complete `msb` +
+/// `libkrunfw` pair — exactly the pair an install would write. Explicit paths
+/// (`MSB_PATH`, the SDK slots, `config.paths`) are cleared first so they can
+/// neither satisfy nor mask the check: `install`/`setup` target the home.
+/// Presence only, like upstream's `is_runtime_installed`: no version check
+/// (the version-aware bootstrap replaces this).
+fn home_runtime_complete(config: &microsandbox::config::GlobalConfig) -> bool {
+    let mut home_only = config.clone();
+    home_only.paths.msb = None;
+    home_only.paths.libkrunfw = None;
+    matches!(
+        microsandbox::setup::resolve_runtime(&home_only),
+        Ok(runtime) if runtime.origin == microsandbox::setup::RuntimeOrigin::Home
+    )
+}
+
+/// Download and install the `msb` runtime + `libkrunfw` matching this build
+/// into the runtime home (`MSB_HOME`, default `~/.microsandbox`). A home that
+/// already holds a complete pair is left alone, as before 0.18.0: upstream's
+/// v0.7 installer downloads the bundle before it decides whether there is
+/// anything to do, so calling it unconditionally would fetch ~25 MB on every
+/// call (and, in a forked child on macOS, build a network client that cannot
+/// work after `fork`). Never touches the backend, so a forked child does not
+/// take the inherited one over here (see `runtime::block_on_runtime_install`).
 fn install() -> Result<(), Error> {
-    runtime::block_on_runtime_install(microsandbox::setup::install())?.map_err(error::to_ruby)
+    let config = effective_runtime_config("{}").map_err(error::to_ruby)?;
+    if home_runtime_complete(&config) {
+        return Ok(());
+    }
+    runtime::block_on_runtime_install(async move {
+        microsandbox::setup::install_runtime(&config, Default::default())
+            .await
+            .map(|_| ())
+    })?
+    .map_err(error::to_ruby)
 }
 
-/// Customizable install via the core `Setup` builder. `opts`: base_dir (install
-/// root), version (pin the runtime version), force (re-download even if present
-/// — repairs a corrupt install), skip_verify. Mirrors the Node `Setup` builder.
+/// Customizable install. `opts`: base_dir (the runtime home to install into),
+/// version (the release to download), force (replace a complete installation —
+/// repairs a corrupt one; without it a complete pair in the home is kept, as
+/// with `install`), skip_verify. Built on upstream's language-SDK
+/// bindings (`binding_runtime_config` / `binding_install_options`), the same
+/// wire the official SDKs use.
 fn setup(opts: RHash) -> Result<(), Error> {
-    use microsandbox::setup::Setup;
-    let base_dir = conv::opt_string(opts, "base_dir")?;
-    let version = conv::opt_string(opts, "version")?;
-    let skip_verify = conv::opt_bool(opts, "skip_verify")?;
-    let force = conv::opt_bool(opts, "force")?;
-    // `Setup` uses a typed-builder whose `strip_option` setters change the type
-    // on each call, so optional fields can't be set conditionally on one binding
-    // — branch on presence instead (matching the Node binding).
-    let setup = match (base_dir, version) {
-        (Some(d), Some(v)) => Setup::builder()
-            .base_dir(d)
-            .version(v)
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-        (Some(d), None) => Setup::builder()
-            .base_dir(d)
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-        (None, Some(v)) => Setup::builder()
-            .version(v)
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-        (None, None) => Setup::builder()
-            .skip_verify(skip_verify)
-            .force(force)
-            .build(),
-    };
+    let mut runtime_cfg = serde_json::Map::new();
+    if let Some(dir) = conv::opt_string(opts, "base_dir")? {
+        runtime_cfg.insert("home".into(), dir.into());
+    }
+    let mut install_opts = serde_json::Map::new();
+    if let Some(version) = conv::opt_string(opts, "version")? {
+        install_opts.insert("version".into(), version.into());
+    }
+    if conv::opt_bool(opts, "force")? {
+        install_opts.insert("force".into(), true.into());
+    }
+    if conv::opt_bool(opts, "skip_verify")? {
+        install_opts.insert("verify".into(), false.into());
+    }
+    let force = install_opts.contains_key("force");
+    let config = effective_runtime_config(&serde_json::Value::Object(runtime_cfg).to_string())
+        .map_err(error::to_ruby)?;
+    // As `install`: a complete pair in the target home is kept unless forced.
+    if !force && home_runtime_complete(&config) {
+        return Ok(());
+    }
+    let options = microsandbox::setup::binding_install_options(
+        &serde_json::Value::Object(install_opts).to_string(),
+    )
+    .map_err(error::to_ruby)?;
     // Backend-free, like `install`.
-    runtime::block_on_runtime_install(setup.install())?.map_err(error::to_ruby)
+    runtime::block_on_runtime_install(async move {
+        microsandbox::setup::install_runtime(&config, options)
+            .await
+            .map(|_| ())
+    })?
+    .map_err(error::to_ruby)
 }
 
-/// Whether the `msb` runtime + `libkrunfw` are installed and resolvable.
+/// Whether a complete `msb` + `libkrunfw` pair resolves from any source the
+/// local backend would use (environment, SDK slots, config, home, packaged).
+/// Presence only: it says nothing about the version (see `Microsandbox.ensure_runtime!`).
+/// A configuration that cannot be loaded counts as "not installed".
 fn is_installed() -> bool {
-    microsandbox::setup::is_installed()
+    effective_runtime_config("{}")
+        .map(|config| microsandbox::setup::is_runtime_installed(&config))
+        .unwrap_or(false)
 }
 
 /// Override the resolved `msb` runtime path (SDK tier of the resolver).

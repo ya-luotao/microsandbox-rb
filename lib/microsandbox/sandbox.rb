@@ -210,13 +210,15 @@ module Microsandbox
       ModificationPlan.new(JSON.parse(@native.modify(opts)))
     end
 
-    # Snapshot this (stopped) sandbox under a bare name, resolved under the
-    # snapshots dir. Convenience equivalent of
-    # `Snapshot.create(<snapshot-name>, from_sandbox: <this sandbox>)`.
-    # (`snapshot_to(path)` was removed in 0.11.0 with runtime v0.6.7 — for
-    # explicit placement use `Snapshot.create(name, from_sandbox:, dest_dir:)`;
-    # the artifact lands at `dest_dir/<name>`.)
-    # @param name [String] destination snapshot name
+    # Snapshot this (stopped) sandbox. Convenience equivalent of
+    # `Snapshot.create(<snapshot-name>, from_sandbox: <this sandbox>)`: the
+    # artifact joins the snapshot group named after this sandbox as member
+    # `name` and becomes its head (see {Snapshot} for selectors — keep the
+    # returned {SnapshotInfo#id}). (`snapshot_to(path)` was removed in 0.11.0
+    # with runtime v0.6.7 — for explicit placement use
+    # `Snapshot.create(name, from_sandbox:, dest_dir:)`; the core picks the
+    # directory beneath `dest_dir`, read it from {SnapshotInfo#path}.)
+    # @param name [String] member name alias inside the snapshot group
     # @return [SnapshotInfo]
     def snapshot(name)
       SnapshotInfo.new(@native.snapshot(name.to_s))
@@ -409,7 +411,8 @@ module Microsandbox
       # @param max_connections [Integer, nil] cap on concurrent proxied connections
       # @param trust_host_cas [Boolean, nil] trust the host's CA bundle for upstream TLS
       # @param strict [Boolean, nil] strict hostname-policy mode (runtime
-      #   v0.6.18, default false): a hostname-rule allow must be backed by an
+      #   v0.6.18; ON by default since runtime v0.7 — pass `false` to opt
+      #   out): a hostname-rule allow must be backed by an
       #   inspectable request authority — plain-HTTP `Host`, or SNI/authority
       #   under TLS interception. Without that visibility (e.g. bypassed or
       #   non-intercepted HTTPS) a flow allowed only by a hostname rule is
@@ -435,8 +438,8 @@ module Microsandbox
       #   sockets), or an Array of
       #   `{ host_socket:, port:, socket_type: :stream|:dgram }` Hashes. Guests
       #   connect to host CID 2 on the given port; no in-guest proxy required.
-      # @param from_snapshot [String, nil] boot from a snapshot name or digest
-      #   instead of an image (mutually exclusive with `image:`)
+      # @param from_snapshot [nil] removed in 0.18.0 — use {Sandbox.restore};
+      #   passing it raises ArgumentError
       # @param fstype [String, nil] inner filesystem type (e.g. "ext4") when
       #   `image:` is a disk-image rootfs path whose filesystem can't be
       #   auto-probed; ignored for OCI images
@@ -478,16 +481,22 @@ module Microsandbox
       #   instead of HTTPS (for local/self-hosted registries)
       # @param registry_ca_certs [String, Array<String>, nil] extra PEM-encoded CA
       #   root certificate(s) to trust (for a registry with a private CA)
-      # @param secrets [Array<Hash>, nil] placeholder-protected secrets injected by
-      #   the TLS proxy (auto-enables TLS interception). Each Hash needs `env:` and
-      #   `value:` plus an allow list — `host:` (single), `hosts:` (Array), and/or
-      #   `host_patterns:` (wildcards like "*.stripe.com"). Optional per-secret:
-      #   `placeholder:`, `require_tls:`, injection toggles `inject_headers:` /
-      #   `inject_basic_auth:` / `inject_query:` / `inject_body:`, and `on_violation:`.
-      # @param on_secret_violation [String, Symbol, Hash, nil] sandbox-wide
-      #   secret-leak policy: "block", "block_and_log", "block_and_terminate",
-      #   "passthrough" (passthrough-all-hosts), or a Hash
-      #   `{ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }`
+      # @param secrets [Array<Hash>, nil] placeholder-protected secrets substituted
+      #   by the TLS proxy (auto-enables TLS interception). Each Hash needs `env:`,
+      #   `value:`, and a non-empty `allow:` list of hosts that may receive the
+      #   real value (`"*.example.com"` wildcards; `"*"` allows ANY host).
+      #   Optional per-secret: `allow_placeholder_for:` (hosts that may receive
+      #   the unchanged placeholder; `passthrough:` is a deprecated alias),
+      #   `placeholder:`, `require_tls_identity:` (default true),
+      #   `violation_action:` (:block, :block_and_log, :block_and_terminate), and
+      #   `substitution: { headers:, header_fields:, query:, body: }` (default:
+      #   headers only). The 0.17 keys (`host:`/`hosts:`/`host_patterns:`,
+      #   `inject_*:`, `require_tls:`, `on_violation:`) raise ArgumentError.
+      # @param secret_violation_action [String, Symbol, nil] sandbox-wide
+      #   secret-leak action: :block, :block_and_log, or :block_and_terminate
+      #   (kebab-case spellings accepted)
+      # @param on_secret_violation [nil] removed in 0.18.0 — use
+      #   `secret_violation_action:`; passing it raises ArgumentError
       # @param detached [Boolean] keep running after this process exits
       # @param replace [Boolean] replace an existing sandbox with the same name
       # @param replace_with_timeout [Numeric, nil] replace, waiting up to N seconds
@@ -687,24 +696,24 @@ module Microsandbox
         log_level: nil, quiet_logs: false, security: nil,
         root_disk: nil, oci_upper_size: nil, max_duration: nil, idle_timeout: nil, rlimits: nil,
         pull_policy: nil, registry_auth: nil, registry_insecure: false,
-        registry_ca_certs: nil, secrets: nil, on_secret_violation: nil,
+        registry_ca_certs: nil, secrets: nil, secret_violation_action: nil,
+        on_secret_violation: nil,
         detached: false, replace: false, replace_with_timeout: nil)
-        # A sandbox boots from exactly one rootfs source. The core would reject a
-        # contradictory pair, but only after a runtime round-trip; fail fast and
-        # clearly here (the Python SDK validates this the same way).
-        if image && from_snapshot
-          raise ArgumentError, "provide either image: or from_snapshot:, not both"
+        # Removed in 0.18.0 (runtime v0.7). Kept as keywords so the old
+        # spelling fails with directions instead of "unknown keyword".
+        unless from_snapshot.nil?
+          raise ArgumentError,
+            "from_snapshot: was removed in 0.18.0 (runtime v0.7); boot from a snapshot with " \
+            "Sandbox.restore(snapshot, name: ...)"
+        end
+        unless on_secret_violation.nil?
+          raise ArgumentError,
+            "on_secret_violation: was removed in 0.18.0 (runtime v0.7); use secret_violation_action: " \
+            "(:block, :block_and_log, or :block_and_terminate) — a passthrough is now each secret's " \
+            "allow_placeholder_for: host list"
         end
         if root_disk && oci_upper_size
           raise ArgumentError, "pass either root_disk: or oci_upper_size:, not both"
-        end
-        # The core refuses patches on a snapshot-booted sandbox, but only after
-        # it has claimed the sandbox name on disk. Refuse the pair before any
-        # side effect.
-        if from_snapshot && patches && !Array(patches).empty?
-          raise ArgumentError,
-            "patches: cannot be combined with from_snapshot: (a snapshot restores its own " \
-            "root disk; apply changes after boot with sandbox.fs instead)"
         end
         # `fstype:` names the inner filesystem of a disk-image rootfs, so it only
         # applies when `image:` is a disk-image path (a local path ending in
@@ -720,7 +729,6 @@ module Microsandbox
         end
         opts = {}
         opts["image"] = image.to_s if image
-        opts["from_snapshot"] = from_snapshot.to_s if from_snapshot
         opts["fstype"] = fstype.to_s if fstype
         opts["cpus"] = Integer(cpus) if cpus
         opts["max_cpus"] = Integer(max_cpus) if max_cpus
@@ -770,7 +778,9 @@ module Microsandbox
         opts["pull_policy"] = pull_policy.to_s if pull_policy
         apply_registry_opts(opts, registry_auth, registry_insecure, registry_ca_certs)
         opts["secrets"] = normalize_secrets(secrets) if secrets
-        opts["on_secret_violation"] = normalize_violation(on_secret_violation) if on_secret_violation
+        unless secret_violation_action.nil?
+          opts["secret_violation_action"] = normalize_violation_action(secret_violation_action, "secret_violation_action")
+        end
         opts["init"] = normalize_init(init) unless init.nil?
         opts["ephemeral"] = true if ephemeral
         opts["detached"] = true if detached
@@ -943,12 +953,8 @@ module Microsandbox
       end
 
       # Normalize secrets into per-secret string-keyed Hashes for the native
-      # layer. Each entry is a Hash (string or symbol keys); required :env and
-      # :value, plus at least one allowed host via :host (single), :hosts (Array),
-      # or :host_patterns (Array of wildcards like "*.stripe.com"). Optional:
-      # :placeholder, :require_tls, the injection toggles :inject_headers /
-      # :inject_basic_auth / :inject_query / :inject_body, and :on_violation (see
-      # {#normalize_violation}).
+      # layer. Each entry is a Hash (string or symbol keys) in the runtime v0.7
+      # vocabulary (see {#normalize_secret}).
       def normalize_secrets(secrets)
         if secrets.is_a?(Hash)
           # One spec given bare is fine. A Hash keyed by variable name is the
@@ -956,7 +962,7 @@ module Microsandbox
           # else (the HOST variable to read); it is not a create-time spec.
           unless secrets.key?(:env) || secrets.key?("env")
             raise ArgumentError,
-              "secrets: takes an Array of Hashes like { env:, value:, host: } at create time; " \
+              "secrets: takes an Array of Hashes like { env:, value:, allow: [...] } at create time; " \
               "the { \"NAME\" => { ... } } form belongs to #modify"
           end
           secrets = [secrets]
@@ -1017,6 +1023,12 @@ module Microsandbox
         out
       end
 
+      # Keys a modify-time secret spec accepts.
+      MODIFY_SECRET_KEYS = %w[env value store placeholder allowed_hosts].freeze
+      # Upstream's v0.7 modify policy keys, not bound yet.
+      MODIFY_SECRET_LATER_KEYS = %w[substitution violation_action require_tls_identity
+        allow_placeholder_for passthrough].freeze
+
       def normalize_modify_secret(name, spec)
         spec ||= {}
         unless spec.is_a?(Hash)
@@ -1026,6 +1038,19 @@ module Microsandbox
           # message on Ruby < 3.3.
           raise ArgumentError,
             "secret #{name.to_s.inspect}: spec must be a Hash (e.g. { value: ... } or { env: ... }), got #{spec.class}"
+        end
+        keys = spec.keys.map(&:to_s)
+        later = keys & MODIFY_SECRET_LATER_KEYS
+        unless later.empty?
+          raise ArgumentError,
+            "secret #{name.to_s.inspect}: #{later.map { |k| ":#{k}" }.join(", ")} not yet supported on modify " \
+            "(planned for 0.19.0); modify accepts #{MODIFY_SECRET_KEYS.map { |k| ":#{k}" }.join(", ")}"
+        end
+        unknown = keys - MODIFY_SECRET_KEYS
+        unless unknown.empty?
+          raise ArgumentError,
+            "secret #{name.to_s.inspect}: unknown modify key(s) #{unknown.map { |k| ":#{k}" }.join(", ")} " \
+            "(expected #{MODIFY_SECRET_KEYS.map { |k| ":#{k}" }.join(", ")})"
         end
         env = fetch_opt(spec, :env)
         value = fetch_opt(spec, :value)
@@ -1062,37 +1087,127 @@ module Microsandbox
         s
       end
 
+      # Keys a create-time secret spec accepts (runtime v0.7 vocabulary, aligned
+      # with the Python SDK's `Secret.env`).
+      SECRET_KEYS = %w[env value allow allow_placeholder_for passthrough placeholder
+        require_tls_identity violation_action substitution].freeze
+
+      # Keys of the 0.17.x (runtime v0.6) secret vocabulary, each with its
+      # replacement. Rejected loudly: silently ignoring one would weaken the
+      # policy the caller asked for (e.g. a dropped `on_violation:`).
+      REMOVED_SECRET_KEYS = {
+        "host" => "use allow: [...] (exact hosts and \"*.example.com\" wildcards share one list)",
+        "hosts" => "use allow: [...] (exact hosts and \"*.example.com\" wildcards share one list)",
+        "host_patterns" => "use allow: [...] (exact hosts and \"*.example.com\" wildcards share one list)",
+        "inject_headers" => "use substitution: { headers: true|false }",
+        "inject_query" => "use substitution: { query: true|false }",
+        "inject_body" => "use substitution: { body: true|false }",
+        "inject_basic_auth" => "removed in runtime v0.7: Basic credentials in an Authorization " \
+          "header are substituted whenever header substitution applies (substitution: { headers: true })",
+        "require_tls" => "renamed to require_tls_identity:",
+        "on_violation" => "renamed to violation_action: (:block, :block_and_log, or " \
+          ":block_and_terminate); hosts that may receive the unchanged placeholder go in " \
+          "allow_placeholder_for: [...]"
+      }.freeze
+
+      SUBSTITUTION_KEYS = %w[headers header_fields query body].freeze
+
+      # One create-time secret. Required: `env:`, `value:`, and a non-empty
+      # `allow:` (hosts that may receive the real value; `"*.example.com"`
+      # wildcards allowed; `"*"` means ANY host and maps to upstream's
+      # `allow_any_host_dangerous`). Optional: `allow_placeholder_for:` (hosts
+      # that may receive the unchanged placeholder; `passthrough:` is a
+      # deprecated alias, merged), `placeholder:`, `require_tls_identity:`,
+      # `violation_action:`, and `substitution: { headers:, header_fields:,
+      # query:, body: }`.
+      #
+      # Error messages name keys, never values: a spec carries the cleartext
+      # `:value`, and exception messages routinely land in logs.
       def normalize_secret(spec)
-        env = spec[:env] || spec["env"]
-        value = spec[:value] || spec["value"]
-        unless env && value
-          # Report only the keys given, never the values — a secret spec carries
-          # the cleartext :value, and exception messages routinely land in logs
-          # and error trackers. Mirrors apply_registry_opts above.
+        keys = spec.keys.map(&:to_s)
+        removed = keys.find { |k| REMOVED_SECRET_KEYS.key?(k) }
+        if removed
+          raise ArgumentError, "secret key :#{removed} was removed in 0.18.0 (runtime v0.7): #{REMOVED_SECRET_KEYS[removed]}"
+        end
+        unknown = keys - SECRET_KEYS
+        unless unknown.empty?
+          raise ArgumentError,
+            "unknown secret key(s) #{unknown.map { |k| ":#{k}" }.join(", ")} " \
+            "(expected #{SECRET_KEYS.map { |k| ":#{k}" }.join(", ")})"
+        end
+        if keys.size != keys.uniq.size
+          raise ArgumentError, "secret spec gives the same key as both a Symbol and a String (keys: #{spec.keys.inspect})"
+        end
+        env = fetch_opt(spec, :env)
+        value = fetch_opt(spec, :value)
+        if env.nil? || value.nil?
           raise ArgumentError, "secret spec needs :env and :value (got keys: #{spec.keys.inspect})"
         end
         out = {"env" => env.to_s, "value" => value.to_s}
-        hosts = Array(spec[:hosts] || spec["hosts"]).map(&:to_s)
-        single = spec[:host] || spec["host"]
-        hosts << single.to_s if single
-        patterns = Array(spec[:host_patterns] || spec["host_patterns"]).map(&:to_s)
-        if hosts.empty? && patterns.empty?
-          # Keys only — this branch runs after :value is confirmed present, so
-          # spec.inspect would always embed the cleartext secret value.
+        allow = secret_host_list(fetch_opt(spec, :allow), "allow")
+        if allow.empty?
           raise ArgumentError,
-            "secret spec needs :host, :hosts, or :host_patterns (got keys: #{spec.keys.inspect})"
+            "secret #{env.to_s.inspect} needs a non-empty allow: list of hosts that may receive the value " \
+            "(use allow: [\"*\"] to allow any host)"
         end
-        out["hosts"] = hosts unless hosts.empty?
-        out["host_patterns"] = patterns unless patterns.empty?
-        pl = spec[:placeholder] || spec["placeholder"]
-        out["placeholder"] = pl.to_s if pl
-        # Booleans must honor an explicit `false` (to disable a default-on toggle),
-        # so probe key presence rather than truthiness.
-        %i[require_tls inject_headers inject_basic_auth inject_query inject_body].each do |k|
-          set_bool(out, k.to_s, fetch_opt(spec, k))
+        out["allow"] = allow
+        placeholder_hosts = secret_host_list(fetch_opt(spec, :allow_placeholder_for), "allow_placeholder_for")
+        passthrough = fetch_opt(spec, :passthrough)
+        unless passthrough.nil?
+          warn "Microsandbox: secret passthrough: is deprecated; use allow_placeholder_for:", uplevel: 4
+          placeholder_hosts |= secret_host_list(passthrough, "passthrough")
         end
-        ov = spec[:on_violation] || spec["on_violation"]
-        out["on_violation"] = normalize_violation(ov) if ov
+        out["allow_placeholder_for"] = placeholder_hosts unless placeholder_hosts.empty?
+        pl = fetch_opt(spec, :placeholder)
+        out["placeholder"] = pl.to_s unless pl.nil?
+        set_bool(out, "require_tls_identity", fetch_opt(spec, :require_tls_identity))
+        action = fetch_opt(spec, :violation_action)
+        out["violation_action"] = normalize_violation_action(action, "violation_action") unless action.nil?
+        sub = fetch_opt(spec, :substitution)
+        out["substitution"] = normalize_substitution(sub, env) unless sub.nil?
+        out
+      end
+
+      # A host list (String or Array of Strings), as Strings. Empty entries are
+      # rejected: an empty host pattern matches nothing the caller meant.
+      def secret_host_list(hosts, key)
+        return [] if hosts.nil?
+        list = Array(hosts).map(&:to_s)
+        if list.any?(&:empty?)
+          raise ArgumentError, "secret #{key}: entries must be non-empty host names"
+        end
+        list
+      end
+
+      # `substitution: { headers:, header_fields:, query:, body: }` — where the
+      # real value replaces the placeholder. Defaults: headers on, query and
+      # body off. Rejects a spec that would leave no location enabled, and
+      # `header_fields:` together with `headers: false` (the upstream builder
+      # and validator refuse both; checked here so neither reaches the core).
+      def normalize_substitution(sub, env)
+        raise ArgumentError, "secret #{env.to_s.inspect}: substitution: must be a Hash" unless sub.is_a?(Hash)
+        unknown = sub.keys.map(&:to_s) - SUBSTITUTION_KEYS
+        unless unknown.empty?
+          raise ArgumentError,
+            "secret #{env.to_s.inspect}: unknown substitution key(s) #{unknown.map { |k| ":#{k}" }.join(", ")} " \
+            "(expected :headers, :header_fields, :query, :body)"
+        end
+        out = {}
+        %i[headers query body].each { |k| set_bool(out, k.to_s, fetch_opt(sub, k)) }
+        fields = fetch_opt(sub, :header_fields)
+        unless fields.nil?
+          fields = Array(fields).map(&:to_s)
+          if !fields.empty? && out["headers"] == false
+            raise ArgumentError,
+              "secret #{env.to_s.inspect}: substitution header_fields: requires headers substitution (drop headers: false)"
+          end
+          out["header_fields"] = fields
+        end
+        headers = out.fetch("headers") { true }
+        unless headers || out["query"] || out["body"]
+          raise ArgumentError,
+            "secret #{env.to_s.inspect}: substitution must leave at least one of headers, query, or body enabled"
+        end
         out
       end
 
@@ -1112,57 +1227,26 @@ module Microsandbox
         out[key] = (value ? true : false) unless value.nil?
       end
 
-      # Normalize an `on_violation`/`on_secret_violation` spec for the native
-      # layer: a String/Symbol block variant ("block"/"block_and_log"/
-      # "block_and_terminate"), or a Hash describing a passthrough action
-      # ({ passthrough_hosts:, passthrough_host_patterns:, passthrough_all_hosts: }).
-      def normalize_violation(spec)
-        case spec
-        when String, Symbol
-          # The bare "passthrough" string maps to passthrough-all-hosts, matching
-          # the Python/Node SDKs (so a string-form policy copied from another SDK
-          # ports over unchanged); block variants stay as their action string.
-          if spec.to_s.strip.downcase.tr("-", "_") == "passthrough"
-            {"passthrough_all_hosts" => true}
-          else
-            normalize_violation_action(spec)
-          end
-        when Hash
-          hosts = Array(spec[:passthrough_hosts] || spec["passthrough_hosts"]).map(&:to_s)
-          patterns = Array(spec[:passthrough_host_patterns] || spec["passthrough_host_patterns"]).map(&:to_s)
-          all = !!(spec[:passthrough_all_hosts] || spec["passthrough_all_hosts"])
-          # An empty passthrough (no hosts, no patterns, not all) passes nothing
-          # through — a no-op the native builder silently degrades to its default
-          # action. Reject it with actionable guidance rather than accept a spec
-          # that does nothing the caller intended.
-          if hosts.empty? && patterns.empty? && !all
-            raise ArgumentError,
-              "passthrough on_violation needs at least one of :passthrough_hosts, " \
-              ":passthrough_host_patterns, or :passthrough_all_hosts (use \"block\" " \
-              "if blocking is the intent)"
-          end
-          out = {}
-          out["passthrough_hosts"] = hosts unless hosts.empty?
-          out["passthrough_host_patterns"] = patterns unless patterns.empty?
-          out["passthrough_all_hosts"] = true if all
-          out
-        else
-          raise ArgumentError, "on_violation must be a String or a Hash (got #{spec.inspect})"
-        end
-      end
-
-      # Map a block-variant action onto the canonical underscore spelling the
+      # Map a secret-leak action onto the canonical underscore spelling the
       # native layer expects. Also accepts the upstream kebab-case wire spellings
       # ("block-and-log"/"block-and-terminate") used by the CLI, Go SDK, and
       # sandbox config files, so a policy copied from another SDK ports over
-      # unchanged instead of being rejected.
-      def normalize_violation_action(spec)
+      # unchanged instead of being rejected. Runtime v0.7 has no sandbox-wide
+      # passthrough action; per-secret `allow_placeholder_for:` replaces it.
+      def normalize_violation_action(spec, key)
+        unless spec.is_a?(String) || spec.is_a?(Symbol)
+          raise ArgumentError, "#{key}: must be a String or Symbol (got #{spec.class})"
+        end
         action = spec.to_s.strip.downcase.tr("-", "_")
+        if action == "passthrough"
+          raise ArgumentError,
+            "#{key}: :passthrough was removed in 0.18.0 (runtime v0.7); list the hosts that may " \
+            "receive the unchanged placeholder in each secret's allow_placeholder_for: instead"
+        end
         unless %w[block block_and_log block_and_terminate].include?(action)
           raise ArgumentError,
-            "unknown on_violation #{spec.inspect} (expected block, " \
-            "block_and_log/block-and-log, block_and_terminate/block-and-terminate, " \
-            "passthrough, or a Hash with :passthrough_hosts/:passthrough_host_patterns/:passthrough_all_hosts)"
+            "unknown #{key} #{spec.inspect} (expected block, " \
+            "block_and_log/block-and-log, or block_and_terminate/block-and-terminate)"
         end
         action
       end

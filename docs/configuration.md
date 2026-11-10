@@ -28,7 +28,7 @@ To leave headroom for a live CPU/memory resize later, reserve a ceiling with
 The full option list — `init`/`ephemeral`, disk-image `fstype`, `log_level`,
 `security`, `rlimits`, `pull_policy`, `secrets`, `patches`
 (`Microsandbox::Patch`), the structured `root_disk:` (`Microsandbox::RootDisk`),
-`from_snapshot:`, `cmd:`, `detached:`, `idle_timeout`/`max_duration`, and more —
+`secret_violation_action:`, `cmd:`, `detached:`, `idle_timeout`/`max_duration`, and more —
 is documented in [surface.md](surface.md) and typed in
 [`sig/microsandbox.rbs`](../sig/microsandbox.rbs).
 
@@ -48,19 +48,21 @@ Microsandbox::Sandbox.create("worker", image: "python",
 
 ### Strict hostname policy
 
-`strict: true` (runtime `v0.6.18`) makes a hostname-rule allow fail closed
+Strict mode (runtime `v0.6.18`) makes a hostname-rule allow fail closed
 unless the runtime can actually see the request authority (plain-HTTP `Host`,
 or SNI/`:authority` under TLS interception); a bypassed or non-intercepted
 HTTPS flow allowed only by a hostname rule is then denied before the upstream
-dial. Default `false`; create-only. Independently of `strict:`, any policy with
-domain rules checks plain-HTTP `Host` headers against it.
+dial. It is **on by default since 0.18.0** (runtime `v0.7`; it was opt-in
+before): pass `strict: false` to opt out. Create-only. Independently of
+`strict:`, any policy with domain rules checks plain-HTTP `Host` headers
+against it.
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",
   network: Microsandbox::NetworkPolicy.custom(default_egress: :deny,
     rules: [{ action: :allow, direction: :egress, protocol: :tcp, port: 443,
-              destination: Microsandbox::Destination.domain("api.example.com") }]),
-  strict: true)
+              destination: Microsandbox::Destination.domain("api.example.com") }]))
+# strict hostname enforcement applies by default; `strict: false` opts out.
 ```
 
 ## Outbound proxy
@@ -93,18 +95,57 @@ Microsandbox::Sandbox.create("worker", image: "python",
 ## Secrets
 
 `secrets:` gives the guest a placeholder and substitutes the real value only in
-requests to the hosts you allow, with multi-host / wildcard allow-lists,
-injection toggles, and a per-secret or sandbox-level violation policy. At
-create time it is an **Array of specs**: `env:` is the variable the guest sees
-(holding the placeholder), `value:` is the real secret, and `host:` / `hosts:` /
-`host_patterns:` is the allow-list.
+requests to the hosts you allow. At create time it is an **Array of specs** (one
+bare spec Hash also works): `env:` is the variable the guest sees (holding the
+placeholder), `value:` is the real secret, and `allow:` — required, non-empty —
+lists the hosts that may receive the real value: exact names, `"*.example.com"`
+wildcards, or `"*"` for ANY host (upstream's `allow_any_host_dangerous`; use it
+only when you mean it).
 
 ```ruby
 Microsandbox::Sandbox.create("worker", image: "python",
-  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }])
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), allow: ["api.example.com"] }])
 # inside the guest: $API_KEY is "$MSB_API_KEY"; the proxy swaps in the real
 # value for requests to api.example.com only
 ```
+
+The other per-secret keys:
+
+- `allow_placeholder_for:` — hosts that may receive the **unchanged
+  placeholder** without it counting as a violation (e.g. an internal service
+  that only forwards it).
+- `placeholder:` — the guest-visible stand-in (default `$MSB_<env>`).
+- `require_tls_identity:` — substitute only over TLS whose server identity was
+  verified (default `true`).
+- `substitution:` — where the value may be substituted:
+  `{ headers:, header_fields:, query:, body: }`. Defaults: headers on, query
+  and body off. `header_fields: [...]` limits header substitution to the named
+  headers (it needs headers on). At least one location must stay enabled.
+  Basic credentials in an `Authorization` header are substituted whenever
+  header substitution applies.
+- `violation_action:` — what happens when the placeholder heads for a host not
+  in `allow:`/`allow_placeholder_for:`: `:block`, `:block_and_log`, or
+  `:block_and_terminate` (kebab-case spellings are accepted too). The
+  sandbox-wide default is the create keyword `secret_violation_action:`
+  (upstream default `block_and_log`).
+
+### Migrating secrets from 0.17.x
+
+Runtime `v0.7` replaced the secrets vocabulary. The old keys raise
+`ArgumentError` naming their replacement instead of being silently dropped:
+
+| 0.17.x | 0.18.0 |
+| --- | --- |
+| `host:` / `hosts:` / `host_patterns:` | one `allow: [...]` list (wildcards included) |
+| `inject_headers:` / `inject_query:` / `inject_body:` | `substitution: { headers:, query:, body: }` |
+| `inject_basic_auth:` | removed: Basic credentials are substituted with header substitution |
+| `require_tls:` | `require_tls_identity:` |
+| `on_violation:` (per secret) | `violation_action:` |
+| `on_secret_violation:` (create) | `secret_violation_action:` |
+| passthrough violation policy (`passthrough_hosts:` / `"passthrough"`) | per-secret `allow_placeholder_for: [...]` |
+
+`passthrough:` is still accepted on a secret spec as a deprecated alias of
+`allow_placeholder_for:` (it warns, and the two lists are merged).
 
 An inline `value:` is part of the sandbox's saved configuration: it is stored
 in cleartext in the local catalog under the runtime home (`~/.microsandbox` by
@@ -142,13 +183,16 @@ written from the host without booting a sandbox via `Volume.fs` /
 `VolumeInfo#fs`.
 
 A relative host path (`volumes: { "/data" => "./data" }`, `image: "./rootfs"`,
-a `root_disk:` image, a `Patch.copy_file` source, a `tls:` certificate, a
-path-form `from_snapshot:`) is resolved **once, when the sandbox is created**,
+a `root_disk:` image, a `Patch.copy_file` source, a `tls:` certificate) is resolved **once, when the sandbox is created**,
 against the creating process's working directory, and stored as an absolute
 path. Starting the sandbox later from another directory mounts the same host
-directory. Resolution does not follow symlinks. Sandboxes created by gem
+directory. Resolution does not follow symlinks, and since runtime `v0.7` a bind
+path that goes through a symlink (macOS's `/tmp` → `/private/tmp`, say) is
+refused unless the mount sets `follow_root_symlinks: true`; pass the resolved
+path instead. Sandboxes created by gem
 versions before `0.17.1` kept the relative path and resolved it again on every
 start ([GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm));
 recreate those. On a cloud backend, host paths are sent as written.
 
-Boot from a snapshot with `Sandbox.create(name, from_snapshot: "snap-name-or-path")`.
+Booting from a snapshot is not bound in this build: `Sandbox.create(name,
+from_snapshot: ...)` was removed with runtime `v0.7` and raises with directions.

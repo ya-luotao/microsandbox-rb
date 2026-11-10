@@ -222,8 +222,8 @@ sandbox from the image pulls it), or in a fresh process started with
 ## One runtime line per home
 
 The runtime home (`MSB_HOME`, default `~/.microsandbox`) belongs to one
-runtime line at a time. This gem embeds runtime `v0.6.18` and, on first use,
-installs that version of `msb` into the home — replacing a different version
+runtime line at a time. This gem embeds the runtime named by
+`Microsandbox::RUNTIME_VERSION` and, on first use, installs that version of `msb` into the home — replacing a different version
 that is already there, including a newer `msb` installed by the official CLI.
 In the other direction, a `0.7.x` `msb` migrates the catalog to a newer schema
 the first time it opens it, after which every local call from this gem fails

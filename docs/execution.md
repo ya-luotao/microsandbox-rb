@@ -59,6 +59,23 @@ Microsandbox::Sandbox.create("stream", image: "public.ecr.aws/docker/library/pyt
 end
 ```
 
+Writing an empty string to `stdin` is a no-op since 0.18.0 (runtime `v0.7`);
+before, `write("")` sent EOF. Call `close` to send EOF.
+
+### Execution limits
+
+Runtime `v0.7` applies fixed flow-control limits to every sandbox (upstream's
+`ExecLimits` defaults; they cannot be changed per call):
+
+- at most **128** executions per sandbox, counting exited streams whose output
+  has not been read yet — the next one is refused ("active execution limit
+  reached"), so drain or drop handles you no longer need;
+- **64 KiB** of stdin may be waiting to enter a command's pipe, sent in chunks
+  of at most **16 KiB**;
+- **1 MiB** of stdout/stderr may be waiting unread, delivered in chunks of at
+  most **16 KiB**: a command that writes faster than you read is paced, not
+  buffered without bound.
+
 `shell_stream` is the shell-script counterpart. For a host-TTY-coupled
 interactive session (raw mode + SIGWINCH), use `attach`/`attach_shell`.
 

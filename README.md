@@ -209,8 +209,8 @@ share the upstream tag, but the numbers have diverged since and the gem version
 is **not** an indicator of the embedded runtime. Ask the build instead:
 
 ```ruby
-Microsandbox::VERSION          # => "0.17.5"  (the gem's own version)
-Microsandbox.runtime_version   # => "v0.6.18" (the embedded upstream runtime tag)
+Microsandbox::VERSION          # => "0.18.0"  (the gem's own version)
+Microsandbox.runtime_version   # => "v0.7.14" (the embedded upstream runtime tag)
 ```
 
 While the gem is `0.x`, a breaking API change bumps the minor and a fix bumps
@@ -250,6 +250,7 @@ constants against this gem's. Every release records its runtime in
 | `0.17.3` | `v0.6.18` | gem-only fix release, fork safety: a forked child (Puma, Resque, Solid Queue) rebuilds its backend and runtime on its first SDK call instead of hanging or crashing, a handle created before the fork raises `ForkedHandleError` in the child, and nothing inherited from the parent is dropped there |
 | `0.17.4` | `v0.6.18` | gem-only fix release: fork safety identifies a process by pid and fork generation (survives pid reuse), `install`/`setup` leave the backend alone in a forked child, a `Sandbox` subclass's `initialize` runs outside the interrupt mask, and the macOS limit that a forked child must not build network clients is documented; rustls 0.23.46 fixes four TLS advisories (RUSTSEC-2026-0346 to -0349) |
 | `0.17.5` | `v0.6.18` | gem-only security release: dependency updates clear RUSTSEC-2026-0381 to -0410, including the zstd used for image-layer decompression (three zstd advisories remain only on an external-kernel path the runtime never takes, see `CHANGELOG.md`); `SECURITY.md` maps more upstream advisories to gem versions |
+| `0.18.0` | `v0.7.14` | adopts upstream `v0.7.14` (**breaking**): the `msb` runtime must be exactly the SDK's version (a stale home runtime is replaced automatically, other sources are refused); secrets vocabulary (`allow:`/`allow_placeholder_for:`/`substitution:`/`violation_action:`), `secret_violation_action:`; `Sandbox.restore` replaces `create(from_snapshot:)`, `full:` replaces `resumable:`; HTTP denials default to a JSON 403 (`http:` option); one-way catalog migrations and macOS storage recovery for existing sandboxes; Ruby >= 3.3 |
 
 ## Development
 

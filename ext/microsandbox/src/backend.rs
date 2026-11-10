@@ -77,7 +77,7 @@ fn build_backend(
     profile: Option<String>,
 ) -> Result<Arc<dyn Backend>, MicrosandboxError> {
     match kind.trim().to_ascii_lowercase().as_str() {
-        "local" => Ok(Arc::new(microsandbox::LocalBackend::lazy())),
+        "local" => Ok(Arc::new(microsandbox::LocalBackend::lazy()?)),
         "cloud" => {
             let cloud = match profile {
                 Some(profile) => microsandbox::CloudBackend::from_profile(&profile),
@@ -408,15 +408,28 @@ fn pop_default_backend(token: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// The active default backend kind: `"local"` or `"cloud"`. First call lazily
-/// resolves the env/profile/config ladder. Synchronous (an `RwLock` read).
-fn default_backend_kind() -> Result<String, Error> {
+/// The active default backend's description, mapped to a Ruby error when the
+/// ambient selection is misconfigured. Since runtime v0.7.x a backend that
+/// failed to resolve reports `BackendKind::Cloud` from `kind()` (upstream's
+/// "safe intent marker"), so `kind()` alone would misreport a configuration
+/// error as a cloud backend; `info()` returns the error instead.
+fn active_backend_info() -> Result<microsandbox::BackendInfo, Error> {
     ensure_this_process_backend()?;
-    Ok(match microsandbox::default_backend().kind() {
+    microsandbox::default_backend_info().map_err(error::to_ruby)
+}
+
+fn kind_str(kind: microsandbox::BackendKind) -> &'static str {
+    match kind {
         microsandbox::BackendKind::Local => "local",
         microsandbox::BackendKind::Cloud => "cloud",
     }
-    .to_string())
+}
+
+/// The active default backend kind: `"local"` or `"cloud"`. First call lazily
+/// resolves the env/profile/config ladder; a misconfigured selection raises
+/// (see `active_backend_info`). Synchronous (an `RwLock` read).
+fn default_backend_kind() -> Result<String, Error> {
+    Ok(kind_str(active_backend_info()?.kind).to_string())
 }
 
 /// Secret-safe description of the active default backend (v0.6.9):
@@ -425,16 +438,9 @@ fn default_backend_kind() -> Result<String, Error> {
 /// included. Like `default_backend_kind`, the first call freezes ambient
 /// env/profile resolution for the process.
 fn default_backend_info() -> Result<magnus::RHash, Error> {
-    ensure_this_process_backend()?;
-    let info = microsandbox::default_backend_info();
+    let info = active_backend_info()?;
     let hash = crate::runtime::ruby().hash_new();
-    let _ = hash.aset(
-        "kind",
-        match info.kind {
-            microsandbox::BackendKind::Local => "local",
-            microsandbox::BackendKind::Cloud => "cloud",
-        },
-    );
+    let _ = hash.aset("kind", kind_str(info.kind));
     let _ = hash.aset("api_url", info.api_url);
     let _ = hash.aset("source", info.source.as_str());
     let _ = hash.aset("profile", info.profile);

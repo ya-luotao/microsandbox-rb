@@ -8,6 +8,102 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+## [0.18.0] - TBD
+
+Adopts upstream runtime `v0.7.14` (from `v0.6.18`). **Breaking.** Runtime
+`v0.7` replaces the secrets vocabulary and the snapshot model, refuses to
+launch any `msb` other than the exact release this gem pins, and turns strict
+hostname enforcement on by default. Migration notes are below.
+
+### Breaking
+
+- **The runtime must be exactly `v0.7.14`.** The core reads the version
+  embedded in the `msb` executable and refuses a runtime that does not
+  advertise protected sandbox state ("upgrade required … does not advertise
+  protected sandbox state"); a `0.6.x` runtime left in `~/.microsandbox` or
+  named by `MSB_PATH` is refused at launch. `msb` wrapper scripts (`#!`) are
+  treated as legacy runtimes.
+- **Secrets use the runtime `v0.7` vocabulary.** A spec takes `env:`, `value:`
+  and a required, non-empty `allow:` list (exact hosts, `*.example.com`
+  wildcards, or `"*"` for any host), plus `allow_placeholder_for:`,
+  `placeholder:`, `require_tls_identity:`, `violation_action:` and
+  `substitution: { headers:, header_fields:, query:, body: }`. The 0.17 keys
+  (`host:`/`hosts:`/`host_patterns:`, `inject_*:`, `require_tls:`,
+  `on_violation:`) raise `ArgumentError` naming their replacement.
+  `inject_basic_auth:` is gone: Basic credentials in an `Authorization` header
+  are substituted whenever header substitution applies.
+- **`Sandbox.create(on_secret_violation:)` → `secret_violation_action:`**
+  (`:block`, `:block_and_log` — the default — or `:block_and_terminate`). The
+  passthrough policy is gone; list the hosts that may receive the unchanged
+  placeholder in each secret's `allow_placeholder_for:`.
+- **`Sandbox.create(from_snapshot:)` is removed** and raises with directions.
+- **`Snapshot.create(resumable:)` → `full:`.** `SnapshotInfo` gains `#id` and
+  `#parent_id`; `#scope` is `:disk` or `:full`; `#path` may be `nil`, and
+  `#parent_digest` is always `nil` (v0.7 descriptors link parents by id).
+- **Snapshots live in groups, and a bare name selects a group head.**
+  `Snapshot.create(name, from_sandbox: src)` (and `SandboxHandle#snapshot`)
+  publishes the artifact into the group named after `src`, as member `name`,
+  and makes it the head. `open`/`get`/`verify`/`save`/`remove` therefore no
+  longer accept the create `name` on its own: select `"src:name"`, the
+  returned `SnapshotInfo#id` (now set on every local path, including
+  `get`/`list`/`load`), the digest, or the path. A loaded archive lands in a
+  fresh group with no head, so address it by id or path. `create(force: true)`
+  is rejected (grouped snapshots are immutable).
+- **Strict hostname policy is on by default** (upstream #1643): a
+  hostname-rule allow must be backed by an inspectable request authority.
+  Pass `strict: false` to opt out.
+- **`MSB_PATH` must name a complete runtime pair.** The core resolves `msb`
+  and `libkrunfw` together: the library must sit next to the executable (or
+  in `../lib/`), or be given with `MSB_LIBKRUNFW_PATH`; `MSB_LIBKRUNFW_PATH`
+  alone is an error. `Microsandbox.runtime_path` raises when no complete pair
+  resolves, and the local backend reads `MSB_PATH` once, when it is first
+  used in a process.
+- **A bind mount whose host path goes through a symlink is refused** unless
+  the mount sets `follow_root_symlinks: true` (e.g. macOS's `/tmp`, `/var`);
+  pass the resolved path.
+- `Microsandbox.default_backend_kind` / `default_backend_info` raise on a
+  misconfigured backend selection instead of reporting `:cloud`.
+- Ruby `ExecStdin#write("")` is a no-op; it used to send EOF. Call `#close`.
+
+### Changed
+
+- `max_connections:` maps to the runtime's `max_tcp_connections` (same
+  meaning).
+- Execution flow control is fixed by the runtime: at most 128 executions per
+  sandbox (exited streams with unread output included), 64 KiB of pending
+  stdin, 1 MiB of unread output, 16 KiB chunks. See `docs/execution.md`.
+- `Microsandbox.install` and non-forced `Microsandbox.setup` keep a complete
+  runtime pair already in the target home, as documented: upstream's `v0.7`
+  installer would otherwise download the bundle before deciding.
+
+### Deprecated
+
+- A secret's `passthrough:` key: an alias of `allow_placeholder_for:` that
+  warns; the two lists are merged.
+
+### Security
+
+- `deny.toml` ignores RUSTSEC-2026-0459 (libsqlite3-sys): sqlx-sqlite 0.9.0
+  caps it below the fixed release, exploiting it needs a less-trusted writer
+  of the catalog database and its WAL, and the catalog directory has been
+  owner-only since runtime `v0.7.12`. The three zstd ignores of 0.17.5 are
+  gone: the runtime's external-kernel path (msb_krun_vmm 0.1.45) now pulls
+  zstd 0.13.4 / zstd-safe 7.4.0, which carry the fixes.
+
+### Migration notes
+
+- Rewrite secret specs with the table in `docs/configuration.md#secrets`.
+- Replace `on_secret_violation:` with `secret_violation_action:`, and
+  `Snapshot.create(resumable: true)` with `full: true`.
+- Keep `SnapshotInfo#id` from `Snapshot.create` and pass it (or
+  `"<source-sandbox>:<name>"`) wherever a snapshot name was passed before.
+- Give `MSB_PATH` its `libkrunfw` (next to it, in `../lib/`, or via
+  `MSB_LIBKRUNFW_PATH`).
+- Pass `strict: false` where a hostname-rule allow must keep working without
+  an inspectable authority.
+- Upgrade or remove an older runtime in `~/.microsandbox`
+  (`Microsandbox.setup(force: true)`).
+
 ## [0.17.5] - 2026-10-27
 
 Gem-only security release; the embedded runtime stays at **`v0.6.18`**.
@@ -1630,7 +1726,8 @@ microsandbox runtime, aligned with the official Python/Node/Go SDKs.
   core crate has Apple-native deps). Until precompiled gems are published,
   installing from source requires a Rust toolchain (stable >= 1.91).
 
-[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.5...HEAD
+[Unreleased]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.5...v0.18.0
 [0.17.5]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.4...v0.17.5
 [0.17.4]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/ya-luotao/microsandbox-rb/compare/v0.17.2...v0.17.3

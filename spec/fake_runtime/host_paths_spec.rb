@@ -2,19 +2,23 @@
 
 require "securerandom"
 require "tmpdir"
+require_relative "fake_runtime_helper"
 
 # GHSA-mcw9-9rf6-p4rm: a relative host path must be anchored to the working
 # directory of the process that CREATES the sandbox, and stored that way, so a
 # later start from another directory cannot mount a different host directory.
 #
-# These are real native calls with no runtime installed: the local backend
-# persists the sandbox row before it looks for `msb`, the create then fails,
-# and `Sandbox.get(name).config` shows exactly what a restart would read.
-RSpec.describe "host paths are pinned at create time (no VM, no runtime)" do
-  let(:name) { "rb-unit-paths-#{SecureRandom.hex(4)}" }
+# Real native calls against the fake runtime (no VM): the create succeeds, and
+# `Sandbox.get(name).config` shows exactly what a restart would read. (Until
+# 0.17.x this ran with no runtime at all, reading back the row a failed create
+# left behind; since runtime v0.7 a failed create leaves no row.)
+RSpec.describe "host paths are pinned at create time (fake runtime)", :fake_runtime do
+  let(:name) { "rb-paths-#{SecureRandom.hex(4)}" }
 
   around do |example|
-    Dir.mktmpdir("msb-rb-paths-") do |dir|
+    # A real directory: since runtime v0.7 a bind path through a symlink (macOS
+    # /var -> /private/var) is refused unless follow_root_symlinks is set.
+    Dir.mktmpdir("msb-rb-paths-", File.realpath(Dir.tmpdir)) do |dir|
       Dir.chdir(dir) do
         FileUtils.mkdir_p(%w[rootfs/bin data])
         File.write("data/seed.txt", "seed")
@@ -24,21 +28,15 @@ RSpec.describe "host paths are pinned at create time (no VM, no runtime)" do
     end
   end
 
-  before do
-    # spec_helper isolates MSB_HOME only outside integration runs.
-    skip "writes to MSB_HOME; runs only in the hermetic unit environment" if ENV["MICROSANDBOX_INTEGRATION"]
-    allow(Microsandbox).to receive(:ensure_runtime!)
-  end
-
   after do
     Microsandbox::Sandbox.remove(name)
   rescue Microsandbox::Error
     nil
   end
 
-  # The persisted config of a create that got as far as spawning the runtime.
+  # The persisted config of a sandbox created (and stopped) from here.
   def persisted(**opts)
-    expect { Microsandbox::Sandbox.create(name, **opts) }.to raise_error(Microsandbox::Error, /msb/)
+    Microsandbox::Sandbox.create(name, **opts).stop
     Microsandbox::Sandbox.get(name).config
   end
 
@@ -76,15 +74,6 @@ RSpec.describe "host paths are pinned at create time (no VM, no runtime)" do
     File.write("data.raw", "x" * 4096)
     config = persisted(image: here("rootfs"), volumes: {"/d" => {disk: "./data.raw", fstype: "ext4"}})
     expect(config.fetch("mounts").first).to include("type" => "DiskImage", "host" => here("data.raw"))
-  end
-
-  it "resolves a path-form from_snapshot: against the creating directory, and leaves a name alone" do
-    expect { Microsandbox::Sandbox.create(name, from_snapshot: "./snap") }
-      .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(here("snap"))}/)
-    expect { Microsandbox::Sandbox.create(name, from_snapshot: "~snap") }
-      .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(here("~snap"))}/)
-    expect { Microsandbox::Sandbox.create(name, from_snapshot: "snap") }
-      .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(File.join(ENV.fetch("MSB_HOME"), "snapshots", "snap"))}/)
   end
 
   # A vsock host socket is not pinned because it can never be stored relative:

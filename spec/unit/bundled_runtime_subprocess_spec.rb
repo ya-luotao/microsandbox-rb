@@ -63,12 +63,36 @@ RSpec.describe "bundled runtime activation (subprocess)" do
     end
   end
 
+  # Since runtime v0.7 the core resolves msb and libkrunfw as ONE pair: an
+  # MSB_PATH executable needs its library beside it (`<dir>/` or `<dir>/../lib/`)
+  # or MSB_LIBKRUNFW_PATH.
+  def custom_pair(dir)
+    root = File.join(dir, "custom")
+    FileUtils.mkdir_p([File.join(root, "bin"), File.join(root, "lib")])
+    msb = File.join(root, "bin", "msb")
+    File.write(msb, "#!/bin/sh\necho msb 0.0.0\n")
+    File.chmod(0o755, msb)
+    firmware = RUBY_PLATFORM.include?("darwin") ? "libkrunfw.5.dylib" : "libkrunfw.so.5.6.1"
+    File.write(File.join(root, "lib", firmware), "")
+    msb
+  end
+
   it "lets MSB_PATH outrank the companion gem" do
+    Dir.mktmpdir do |dir|
+      fake_companion(dir)
+      msb = custom_pair(dir)
+      out, err, status = run_child(dir, report, "MSB_PATH" => msb)
+      expect(status).to be_success, err
+      expect(out).to eq(msb)
+    end
+  end
+
+  it "refuses an MSB_PATH executable with no libkrunfw to pair it with (runtime v0.7)" do
     Dir.mktmpdir do |dir|
       fake_companion(dir)
       out, err, status = run_child(dir, report, "MSB_PATH" => "/opt/custom/msb")
       expect(status).to be_success, err
-      expect(out).to eq("/opt/custom/msb")
+      expect(out).to start_with("ERROR: ").and include("/opt/custom/msb has no matching libkrunfw")
     end
   end
 

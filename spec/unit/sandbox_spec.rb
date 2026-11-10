@@ -130,44 +130,110 @@ RSpec.describe Microsandbox::Sandbox do
       end.to raise_error(ArgumentError, /:username and :password/)
     end
 
-    it "maps pull_policy and normalizes a simple secret (host -> hosts)" do
+    it "maps pull_policy and normalizes a simple secret (a bare allow: host becomes a list)" do
       Microsandbox::Sandbox.create(
         "box", image: "x", pull_policy: "never",
-        secrets: [{env: "OPENAI_API_KEY", value: "sk-123", host: "api.openai.com"}]
+        secrets: [{env: "OPENAI_API_KEY", value: "sk-123", allow: "api.openai.com"}]
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "pull_policy" => "never",
           "secrets" => [{"env" => "OPENAI_API_KEY", "value" => "sk-123",
-                         "hosts" => ["api.openai.com"]}]
+                         "allow" => ["api.openai.com"]}]
         )
       )
     end
 
-    it "normalizes the full secret surface (patterns, injection, violation)" do
+    it "normalizes the full secret surface (allow, placeholder hosts, TLS identity, violation, substitution)" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
         secrets: [{
-          env: "STRIPE_KEY", value: "sk_live", hosts: ["api.stripe.com"],
-          host_patterns: ["*.stripe.com"], placeholder: "$STRIPE", require_tls: true,
-          inject_headers: true, inject_query: false, inject_body: true,
-          on_violation: "block_and_terminate"
+          env: "STRIPE_KEY", value: "sk_live", allow: ["api.stripe.com", "*.stripe.com"],
+          allow_placeholder_for: ["10.0.0.1"], placeholder: "$STRIPE", require_tls_identity: true,
+          violation_action: :block_and_terminate,
+          substitution: {headers: true, header_fields: ["Authorization"], query: false, body: true}
         }],
-        on_secret_violation: {passthrough_hosts: ["10.0.0.1"]}
+        secret_violation_action: :block
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
           "secrets" => [{
-            "env" => "STRIPE_KEY", "value" => "sk_live", "hosts" => ["api.stripe.com"],
-            "host_patterns" => ["*.stripe.com"], "placeholder" => "$STRIPE",
-            "require_tls" => true, "inject_headers" => true, "inject_query" => false,
-            "inject_body" => true, "on_violation" => "block_and_terminate"
+            "env" => "STRIPE_KEY", "value" => "sk_live", "allow" => ["api.stripe.com", "*.stripe.com"],
+            "allow_placeholder_for" => ["10.0.0.1"], "placeholder" => "$STRIPE",
+            "require_tls_identity" => true, "violation_action" => "block_and_terminate",
+            "substitution" => {"headers" => true, "header_fields" => ["Authorization"],
+                               "query" => false, "body" => true}
           }],
-          "on_secret_violation" => {"passthrough_hosts" => ["10.0.0.1"]}
+          "secret_violation_action" => "block"
         )
       )
+    end
+
+    it "passes allow: [\"*\"] through (the native layer maps it to upstream's allow_any_host_dangerous)" do
+      Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "K", value: "v", allow: ["*"]}])
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box", hash_including("secrets" => [{"env" => "K", "value" => "v", "allow" => ["*"]}])
+      )
+    end
+
+    it "accepts the deprecated passthrough: alias with a warning, merged into allow_placeholder_for:" do
+      expect do
+        Microsandbox::Sandbox.create(
+          "box", image: "x",
+          secrets: [{env: "K", value: "v", allow: ["api.example.com"],
+                     allow_placeholder_for: ["a.internal"], passthrough: ["b.internal", "a.internal"]}]
+        )
+      end.to output(/passthrough: is deprecated; use allow_placeholder_for:/).to_stderr
+      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
+        "box",
+        hash_including("secrets" => [hash_including("allow_placeholder_for" => ["a.internal", "b.internal"])])
+      )
+    end
+
+    {
+      host: /:host was removed in 0\.18\.0.*use allow:/,
+      hosts: /:hosts was removed.*use allow:/,
+      host_patterns: /:host_patterns was removed.*use allow:/,
+      inject_headers: /:inject_headers was removed.*substitution: \{ headers:/,
+      inject_query: /:inject_query was removed.*substitution: \{ query:/,
+      inject_body: /:inject_body was removed.*substitution: \{ body:/,
+      inject_basic_auth: /:inject_basic_auth was removed.*Authorization/,
+      require_tls: /:require_tls was removed.*require_tls_identity:/,
+      on_violation: /:on_violation was removed.*violation_action:.*allow_placeholder_for:/
+    }.each do |key, message|
+      it "rejects the removed secret key :#{key} with its replacement" do
+        expect do
+          Microsandbox::Sandbox.create("box", image: "x",
+            secrets: [{env: "K", value: "sk_live_LEAK", allow: ["a.example"]}.merge(key => true)])
+        end.to raise_error(ArgumentError, message) { |e| expect(e.message).not_to include("sk_live_LEAK") }
+        expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+      end
+    end
+
+    it "rejects an unknown secret key and a key given as both Symbol and String" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "K", value: "v", allow: ["a"], hots: ["a"]}])
+      end.to raise_error(ArgumentError, /unknown secret key\(s\) :hots/)
+      both = {env: "K", value: "v", allow: ["a"]}.merge("env" => "K")
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [both])
+      end.to raise_error(ArgumentError, /both a Symbol and a String/)
+    end
+
+    it "validates substitution: (unknown keys, header_fields without headers, nothing enabled)" do
+      base = {env: "K", value: "v", allow: ["a.example"]}
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [base.merge(substitution: {cookies: true})])
+      end.to raise_error(ArgumentError, /unknown substitution key\(s\) :cookies/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x",
+          secrets: [base.merge(substitution: {headers: false, header_fields: ["X-Key"], body: true})])
+      end.to raise_error(ArgumentError, /header_fields: requires headers substitution/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [base.merge(substitution: {headers: false})])
+      end.to raise_error(ArgumentError, /at least one of headers, query, or body/)
     end
 
     it "raises on a secret spec missing env/value" do
@@ -187,10 +253,16 @@ RSpec.describe Microsandbox::Sandbox do
       }
     end
 
-    it "raises on a secret spec with no allowed host" do
+    it "raises on a secret spec with no allowed host (an empty allow: too)" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y"}])
-      end.to raise_error(ArgumentError, /:host, :hosts, or :host_patterns/)
+      end.to raise_error(ArgumentError, /needs a non-empty allow:/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y", allow: []}])
+      end.to raise_error(ArgumentError, /needs a non-empty allow:/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "y", allow: [""]}])
+      end.to raise_error(ArgumentError, /entries must be non-empty host names/)
     end
 
     it "never embeds the cleartext secret value in the host error" do
@@ -199,7 +271,7 @@ RSpec.describe Microsandbox::Sandbox do
       expect do
         Microsandbox::Sandbox.create("box", image: "x", secrets: [{env: "X", value: "sk_live_LEAK"}])
       end.to raise_error(ArgumentError) { |e|
-        expect(e.message).to match(/:host, :hosts, or :host_patterns/)
+        expect(e.message).to match(/needs a non-empty allow:/)
         expect(e.message).not_to include("sk_live_LEAK")
       }
     end
@@ -250,48 +322,43 @@ RSpec.describe Microsandbox::Sandbox do
     it "accepts the upstream kebab-case violation spellings" do
       Microsandbox::Sandbox.create(
         "box", image: "x",
-        secrets: [{env: "K", value: "v", hosts: ["api.example.com"],
-                   on_violation: "block-and-terminate"}],
-        on_secret_violation: "block-and-log"
+        secrets: [{env: "K", value: "v", allow: ["api.example.com"],
+                   violation_action: "block-and-terminate"}],
+        secret_violation_action: "block-and-log"
       )
       expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
         "box",
         hash_including(
-          "secrets" => [hash_including("on_violation" => "block_and_terminate")],
-          "on_secret_violation" => "block_and_log"
+          "secrets" => [hash_including("violation_action" => "block_and_terminate")],
+          "secret_violation_action" => "block_and_log"
         )
       )
     end
 
-    it "maps the bare \"passthrough\" string to passthrough-all-hosts (SDK parity)" do
-      Microsandbox::Sandbox.create(
-        "box", image: "x",
-        secrets: [{env: "K", value: "v", hosts: ["api.example.com"], on_violation: "passthrough"}],
-        on_secret_violation: "passthrough"
-      )
-      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
-        "box",
-        hash_including(
-          "secrets" => [hash_including("on_violation" => {"passthrough_all_hosts" => true})],
-          "on_secret_violation" => {"passthrough_all_hosts" => true}
-        )
-      )
-    end
-
-    it "raises on an unknown violation action string" do
+    it "rejects the passthrough violation action, pointing at allow_placeholder_for: (runtime v0.7)" do
       expect do
-        Microsandbox::Sandbox.create(
-          "box", image: "x", on_secret_violation: "nope"
-        )
-      end.to raise_error(ArgumentError, /unknown on_violation "nope"/)
+        Microsandbox::Sandbox.create("box", image: "x", secret_violation_action: "passthrough")
+      end.to raise_error(ArgumentError, /:passthrough was removed in 0\.18\.0.*allow_placeholder_for:/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x",
+          secrets: [{env: "K", value: "v", allow: ["a"], violation_action: :passthrough}])
+      end.to raise_error(ArgumentError, /:passthrough was removed/)
     end
 
-    it "rejects an effectively-empty passthrough Hash (a no-op spec)" do
+    it "raises on an unknown violation action string, and on a non-String/Symbol one" do
       expect do
-        Microsandbox::Sandbox.create(
-          "box", image: "x", on_secret_violation: {passthrough_hosts: []}
-        )
-      end.to raise_error(ArgumentError, /passthrough on_violation needs at least one/)
+        Microsandbox::Sandbox.create("box", image: "x", secret_violation_action: "nope")
+      end.to raise_error(ArgumentError, /unknown secret_violation_action "nope"/)
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", secret_violation_action: {passthrough_hosts: ["a"]})
+      end.to raise_error(ArgumentError, /secret_violation_action: must be a String or Symbol/)
+    end
+
+    it "rejects the removed on_secret_violation: keyword with directions" do
+      expect do
+        Microsandbox::Sandbox.create("box", image: "x", on_secret_violation: "block")
+      end.to raise_error(ArgumentError, /on_secret_violation: was removed in 0\.18\.0.*secret_violation_action:/)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
     end
 
     it "normalizes a Hash init with args and env" do
@@ -689,18 +756,13 @@ RSpec.describe Microsandbox::Sandbox do
       expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
     end
 
-    it "raises when both image: and from_snapshot: are given" do
-      expect do
-        Microsandbox::Sandbox.create("box", image: "x", from_snapshot: "snap")
-      end.to raise_error(ArgumentError, /either image: or from_snapshot:/)
+    it "rejects the removed from_snapshot: keyword with directions (alone or with image:)" do
+      [{from_snapshot: "snap"}, {image: "x", from_snapshot: "snap"}].each do |kwargs|
+        expect do
+          Microsandbox::Sandbox.create("box", **kwargs)
+        end.to raise_error(ArgumentError, /from_snapshot: was removed in 0\.18\.0.*Sandbox\.restore/)
+      end
       expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
-    end
-
-    it "accepts from_snapshot: on its own" do
-      Microsandbox::Sandbox.create("box", from_snapshot: "snap")
-      expect(Microsandbox::Native::Sandbox).to have_received(:create).with(
-        "box", hash_including("from_snapshot" => "snap")
-      )
     end
 
     it "rejects a negative replace_with_timeout before any runtime round-trip" do
@@ -1012,7 +1074,7 @@ RSpec.describe Microsandbox::Sandbox do
     it "validates .connect_or_create kwargs exactly like .create" do
       expect do
         Microsandbox::Sandbox.connect_or_create("box", image: "x", from_snapshot: "snap")
-      end.to raise_error(ArgumentError, /either image: or from_snapshot:/)
+      end.to raise_error(ArgumentError, /from_snapshot: was removed in 0\.18\.0/)
       expect(Microsandbox::Native::Sandbox).not_to have_received(:connect_or_create)
     end
 

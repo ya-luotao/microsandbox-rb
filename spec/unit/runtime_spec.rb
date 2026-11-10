@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "open3"
+require "rbconfig"
 require "tmpdir"
 
 RSpec.describe "Microsandbox runtime helpers" do
@@ -22,16 +24,23 @@ RSpec.describe "Microsandbox runtime helpers" do
   describe ".runtime_path" do
     # The gem is SDK-only (no build-time runtime download), so a clean host has
     # nothing for the resolver's lower tiers to find and the bare call raises.
-    # `MSB_PATH` is the resolver's top tier and is returned as-is, which makes
-    # the example deterministic without a runtime install. The Rust resolver
-    # reads the real process environment, so set ENV itself (not a stub_const).
+    # `MSB_PATH` is the resolver's top tier, which makes the example
+    # deterministic without a runtime install. Two runtime-v0.7 rules shape it:
+    # the local backend captures MSB_PATH once, when it is first built, so the
+    # example runs in a child process; and the executable needs its libkrunfw
+    # (here `<dir>/../lib/`), because the core resolves the two as one pair.
     it "returns the resolved msb path as a string (MSB_PATH wins the ladder)" do
       Dir.mktmpdir do |dir|
-        msb = File.join(dir, "msb")
+        FileUtils.mkdir_p([File.join(dir, "bin"), File.join(dir, "lib")])
+        msb = File.join(dir, "bin", "msb")
         File.write(msb, "")
-        with_env("MSB_PATH" => msb) do
-          expect(Microsandbox.runtime_path).to eq(msb)
-        end
+        firmware = RUBY_PLATFORM.include?("darwin") ? "libkrunfw.5.dylib" : "libkrunfw.so.5.6.1"
+        File.write(File.join(dir, "lib", firmware), "")
+        code = 'require "microsandbox"; print Microsandbox.runtime_path'
+        out, err, status = Open3.capture3({"MSB_PATH" => msb, "RUBYOPT" => nil},
+          RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__), "-e", code)
+        expect(status).to be_success, err
+        expect(out).to eq(msb)
       end
     end
   end
@@ -288,19 +297,19 @@ RSpec.describe "Microsandbox runtime helpers" do
       Microsandbox.instance_variable_set(:@bundled_msb_path, bundled)
     end
 
-    it "still runs the version-correcting installer when the runtime is present" do
-      # Regression guard for the stale-runtime boot failure (issue #18):
-      # `installed?` checks file *presence* only, so a stale msb left by an older
-      # gem passes it. `install` is idempotent + version-correcting (cheap
-      # `msb --version`, re-downloads only on mismatch), so ensure_runtime! must
-      # delegate to it even when present rather than short-circuit. It must NOT
-      # warn in this case (nothing is missing).
+    it "does not run the installer when a runtime is present (transitional, presence only)" do
+      # Runtime v0.7's installer downloads before it decides whether there is
+      # anything to do, so ensure_runtime! no longer delegates to it
+      # unconditionally. This is presence-only for now: the stale-runtime guard
+      # of issue #18 (a stale home triggers a forced reinstall) returns with the
+      # version-aware bootstrap. It must NOT warn either (nothing is missing).
       allow(Microsandbox).to receive(:installed?).and_return(true)
       allow(Microsandbox).to receive(:install)
       allow(Microsandbox).to receive(:warn)
       Microsandbox.ensure_runtime!
       Microsandbox.ensure_runtime! # second call is memoized, not re-checked
-      expect(Microsandbox).to have_received(:install).once
+      expect(Microsandbox).to have_received(:installed?).once
+      expect(Microsandbox).not_to have_received(:install)
       expect(Microsandbox).not_to have_received(:warn)
     end
 
@@ -346,8 +355,9 @@ RSpec.describe "Microsandbox runtime helpers" do
     it "still runs the installer when something outranks the bundled msb (e.g. MSB_PATH)" do
       Microsandbox.instance_variable_set(:@bundled_msb_path, "/gems/binaries/vendor/bin/msb")
       allow(Microsandbox).to receive(:runtime_path).and_return("/opt/custom/msb")
-      allow(Microsandbox).to receive(:installed?).and_return(true)
+      allow(Microsandbox).to receive(:installed?).and_return(false)
       allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:warn)
       Microsandbox.ensure_runtime!
       expect(Microsandbox).to have_received(:install).once
     end
@@ -355,8 +365,9 @@ RSpec.describe "Microsandbox runtime helpers" do
     it "treats a resolver error as 'bundled runtime not active' rather than raising" do
       Microsandbox.instance_variable_set(:@bundled_msb_path, "/gems/binaries/vendor/bin/msb")
       allow(Microsandbox).to receive(:runtime_path).and_raise(Microsandbox::Error, "msb binary not found")
-      allow(Microsandbox).to receive(:installed?).and_return(true)
+      allow(Microsandbox).to receive(:installed?).and_return(false)
       allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:warn)
       expect { Microsandbox.ensure_runtime! }.not_to raise_error
       expect(Microsandbox).to have_received(:install).once
     end

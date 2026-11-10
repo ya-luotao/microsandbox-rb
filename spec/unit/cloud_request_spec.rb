@@ -147,17 +147,16 @@ RSpec.describe "create request as serialized by the native layer" do
     it "serializes network.strict == false for an explicit strict: false, via the network block" do
       body = capture_create(strict: false)
       expect(body.dig("network", "strict")).to be(false)
-      # `false` is also the core default, so on its own it cannot tell an applied
-      # setter from a skipped one. Entering the builder's network block is what
-      # materializes the resolved policy into the request (the core serializes
-      # the full local network config once `network(|n| ...)` runs); its
-      # presence is the evidence that `strict: false` reached the block.
+      # Entering the builder's network block is what materializes the resolved
+      # policy into the request (the core serializes the full local network
+      # config once `network(|n| ...)` runs); its presence is the evidence that
+      # `strict: false` reached the block rather than some other default.
       expect(body["network"]).to have_key("policy")
     end
 
-    it "leaves the network block untouched when strict: is omitted (baseline for the above)" do
+    it "leaves the network block untouched when strict: is omitted: the core default, strict since runtime v0.7" do
       body = capture_create
-      expect(body["network"]).to eq("enabled" => true, "strict" => false)
+      expect(body["network"]).to eq("enabled" => true, "strict" => true)
     end
   end
 

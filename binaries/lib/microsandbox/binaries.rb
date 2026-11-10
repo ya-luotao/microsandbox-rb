@@ -20,11 +20,11 @@ module Microsandbox
   module Binaries
     # Gem version — kept in lockstep with `Microsandbox::VERSION` (asserted by
     # the SDK's spec/unit/version_spec.rb).
-    VERSION = "0.17.5"
+    VERSION = "0.18.0"
 
     # The upstream microsandbox release the vendored binaries come from. Must
     # equal the SDK's `Microsandbox::RUNTIME_VERSION` for the SDK to use them.
-    RUNTIME_VERSION = "v0.6.18"
+    RUNTIME_VERSION = "v0.7.14"
 
     # Directory holding the vendored runtime (`bin/`, `lib/`, `manifest.json`).
     ROOT = File.expand_path("../../vendor", __dir__)

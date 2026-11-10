@@ -434,8 +434,8 @@ extension.
 ## Core-crate dependency (self-contained)
 
 `ext/microsandbox/Cargo.toml` depends on the core crate via a **pinned git tag**
-(`microsandbox` / `microsandbox-network`, pinned to the same tag as
-`Microsandbox::RUNTIME_VERSION` — currently `v0.6.18`), so the gem builds anywhere
+(every upstream git dependency — `microsandbox`, `microsandbox-network` — on
+the one tag recorded in `Microsandbox::RUNTIME_VERSION`), so the gem builds anywhere
 — CI and end-user source installs —
 without an adjacent checkout. For fast local development against a sibling
 microsandbox checkout, copy `.cargo/config.toml.example` to `.cargo/config.toml`

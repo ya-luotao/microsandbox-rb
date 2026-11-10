@@ -32,8 +32,14 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   (`Sandbox.create_with_progress` → `PullSession`).
 - **Named volumes** — `Volume.create`/`get`/`list`/`remove`/`get_default`, plus
   host-side `Volume.fs`/`VolumeInfo#fs` read/write.
-- **Snapshots** — create/open/list/list_dir/reindex/verify/save/load, boot from
-  snapshot, opt-in `record_integrity:`.
+- **Snapshots** — create (disk scope, or `full:` for a resumable checkpoint)/
+  open/list/list_dir/reindex/verify/save/load, opt-in `record_integrity:`.
+  Selectors follow runtime `v0.7` snapshot groups (a bare name selects a group
+  head; `group:member`, id, digest or path select one artifact — see
+  [images.md](images.md#snapshots)); the group surface itself (`group:`, head
+  selection) is not bound yet. Booting a sandbox from a snapshot is not bound
+  yet: create's `from_snapshot:` was removed with runtime `v0.7` (passing it
+  raises with directions).
 - **Rootfs patches** — `Microsandbox::Patch` (text/file/append/copy_file/
   copy_dir/symlink/mkdir/remove) via `create(patches:)`.
 - **Root disk** — structured `root_disk:` (managed / tmpfs / disk / flat via
@@ -45,8 +51,14 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   `ipv6_pool:`), `max_connections`, `trust_host_cas`, `strict` hostname mode,
   outbound SOCKS4/SOCKS5 `proxy:` (`OutboundProxy`/`SecretSource`),
   `rate_limiter:`, `vsock:`.
-- **Secrets** — multi-host / wildcard allow-lists, injection toggles,
-  per-secret `on_violation:` and sandbox-level `on_secret_violation:` policy.
+- **Secrets** — per-secret `allow:` lists (exact hosts, `*.example.com`
+  wildcards, or `"*"` for any host), `allow_placeholder_for:` hosts that may
+  receive the unchanged placeholder, `placeholder:`, `require_tls_identity:`,
+  `substitution:` locations (headers / named header fields / query / body),
+  per-secret `violation_action:` and the sandbox-wide `secret_violation_action:`
+  (`block` / `block_and_log` / `block_and_terminate`). See
+  [configuration.md](configuration.md#secrets) for the 0.17 → 0.18 key map;
+  the removed keys and `on_secret_violation:` raise with their replacement.
 - **SSH** — `Sandbox#ssh` → `SshClient`/`SftpClient`/`SshServer`, with
   `inactivity_timeout:`.
 - **Raw agent client** — `Microsandbox::AgentClient` → `AgentStream`/
@@ -70,8 +82,9 @@ Create options span resources (`cpus`/`memory`/`max_cpus`/`max_memory`),
 disk-image `fstype`, `ports`/`ports_udp`, network policy + config,
 `log_level`/`quiet_logs`/`security`/`rlimits`/`pull_policy`/`secrets`/`patches`/`volumes`
 (bind/named/tmpfs/disk with mount policies, `uid`/`gid`, `quota_mib`),
-`idle_timeout`/`max_duration`, `from_snapshot`, `detached`, and
-`replace`/`replace_with_timeout`.
+`secret_violation_action`, `idle_timeout`/`max_duration`, `detached`, and
+`replace`/`replace_with_timeout`. Two keywords remain only to fail loudly
+since 0.18.0: `from_snapshot` and `on_secret_violation`.
 
 ## Not yet exposed
 

@@ -1,12 +1,14 @@
 //! Pin caller-supplied host paths when a sandbox is created (GHSA-mcw9-9rf6-p4rm).
 //!
-//! The pinned core stores a relative host path exactly as written and resolves
-//! it against the working directory of whichever process later starts the
-//! sandbox, so restarting from another directory mounts a different host
-//! directory than the one the caller meant. Upstream fixed that in v0.7.6 by
-//! resolving host paths once, at the local-backend boundary, before the
-//! configuration is persisted. This module applies the same resolution in the
-//! binding so it also holds on the runtime this gem pins.
+//! Runtimes before v0.7.6 stored a relative host path exactly as written and
+//! resolved it against the working directory of whichever process later
+//! started the sandbox, so restarting from another directory mounted a
+//! different host directory than the one the caller meant. Upstream fixed that
+//! in v0.7.6 by resolving host paths once, at the local-backend boundary,
+//! before the configuration is persisted. The binding added the same
+//! resolution in 0.17.1 and keeps it: it is idempotent with upstream's (an
+//! anchored path is absolute, which upstream leaves alone), so the contract
+//! does not depend on which layer does it.
 //!
 //! Rules, matching upstream's `resolve_host_paths`:
 //!
@@ -46,7 +48,10 @@ pub struct HostPaths {
 }
 
 impl HostPaths {
-    /// Capture which backend the create call is about to dispatch to.
+    /// Capture which backend the create call is about to dispatch to. A
+    /// misconfigured selection reports `Cloud` from `kind()` (runtime v0.7.x),
+    /// so paths pass through untouched — and the create itself then fails with
+    /// that configuration error before anything is persisted.
     pub fn for_default_backend() -> Result<Self, Error> {
         crate::backend::ensure_this_process_backend()?;
         Ok(Self {
@@ -85,25 +90,5 @@ impl HostPaths {
         } else {
             Ok(Image::Text(text))
         }
-    }
-
-    /// Pin a `from_snapshot:` value when it is a path rather than a snapshot
-    /// name or digest. Uses the core's own name-vs-path split: a value that
-    /// contains `/` or starts with `.` or `~` is a path. (The core does not
-    /// expand `~`; like any other relative path it is anchored as written.)
-    pub fn pin_snapshot(self, raw: String) -> Result<String, Error> {
-        let path_like = raw.contains('/') || raw.starts_with('.') || raw.starts_with('~');
-        if !self.local || !path_like {
-            return Ok(raw);
-        }
-        self.pin(raw, "snapshot path")?
-            .into_os_string()
-            .into_string()
-            .map_err(|path| {
-                error::to_ruby(MicrosandboxError::InvalidConfig(format!(
-                    "cannot resolve snapshot path {}: the current directory is not valid UTF-8",
-                    PathBuf::from(path).display()
-                )))
-            })
     }
 }

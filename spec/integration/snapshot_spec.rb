@@ -5,10 +5,12 @@
 RSpec.describe "snapshots + pull policy", :integration do
   let(:image) { default_test_image }
 
-  it "snapshots a stopped sandbox and boots a new one from it" do
+  it "snapshots a stopped sandbox, verifies it and round-trips its archive" do
     src = unique_sandbox_name("rb-snapsrc")
     snap = "rb-snap-#{Process.pid}-#{rand(100_000)}"
     marker = "snap-data-#{rand(1_000_000)}"
+    info = nil
+    loaded = nil
     begin
       sb = Microsandbox::Sandbox.create(src, image: image)
       sb.fs.write("/root/marker.txt", marker)
@@ -19,53 +21,82 @@ RSpec.describe "snapshots + pull policy", :integration do
       info = Microsandbox::Snapshot.create(snap, from_sandbox: src, record_integrity: true)
       expect(info).to be_a(Microsandbox::SnapshotInfo)
       expect(info.digest).to start_with("sha256:")
+      expect(info.id).to start_with("snap_")
       expect(info.scope).to eq(:disk)
       expect(info.state_kind).to eq("file")
-      expect(Microsandbox::Snapshot.list.map(&:name)).to include(snap)
+      listed = Microsandbox::Snapshot.list.find { |h| h.id == info.id }
+      expect(listed&.name).to eq(snap)
+      expect(listed.digest).to eq(info.digest)
 
-      report = Microsandbox::Snapshot.verify(snap)
+      # v0.7 snapshot groups: the artifact is a member of the group named after
+      # the source sandbox, aliased `snap`, and that group's head. A bare name
+      # selects a group head, so `snap` alone is not a selector any more.
+      expect { Microsandbox::Snapshot.verify(snap) }.to raise_error(Microsandbox::SnapshotNotFoundError)
+      [info.id, info.digest, info.path, "#{src}:#{snap}", src].each do |selector|
+        expect(Microsandbox::Snapshot.get(selector).id).to eq(info.id)
+      end
+
+      report = Microsandbox::Snapshot.verify(info.id)
       expect(report).to be_a(Microsandbox::SnapshotVerifyReport)
       expect(report).to be_verified
       expect(report.algorithm).not_to be_nil
-
-      Microsandbox::Sandbox.create(unique_sandbox_name("rb-snapboot"), from_snapshot: snap) do |sb2|
-        expect(sb2.fs.read_text("/root/marker.txt")).to eq(marker)
-      end
 
       # Archive round-trip via the renamed save/load: save the artifact,
       # remove the original, load it back, and confirm the same identity.
       require "tmpdir"
       Dir.mktmpdir do |dir|
         archive = File.join(dir, "snap.tar.zst")
-        Microsandbox::Snapshot.save(snap, archive)
+        Microsandbox::Snapshot.save(info.id, archive)
         expect(File.size(archive)).to be > 0
 
-        Microsandbox::Snapshot.remove(snap, force: true)
+        Microsandbox::Snapshot.remove(info.id, force: true)
+        expect(Microsandbox::Snapshot.list.map(&:id)).not_to include(info.id)
         loaded = Microsandbox::Snapshot.load(archive)
-        # Digest identity is what load guarantees (mirrors upstream's own
-        # round-trip tests): the name alias is an index-level property that
-        # `remove` already dropped, so the loaded artifact re-registers by
-        # digest only.
+        # The id and digest survive the round-trip (mirrors upstream's own
+        # round-trip tests); the copy lands in a fresh generated group with no
+        # head selected, so it is addressed by id, not by a name.
         expect(loaded.digest).to eq(info.digest)
-        expect(Microsandbox::Snapshot.list.map(&:digest)).to include(info.digest)
+        expect(loaded.id).to eq(info.id)
+        expect(Microsandbox::Snapshot.verify(loaded.id)).to be_verified
       end
     ensure
-      begin
-        Microsandbox::Snapshot.remove(snap, force: true)
-      rescue
-        Microsandbox::Error
-      end
-      # The loaded copy is indexed by digest (its name alias is gone) — remove
-      # it by digest so a run doesn't leak the re-imported artifact.
-      begin
-        Microsandbox::Snapshot.remove(info.digest, force: true) if info
-      rescue
-        Microsandbox::Error
+      # Remove by id: a name alone no longer selects a member. One copy exists
+      # at a time (the original is removed before the load), so the id is
+      # unambiguous here.
+      [loaded, info].compact.map(&:id).uniq.each do |id|
+        Microsandbox::Snapshot.remove(id, force: true)
+      rescue Microsandbox::Error
+        nil
       end
       begin
         Microsandbox::Sandbox.remove(src)
-      rescue
-        Microsandbox::Error
+      rescue Microsandbox::Error
+        nil
+      end
+    end
+  end
+
+  it "boots a new sandbox from a snapshot" do
+    pending "runtime v0.7 removed create(from_snapshot:); Sandbox.restore is not bound yet"
+    src = unique_sandbox_name("rb-snapsrc")
+    snap = "rb-snap-#{Process.pid}-#{rand(100_000)}"
+    info = nil
+    begin
+      Microsandbox::Sandbox.create(src, image: image).stop
+      info = Microsandbox::Snapshot.create(snap, from_sandbox: src)
+      Microsandbox::Sandbox.restore(info.id, name: unique_sandbox_name("rb-snapboot")) do |sb2|
+        expect(sb2.exec("true").exit_code).to eq(0)
+      end
+    ensure
+      begin
+        Microsandbox::Snapshot.remove(info.id, force: true) if info
+      rescue Microsandbox::Error
+        nil
+      end
+      begin
+        Microsandbox::Sandbox.remove(src)
+      rescue Microsandbox::Error
+        nil
       end
     end
   end
@@ -75,26 +106,27 @@ RSpec.describe "snapshots + pull policy", :integration do
   it "reports :not_recorded for a snapshot created without record_integrity" do
     src = unique_sandbox_name("rb-snapnorec")
     snap = "rb-snapnorec-#{Process.pid}-#{rand(100_000)}"
+    info = nil
     begin
       sb = Microsandbox::Sandbox.create(src, image: image)
       sb.stop
 
-      Microsandbox::Snapshot.create(snap, from_sandbox: src)
-      report = Microsandbox::Snapshot.verify(snap)
+      info = Microsandbox::Snapshot.create(snap, from_sandbox: src)
+      report = Microsandbox::Snapshot.verify("#{src}:#{snap}")
       expect(report).not_to be_verified
       expect(report.status).to eq(:not_recorded)
       expect(report.algorithm).to be_nil
       expect(report.content_digest).to be_nil
     ensure
       begin
-        Microsandbox::Snapshot.remove(snap, force: true)
-      rescue
-        Microsandbox::Error
+        Microsandbox::Snapshot.remove(info.id, force: true) if info
+      rescue Microsandbox::Error
+        nil
       end
       begin
         Microsandbox::Sandbox.remove(src)
-      rescue
-        Microsandbox::Error
+      rescue Microsandbox::Error
+        nil
       end
     end
   end

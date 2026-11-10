@@ -59,7 +59,34 @@ Without `registry_auth:`, the core's default credential resolution still applies
 ## Snapshots
 
 `Microsandbox::Snapshot` covers create / open / get / list / list_dir / reindex /
-remove / verify / save / load, and `Sandbox.create(name, from_snapshot: ...)` boots
-from one. Snapshot failures raise the typed `Snapshot*Error` classes listed in
+remove / verify / save / load. `Snapshot.create` captures the disk by default;
+`full: true` (it replaced `resumable:` in 0.18.0) captures a resumable
+checkpoint. Booting a sandbox from a snapshot is not bound yet in this build:
+`Sandbox.create(from_snapshot:)` was removed with runtime `v0.7` and raises
+with directions. Snapshot failures raise the typed `Snapshot*Error` classes listed in
 [errors.md](errors.md). Payload integrity is opt-in (`record_integrity:`), and
 `verify` can report `:not_recorded` for snapshots taken without it.
+
+Since 0.18.0 (runtime `v0.7`) snapshots live in **groups**. `Snapshot.create(name,
+from_sandbox: src)` publishes the artifact into the group named after `src`, as a
+member aliased `name`, and makes it the group head. Selectors for `open` / `get` /
+`verify` / `save` / `remove` resolve like this:
+
+| Selector | Selects |
+|---|---|
+| `"src"` (a bare name) | the group's current head |
+| `"src:name"` | that member |
+| `info.id` (`snap_…`) or `info.digest` (`sha256:…`) | that snapshot |
+| `info.path` (anything containing `/` or starting with `.`) | that artifact directory |
+
+So the `name` given to `create` is not a selector on its own any more: keep the
+returned `SnapshotInfo#id`. `Snapshot.load` puts the copy into a fresh generated
+group with no head selected, so address it by `id` or `path` too. `create(force:
+true)` is rejected (grouped snapshots are immutable). The group surface itself
+(choosing a group, moving the head) is not bound yet.
+
+```ruby
+info = Microsandbox::Snapshot.create("before-upgrade", from_sandbox: "worker")
+Microsandbox::Snapshot.verify(info.id)
+Microsandbox::Snapshot.get("worker:before-upgrade").id == info.id  # => true
+```

@@ -125,17 +125,11 @@ module Microsandbox
     # runtime out of band); the runtime is then left untouched and a missing or
     # stale one surfaces at the operation itself.
     #
-    # NOTE: this delegates to {install} even when {installed?} is already true,
-    # rather than short-circuiting on presence. {installed?} (upstream
-    # `verify_installation`) only confirms the `msb`/`libkrunfw` files *exist*, not
-    # that their version matches the runtime this gem build links. {install} is
-    # idempotent and *version-correcting*: it runs a cheap `msb --version` and
-    # re-downloads ONLY when the binary is absent or its version differs, then
-    # no-ops. A presence-only short-circuit would let a stale `msb` left in
-    # `~/.microsandbox` by an older gem pass, then fail every {Sandbox.create} on a
-    # host↔guest wire-protocol mismatch (e.g. a `v0.5.8` `msb` rejecting the
-    # `--config-fd` flag the `v0.5.10` runtime passes). Keep the {install} call on
-    # this path — do not "optimize" it back to skip-when-present.
+    # NOTE (transitional): the v0.7 installer downloads the release bundle
+    # before it checks whether a complete pair is already installed, so this
+    # only calls {install} when {installed?} reports nothing resolvable. A
+    # version-aware bootstrap (replace a stale home runtime, refuse other
+    # mismatched sources) replaces this check.
     # @return [nil]
     def ensure_runtime!
       return if @runtime_ready
@@ -167,8 +161,8 @@ module Microsandbox
           warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
                "downloading to ~/.microsandbox (set MICROSANDBOX_NO_AUTO_INSTALL to skip, " \
                "or install the microsandbox-rb-binaries gem to ship it with your bundle)..."
+          install
         end
-        install
         @runtime_ready = true
       end
       nil

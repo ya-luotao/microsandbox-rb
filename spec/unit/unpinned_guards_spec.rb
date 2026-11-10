@@ -139,8 +139,10 @@ RSpec.describe "guards no other spec pins" do
 
     before do
       allow(Microsandbox).to receive(:ensure_runtime!).and_call_original
-      allow(Microsandbox).to receive(:installed?).and_return(true)
+      # Missing runtime, so "not disabled" is observable as an install.
+      allow(Microsandbox).to receive(:installed?).and_return(false)
       allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:warn)
     end
 
     def ensure_runtime_with(value)

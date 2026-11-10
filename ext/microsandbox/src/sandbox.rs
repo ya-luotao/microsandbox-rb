@@ -28,7 +28,7 @@ use microsandbox::sandbox::{
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
 use microsandbox::RegistryAuth;
-use microsandbox_network::builder::ViolationActionBuilder;
+use microsandbox::SecretViolationAction;
 use microsandbox_network::dns::Nameserver;
 use microsandbox_network::policy::{
     Action, Destination, DestinationGroup, Direction, NetworkPolicy, NetworkProfile, PortRange,
@@ -101,9 +101,6 @@ impl Sandbox {
                     host_path::Image::Path(path) => b.image(path),
                 };
             }
-        }
-        if let Some(v) = conv::opt_string(opts, "from_snapshot")? {
-            b = b.from_snapshot(host_paths.pin_snapshot(v)?);
         }
         if let Some(v) = conv::opt_u8(opts, "cpus")? {
             b = b.cpus(v);
@@ -372,20 +369,21 @@ impl Sandbox {
             b = b.rlimit_range(resource, soft, hard);
         }
         // secrets: each entry is normalized by the Ruby layer to a string-keyed
-        // Hash — env (req), value (req), hosts / host_patterns (allow lists),
-        // placeholder, require_tls, inject_{headers,basic_auth,query,body},
-        // on_violation. Routed through the full secret builder (`b.secret`), which
-        // auto-enables TLS interception. Mirrors the Python/Node SecretEntry.
+        // Hash — env (req), value (req), allow (req, non-empty), and optional
+        // allow_placeholder_for, placeholder, require_tls_identity,
+        // violation_action, substitution {headers, header_fields, query, body}.
+        // Routed through the full secret builder (`b.secret`), which
+        // auto-enables TLS interception. Mirrors the Python SecretEntry.
         for h in conv::opt_hash_vec(opts, "secrets")? {
             let spec = parse_secret(h)?;
             b = b.secret(move |s| spec.apply(s));
         }
-        // Sandbox-level secret-leak policy (block / block_and_log /
-        // block_and_terminate / passthrough). Applied via the network builder,
-        // which accumulates on top of any policy/dns/tls already configured.
-        if let Some(v) = conv::opt::<Value>(opts, "on_secret_violation")? {
-            let spec = parse_violation_spec(v)?;
-            b = b.network(move |n| n.on_secret_violation(move |va| spec.apply(va)));
+        // Sandbox-level secret-leak action (block / block_and_log /
+        // block_and_terminate). Applied via the network builder, which
+        // accumulates on top of any policy/dns/tls already configured.
+        if let Some(v) = conv::opt_string(opts, "secret_violation_action")? {
+            let action = parse_violation_action(&v)?;
+            b = b.network(move |n| n.secret_violation_action(action));
         }
         // Advanced network configuration (custom DNS, TLS-interception tuning,
         // guest IP pools, connection cap, host-CA trust), applied via the network
@@ -477,7 +475,7 @@ impl Sandbox {
                     n = n.ipv6_pool(p);
                 }
                 if let Some(m) = max_connections {
-                    n = n.max_connections(m);
+                    n = n.max_tcp_connections(m);
                 }
                 if let Some(t) = trust_host_cas {
                     n = n.trust_host_cas(t);
@@ -1342,81 +1340,39 @@ fn parse_patches(opts: RHash, host_paths: HostPaths) -> Result<Vec<Patch>, Error
 // Secret parsing (mirrors the Python/Node SecretEntry surface)
 //--------------------------------------------------------------------------------------------------
 
-/// A secret-leak response. Per-secret (`on_violation:`) and sandbox-level
-/// (`on_secret_violation:`) share the same shape.
-enum ViolationSpec {
-    Block,
-    BlockAndLog,
-    BlockAndTerminate,
-    Passthrough {
-        hosts: Vec<String>,
-        patterns: Vec<String>,
-        all: bool,
-    },
-}
-
-impl ViolationSpec {
-    fn apply(self, mut v: ViolationActionBuilder) -> ViolationActionBuilder {
-        match self {
-            ViolationSpec::Block => v.block(),
-            ViolationSpec::BlockAndLog => v.block_and_log(),
-            ViolationSpec::BlockAndTerminate => v.block_and_terminate(),
-            ViolationSpec::Passthrough {
-                hosts,
-                patterns,
-                all,
-            } => {
-                for h in hosts {
-                    v = v.passthrough_host(h);
-                }
-                for p in patterns {
-                    v = v.passthrough_host_pattern(p);
-                }
-                if all {
-                    v = v.passthrough_all_hosts(true);
-                }
-                v
-            }
-        }
+/// Parse a secret-leak action. The Ruby layer normalizes the spelling (kebab
+/// or snake case) before it gets here; this rejects anything else so a typo
+/// can never silently fall back to the default action.
+fn parse_violation_action(v: &str) -> Result<SecretViolationAction, Error> {
+    match v {
+        "block" => Ok(SecretViolationAction::Block),
+        "block_and_log" => Ok(SecretViolationAction::BlockAndLog),
+        "block_and_terminate" => Ok(SecretViolationAction::BlockAndTerminate),
+        other => Err(error::base_error(format!(
+            "unknown secret violation action {other:?} (expected block, block_and_log, or block_and_terminate)"
+        ))),
     }
 }
 
-/// Parse `on_violation:` — a String (block variants) or a Hash describing a
-/// passthrough action — into a [`ViolationSpec`].
-fn parse_violation_spec(v: Value) -> Result<ViolationSpec, Error> {
-    if let Ok(s) = String::try_convert(v) {
-        return match s.as_str() {
-            "block" => Ok(ViolationSpec::Block),
-            "block_and_log" => Ok(ViolationSpec::BlockAndLog),
-            "block_and_terminate" => Ok(ViolationSpec::BlockAndTerminate),
-            other => Err(error::base_error(format!(
-                "unknown on_violation {other:?} (expected block/block_and_log/\
-                 block_and_terminate, or a Hash with :passthrough_hosts/\
-                 :passthrough_host_patterns/:passthrough_all_hosts)"
-            ))),
-        };
-    }
-    let h = RHash::try_convert(v)
-        .map_err(|_| error::base_error("on_violation must be a String or a Hash"))?;
-    Ok(ViolationSpec::Passthrough {
-        hosts: conv::opt_string_vec(h, "passthrough_hosts")?,
-        patterns: conv::opt_string_vec(h, "passthrough_host_patterns")?,
-        all: conv::opt_bool(h, "passthrough_all_hosts")?,
-    })
+/// Which request locations a secret is substituted in. `None` leaves the
+/// builder default (headers on, query/body off).
+#[derive(Default)]
+struct SubstitutionSpec {
+    headers: Option<bool>,
+    header_fields: Option<Vec<String>>,
+    query: Option<bool>,
+    body: Option<bool>,
 }
 
 struct SecretSpec {
     env: String,
     value: String,
-    hosts: Vec<String>,
-    host_patterns: Vec<String>,
+    allow: Vec<String>,
+    allow_placeholder_for: Vec<String>,
     placeholder: Option<String>,
-    require_tls: Option<bool>,
-    inject_headers: Option<bool>,
-    inject_basic_auth: Option<bool>,
-    inject_query: Option<bool>,
-    inject_body: Option<bool>,
-    on_violation: Option<ViolationSpec>,
+    require_tls_identity: Option<bool>,
+    violation_action: Option<SecretViolationAction>,
+    substitution: Option<SubstitutionSpec>,
 }
 
 fn parse_secret(h: RHash) -> Result<SecretSpec, Error> {
@@ -1424,60 +1380,78 @@ fn parse_secret(h: RHash) -> Result<SecretSpec, Error> {
         conv::opt_string(h, "env")?.ok_or_else(|| error::base_error("secret requires :env"))?;
     let value =
         conv::opt_string(h, "value")?.ok_or_else(|| error::base_error("secret requires :value"))?;
-    let hosts = conv::opt_string_vec(h, "hosts")?;
-    let host_patterns = conv::opt_string_vec(h, "host_patterns")?;
-    if hosts.is_empty() && host_patterns.is_empty() {
+    let allow = conv::opt_string_vec(h, "allow")?;
+    // The Ruby layer already rejects this; checked again here because the
+    // upstream builder asserts on an empty allow list (a panic across FFI).
+    if allow.is_empty() {
         return Err(error::base_error(
-            "secret requires at least one allowed host (:host, :hosts, or :host_patterns)",
+            "secret requires at least one allowed host (:allow)",
         ));
     }
-    let on_violation = conv::opt::<Value>(h, "on_violation")?
-        .map(parse_violation_spec)
+    let violation_action = conv::opt_string(h, "violation_action")?
+        .map(|v| parse_violation_action(&v))
         .transpose()?;
+    let substitution = match conv::opt::<RHash>(h, "substitution")? {
+        Some(sub) => Some(SubstitutionSpec {
+            headers: conv::opt::<bool>(sub, "headers")?,
+            header_fields: conv::opt::<Vec<String>>(sub, "header_fields")?,
+            query: conv::opt::<bool>(sub, "query")?,
+            body: conv::opt::<bool>(sub, "body")?,
+        }),
+        None => None,
+    };
     Ok(SecretSpec {
         env,
         value,
-        hosts,
-        host_patterns,
+        allow,
+        allow_placeholder_for: conv::opt_string_vec(h, "allow_placeholder_for")?,
         placeholder: conv::opt_string(h, "placeholder")?,
-        require_tls: conv::opt::<bool>(h, "require_tls")?,
-        inject_headers: conv::opt::<bool>(h, "inject_headers")?,
-        inject_basic_auth: conv::opt::<bool>(h, "inject_basic_auth")?,
-        inject_query: conv::opt::<bool>(h, "inject_query")?,
-        inject_body: conv::opt::<bool>(h, "inject_body")?,
-        on_violation,
+        require_tls_identity: conv::opt::<bool>(h, "require_tls_identity")?,
+        violation_action,
+        substitution,
     })
 }
 
 impl SecretSpec {
+    /// Apply in the order the Python SDK uses (`sdk/python/src/helpers.rs`).
     fn apply(self, mut s: SecretBuilder) -> SecretBuilder {
         s = s.env(self.env).value(self.value);
-        for host in self.hosts {
-            s = s.allow_host(host);
+        for host in self.allow {
+            // `allow("*")` asserts upstream; the any-host form is an explicit,
+            // separately named call.
+            s = if host == "*" {
+                s.allow_any_host_dangerous(true)
+            } else {
+                s.allow(host)
+            };
         }
-        for pat in self.host_patterns {
-            s = s.allow_host_pattern(pat);
+        for host in self.allow_placeholder_for {
+            s = s.allow_placeholder_for(host);
+        }
+        if let Some(action) = self.violation_action {
+            s = s.violation_action(action);
         }
         if let Some(p) = self.placeholder {
             s = s.placeholder(p);
         }
-        if let Some(rt) = self.require_tls {
-            s = s.require_tls_identity(rt);
+        if let Some(required) = self.require_tls_identity {
+            s = s.require_tls_identity(required);
         }
-        if let Some(enabled) = self.inject_headers {
-            s = s.inject_headers(enabled);
-        }
-        if let Some(enabled) = self.inject_basic_auth {
-            s = s.inject_basic_auth(enabled);
-        }
-        if let Some(enabled) = self.inject_query {
-            s = s.inject_query(enabled);
-        }
-        if let Some(enabled) = self.inject_body {
-            s = s.inject_body(enabled);
-        }
-        if let Some(action) = self.on_violation {
-            s = s.on_violation(move |v| action.apply(v));
+        if let Some(sub) = self.substitution {
+            if let Some(fields) = sub.header_fields {
+                s = s.substitute_in_header_fields(fields);
+            }
+            // After the field list: `substitute_in_header_fields` turns header
+            // substitution on, and an explicit `headers: false` must still win.
+            if let Some(enabled) = sub.headers {
+                s = s.substitute_in_headers(enabled);
+            }
+            if let Some(enabled) = sub.query {
+                s = s.substitute_in_query(enabled);
+            }
+            if let Some(enabled) = sub.body {
+                s = s.substitute_in_body(enabled);
+            }
         }
         s
     }
@@ -2455,6 +2429,9 @@ fn build_modify_patch(opts: RHash) -> Result<SandboxModificationPatch, Error> {
         workdir: conv::opt_string(opts, "workdir")?,
         secrets: parse_modify_secrets(opts)?,
         secrets_remove: conv::opt_string_vec(opts, "remove_secrets")?,
+        // Published-port edits (`ports`/`ports_remove`, runtime v0.7) are not
+        // exposed yet: empty means "leave the ports as they are".
+        ..Default::default()
     })
 }
 
@@ -2490,6 +2467,10 @@ fn parse_modify_secrets(opts: RHash) -> Result<Vec<SecretModificationPatch>, Err
             value: value.unwrap_or_default().into(),
             placeholder: conv::opt_string(h, "placeholder")?,
             allowed_hosts: conv::opt_string_vec(h, "allowed_hosts")?,
+            // The v0.7 policy fields (substitution, placeholder hosts,
+            // violation action, TLS-identity requirement) are not exposed on
+            // modify yet; None/empty keeps the stored values.
+            ..Default::default()
         });
     }
     Ok(out)
