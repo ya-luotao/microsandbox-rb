@@ -915,6 +915,71 @@ RSpec.describe Microsandbox::Sandbox do
       end.to output(/cleanup gave up on sandbox "box", which may still be running.*kill timed out/).to_stderr
     end
 
+    # The warning is best-effort too: a stderr that cannot be written must not
+    # replace the block's result or exception, on either cleanup path.
+    context "when the cleanup warning cannot be written" do
+      let(:broken_stderr) do
+        Class.new do
+          def initialize(error) = @error = error
+          def write(*) = raise(@error)
+          def puts(*) = raise(@error)
+          def print(*) = raise(@error)
+          def flush = self
+        end
+      end
+
+      before do
+        allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+        allow(native).to receive(:kill_with_timeout).and_raise(Microsandbox::Error, "kill timed out")
+      end
+
+      def with_stderr(io)
+        original = $stderr
+        $stderr = io
+        yield
+      ensure
+        $stderr = original
+      end
+
+      [[IOError, "not opened for writing"], [Errno::EPIPE, nil]].each do |klass, message|
+        context "(#{klass})" do
+          let(:stderr) { broken_stderr.new(message ? klass.new(message) : klass.new) }
+
+          it "keeps the block's exception" do
+            with_stderr(stderr) do
+              expect { Microsandbox::Sandbox.create("box", image: "x") { raise ArgumentError, "boom" } }
+                .to raise_error(ArgumentError, "boom")
+            end
+          end
+
+          it "keeps the block's return value" do
+            with_stderr(stderr) do
+              expect(Microsandbox::Sandbox.create("box", image: "x") { :done }).to eq(:done)
+            end
+            expect(native).to have_received(:kill_with_timeout)
+          end
+
+          it "keeps the handover failure in the native-object cleanup" do
+            allow(Microsandbox::Sandbox).to receive(:new).and_raise(RuntimeError, "handover failed")
+            allow(native).to receive(:owns_lifecycle).and_return(true)
+            with_stderr(stderr) do
+              expect { Microsandbox::Sandbox.create("box", image: "x") }.to raise_error(RuntimeError, "handover failed")
+            end
+            expect(native).to have_received(:kill_with_timeout)
+          end
+        end
+      end
+
+      it "keeps the block's exception when $stderr is closed" do
+        closed = StringIO.new
+        closed.close
+        with_stderr(closed) do
+          expect { Microsandbox::Sandbox.create("box", image: "x") { raise ArgumentError, "boom" } }
+            .to raise_error(ArgumentError, "boom")
+        end
+      end
+    end
+
     it "still warns when the sandbox's name cannot be read" do
       allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
       allow(native).to receive(:kill_with_timeout).and_raise(Microsandbox::Error, "kill timed out")

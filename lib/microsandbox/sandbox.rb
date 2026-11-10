@@ -1031,9 +1031,19 @@ module Microsandbox
         begin
           target.kill_with_timeout(BLOCK_KILL_TIMEOUT.to_f)
         rescue Microsandbox::Error => e
-          warn "microsandbox: cleanup gave up on sandbox #{cleanup_name(target).inspect}, which " \
-            "may still be running: the graceful stop timed out and the kill failed (#{e.class}: #{e.message})"
+          cleanup_warning(target, e)
         end
+      end
+
+      # Report a cleanup that gave up. Best-effort from end to end: building
+      # or writing the warning (a closed `$stderr`, a broken logging pipe)
+      # must never replace the caller's own result or exception, and a failed
+      # warning is not reported through another one.
+      def cleanup_warning(target, error)
+        warn "microsandbox: cleanup gave up on sandbox #{cleanup_name(target).inspect}, which " \
+          "may still be running: the graceful stop timed out and the kill failed (#{error.class}: #{error.message})"
+      rescue
+        nil
       end
 
       # The name for a cleanup warning; never raises over the caller's exception.

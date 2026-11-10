@@ -122,6 +122,31 @@ RSpec.describe "bounded cleanup under a held transition lock", :fake_runtime do
     expect(stderr).to include(%(cleanup gave up on sandbox "#{name}"))
   end
 
+  # The real native path with a stderr that cannot be written: the warning is
+  # best-effort and must not replace the block's exception.
+  it "keeps the block's exception when the cleanup warning cannot be written" do
+    stub_const("Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT", 0)
+    stub_const("Microsandbox::Sandbox::BLOCK_KILL_TIMEOUT", 1)
+    name = "cleanup-lock-stderr"
+    closed = StringIO.new
+    closed.close
+    original = $stderr
+    error = nil
+    begin
+      $stderr = closed
+      Microsandbox::Sandbox.create(name, image: FakeRuntime.rootfs) do
+        hold_lock(name)
+        raise "original block exception"
+      end
+    rescue => e
+      error = e
+    ensure
+      $stderr = original
+    end
+    expect(error).to be_a(RuntimeError)
+    expect(error.message).to eq("original block exception")
+  end
+
   it "keeps kill_with_timeout's budget over the transition lock" do
     name = "cleanup-lock-public"
     sandbox = Microsandbox::Sandbox.create(name, image: FakeRuntime.rootfs)
