@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "fileutils"
+require "tmpdir"
+
 # Real microVM integration coverage for snapshots and pull policy.
 # Opt-in via MICROSANDBOX_INTEGRATION=1.
 RSpec.describe "snapshots + pull policy", :integration do
@@ -43,7 +46,6 @@ RSpec.describe "snapshots + pull policy", :integration do
 
       # Archive round-trip via the renamed save/load: save the artifact,
       # remove the original, load it back, and confirm the same identity.
-      require "tmpdir"
       Dir.mktmpdir do |dir|
         archive = File.join(dir, "snap.tar.zst")
         Microsandbox::Snapshot.save(info.id, archive)
@@ -76,23 +78,118 @@ RSpec.describe "snapshots + pull policy", :integration do
     end
   end
 
-  it "boots a new sandbox from a snapshot" do
-    pending "runtime v0.7 removed create(from_snapshot:); Sandbox.restore is not bound yet"
+  # Sandbox.restore (0.18.0): the snapshot's disk boots as a new sandbox,
+  # addressed every way a caller holds a snapshot. Upstream restores detached,
+  # so the block form's stop is what ends each one.
+  it "boots new sandboxes from a snapshot with Sandbox.restore" do
     src = unique_sandbox_name("rb-snapsrc")
+    bsrc = unique_sandbox_name("rb-snapbind")
     snap = "rb-snap-#{Process.pid}-#{rand(100_000)}"
-    info = nil
-    begin
-      Microsandbox::Sandbox.create(src, image: image).stop
+    marker = "restore-#{rand(1_000_000)}"
+    infos = []
+    children = []
+    child = ->(tag) { unique_sandbox_name("rb-snapboot-#{tag}").tap { |n| children << n } }
+    read_marker = ->(sb) { sb.shell("cat /root/marker.txt").stdout.strip }
+    Dir.mktmpdir("msb-rb-restore-", File.realpath(Dir.tmpdir)) do |dir|
+      sb = Microsandbox::Sandbox.create(src, image: image)
+      sb.fs.write("/root/marker.txt", marker)
+      sb.stop
       info = Microsandbox::Snapshot.create(snap, from_sandbox: src)
-      Microsandbox::Sandbox.restore(info.id, name: unique_sandbox_name("rb-snapboot")) do |sb2|
-        expect(sb2.exec("true").exit_code).to eq(0)
+      infos << info
+      expect(info.reference_kind).to eq("path")
+      expect(info.reference).to eq(info.path)
+
+      # A SnapshotInfo (from create and from the index), its id, the
+      # `group:member` selector, the group head, and a relative path.
+      [info, Microsandbox::Snapshot.get(info.id), info.id, "#{src}:#{snap}", src].each_with_index do |selector, i|
+        name = child.call(i)
+        Microsandbox::Sandbox.restore(selector, name: name) do |restored|
+          expect(read_marker.call(restored)).to eq(marker)
+        end
+        expect(Microsandbox::Sandbox.get(name).status).to eq(:stopped)
       end
+      Dir.chdir(File.dirname(info.path)) do
+        Microsandbox::Sandbox.restore("./#{File.basename(info.path)}", name: child.call("rel")) do |restored|
+          expect(read_marker.call(restored)).to eq(marker)
+        end
+      end
+      # A bare create name selects a group head, not this member.
+      expect { Microsandbox::Sandbox.restore(snap, name: child.call("bare")) }
+        .to raise_error(Microsandbox::SnapshotNotFoundError)
+
+      # Without a block the sandbox stays up (upstream restores detached)
+      # until stopped; destination resources apply.
+      restored = Microsandbox::Sandbox.restore(info, name: child.call("live"), cpus: 2)
+      begin
+        expect(restored.status).to eq(:running)
+        expect(restored.owns_lifecycle?).to be(false)
+        expect(restored.shell("nproc").stdout.strip).to eq("2")
+      ensure
+        restored.stop_and_wait
+      end
+
+      # A captured bind mount needs a destination binding, or an explicit
+      # allow_missing_resources: true.
+      bind = File.join(dir, "bind")
+      FileUtils.mkdir_p(bind)
+      b = Microsandbox::Sandbox.create(bsrc, image: image, volumes: {"/data" => bind})
+      b.shell("echo bound > /data/x")
+      b.stop
+      binfo = Microsandbox::Snapshot.create(snap, from_sandbox: bsrc)
+      infos << binfo
+      expect { Microsandbox::Sandbox.restore(binfo, name: child.call("nobind")) }
+        .to raise_error(Microsandbox::InvalidConfigError, %r{restore requires destination bindings for: mount /data})
+      Microsandbox::Sandbox.restore(binfo, name: child.call("bind"), volumes: {"/data" => bind}) do |restored|
+        expect(restored.shell("cat /data/x").stdout.strip).to eq("bound")
+      end
+      Microsandbox::Sandbox.restore(binfo, name: child.call("missing"), allow_missing_resources: true) do |restored|
+        expect(restored.status).to eq(:running)
+      end
+
+      # Archive round-trip: a loaded artifact has no group head; its
+      # SnapshotInfo restores by reference.
+      archive = File.join(dir, "snap.tar.zst")
+      Microsandbox::Snapshot.save(info.id, archive)
+      Microsandbox::Snapshot.remove(info.id, force: true)
+      loaded = Microsandbox::Snapshot.load(archive)
+      infos << loaded
+      Microsandbox::Sandbox.restore(loaded, name: child.call("loaded")) do |restored|
+        expect(read_marker.call(restored)).to eq(marker)
+      end
+    end
+  ensure
+    children.each do |name|
+      Microsandbox::Sandbox.get(name).stop
+    rescue Microsandbox::Error
+      nil
     ensure
       begin
-        Microsandbox::Snapshot.remove(info.id, force: true) if info
+        Microsandbox::Sandbox.remove(name)
       rescue Microsandbox::Error
         nil
       end
+    end
+    infos.compact.map(&:id).uniq.each do |id|
+      Microsandbox::Snapshot.remove(id, force: true)
+    rescue Microsandbox::Error
+      nil
+    end
+    [src, bsrc].each do |name|
+      Microsandbox::Sandbox.remove(name)
+    rescue Microsandbox::Error
+      nil
+    end
+  end
+
+  it "refuses guest_flush: :required for a stopped source" do
+    src = unique_sandbox_name("rb-snapflush")
+    begin
+      Microsandbox::Sandbox.create(src, image: image).stop
+      expect { Microsandbox::Snapshot.create("flush", from_sandbox: src, guest_flush: :required) }
+        .to raise_error(Microsandbox::InvalidConfigError, /guest flush/)
+      info = Microsandbox::Snapshot.create("flush", from_sandbox: src, guest_flush: :skip)
+      Microsandbox::Snapshot.remove(info.id, force: true)
+    ensure
       begin
         Microsandbox::Sandbox.remove(src)
       rescue Microsandbox::Error

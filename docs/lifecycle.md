@@ -127,6 +127,23 @@ ran cannot be taken down by the teardown either. `Sandbox#owns_lifecycle?`
 reports which case you are in; `Sandbox#detach` hands the VM off so it
 outlives the block.
 
+## Restoring from a snapshot
+
+`Sandbox.restore(snapshot, name:)` boots a new sandbox from a snapshot (it
+replaced 0.17's `create(from_snapshot:)`). The block form stops it on exit,
+like `create`'s. Without a block it keeps running after your process exits:
+upstream restores **detached**, so `#owns_lifecycle?` is `false` and nothing
+stops it for you. Stop it with `#stop`/`#destroy`, or bound it with
+`max_duration:`/`idle_timeout:`.
+
+```ruby
+info = Microsandbox::Snapshot.create("base", from_sandbox: "worker")
+Microsandbox::Sandbox.restore(info, name: "replay") { |sb| sb.shell("make test") }
+```
+
+Selectors, destination options and mount bindings are covered in
+[images.md](images.md#restoring-a-snapshot).
+
 ## The live `Sandbox` / `SandboxHandle` split
 
 Upstream `v0.5.8` split the lifecycle into the live `Sandbox` and a

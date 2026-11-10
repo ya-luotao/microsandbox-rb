@@ -27,6 +27,14 @@ module Microsandbox
     #   for {Snapshot.open}/{Snapshot.get}/{Snapshot.verify}/{Snapshot.save}/
     #   {Snapshot.remove}, unlike {#name}.
     attr_reader :id
+    # @return [String, nil] the backend-neutral reference to pass back to
+    #   {Sandbox.restore} (runtime v0.7): for a local artifact, its absolute
+    #   path. {Sandbox.restore} given this {SnapshotInfo} uses it with its kind
+    #   (see {#reference_kind}).
+    attr_reader :reference
+    # @return [String, nil] how the backend reads {#reference}: "path", "id"
+    #   or "auto"
+    attr_reader :reference_kind
     # @return [String, nil] artifact directory path (nil for a cloud artifact).
     #   Since runtime v0.7 the core chooses this directory; it is no longer
     #   `dest_dir/<name>`.
@@ -70,6 +78,8 @@ module Microsandbox
     def initialize(data)
       @digest = data["digest"]
       @id = data["id"]
+      @reference = data["reference"]
+      @reference_kind = data["reference_kind"]
       @path = data["path"]
       @name = data["name"]
       @parent_digest = data["parent_digest"]
@@ -208,20 +218,27 @@ module Microsandbox
       # @param full [Boolean] capture a full (memory + device) checkpoint
       #   instead of disk state only (runtime v0.7; the backend rejects it with
       #   {UnsupportedError} where full checkpoints are not available)
+      # @param guest_flush [Symbol, String, nil] optional guest filesystem
+      #   writeback before capture (runtime v0.7): `:auto` (the default:
+      #   required for a live disk-only capture), `:required`, or `:skip`.
+      #   Mandatory storage barriers apply either way; it does not flush
+      #   application buffers. A stopped source cannot satisfy `:required`.
       # @param resumable [nil] removed in 0.18.0 — renamed to `full:` upstream;
       #   passing it raises ArgumentError
       # @return [SnapshotInfo]
       def create(name, from_sandbox:, dest_dir: nil, labels: nil, force: false,
-        record_integrity: false, full: false, resumable: nil)
+        record_integrity: false, full: false, guest_flush: nil, resumable: nil)
         unless resumable.nil?
           raise ArgumentError, "Snapshot.create(resumable:) was renamed to full: in 0.18.0 (runtime v0.7)"
         end
+        flush = normalize_guest_flush(guest_flush)
         opts = {"from_sandbox" => from_sandbox.to_s}
         opts["dest_dir"] = dest_dir.to_s if dest_dir
         opts["labels"] = stringify(labels) if labels
         opts["force"] = true if force
         opts["record_integrity"] = true if record_integrity
         opts["full"] = true if full
+        opts["guest_flush"] = flush if flush
         SnapshotInfo.new(Native::Snapshot.create(name.to_s, opts))
       end
 
@@ -306,6 +323,16 @@ module Microsandbox
 
       def stringify(hash)
         hash.each_with_object({}) { |(k, v), acc| acc[k.to_s] = v.to_s }
+      end
+
+      GUEST_FLUSH = %w[auto required skip].freeze
+      private_constant :GUEST_FLUSH
+
+      def normalize_guest_flush(value)
+        return nil if value.nil?
+        flush = (value.is_a?(Symbol) || value.is_a?(String)) ? value.to_s : nil
+        return flush if GUEST_FLUSH.include?(flush)
+        raise ArgumentError, "guest_flush: must be :auto, :required or :skip, got #{value.inspect}"
       end
     end
   end

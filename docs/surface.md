@@ -32,14 +32,20 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   (`Sandbox.create_with_progress` → `PullSession`).
 - **Named volumes** — `Volume.create`/`get`/`list`/`remove`/`get_default`, plus
   host-side `Volume.fs`/`VolumeInfo#fs` read/write.
-- **Snapshots** — create (disk scope, or `full:` for a resumable checkpoint)/
-  open/list/list_dir/reindex/verify/save/load, opt-in `record_integrity:`.
+- **Snapshots** — create (disk scope, or `full:` for a resumable checkpoint;
+  `guest_flush:`)/open/list/list_dir/reindex/verify/save/load, opt-in
+  `record_integrity:`, `SnapshotInfo#reference`/`#reference_kind`.
   Selectors follow runtime `v0.7` snapshot groups (a bare name selects a group
   head; `group:member`, id, digest or path select one artifact — see
   [images.md](images.md#snapshots)); the group surface itself (`group:`, head
-  selection) is not bound yet. Booting a sandbox from a snapshot is not bound
-  yet: create's `from_snapshot:` was removed with runtime `v0.7` (passing it
-  raises with directions).
+  selection) is not bound yet.
+- **Restore** — `Sandbox.restore(snapshot, name:)` boots a new (upstream:
+  detached) sandbox from a snapshot, with the destination options `cpus`/
+  `memory`/`user`/`log_level`/`max_duration`/`idle_timeout`/`volumes`/`ports`/
+  `disable_network`/`cow_memory` (`forked` deprecated)/`disk_only`/
+  `snapshot_base`/`allow_missing_resources`/`external_mount_policy` (see
+  [images.md](images.md#restoring-a-snapshot)). It replaced create's
+  `from_snapshot:`.
 - **Rootfs patches** — `Microsandbox::Patch` (text/file/append/copy_file/
   copy_dir/symlink/mkdir/remove) via `create(patches:)`.
 - **Root disk** — structured `root_disk:` (managed / tmpfs / disk / flat via
@@ -98,3 +104,9 @@ A few secondary upstream knobs are not yet exposed: per-published-port host
 bind address (ports always bind loopback), network interface overrides, and
 inline named-volume create-mode (pre-create the volume with `Volume.create`,
 then mount it with `{ named: "…" }`).
+
+Restore does not yet take the network policy, security profile, vsock routes,
+connection caps, UDP ports, captured-disk selection (`captured`), resource
+inheritance (`dangerously_inherit_resources`), `guest_clock`, or a progress
+stream; snapshot groups, live branches/forks and `restore_warnings` are not
+bound either (planned for 0.19.0).

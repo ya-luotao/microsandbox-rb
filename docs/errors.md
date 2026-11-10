@@ -25,7 +25,7 @@ options) raises a plain `ArgumentError` before the native layer is reached.
 | Class | `#code` | Raised when |
 |-------|---------|-------------|
 | `Error` | `microsandbox-error` | Base class; unmapped core errors |
-| `InvalidConfigError` | `invalid-config` | Bad create options, invalid backend/cloud configuration |
+| `InvalidConfigError` | `invalid-config` | Bad create options, invalid backend/cloud configuration, a restore whose captured mounts lack a destination binding |
 | `RuntimeNotInstalledError` | `runtime-not-installed` | No `msb` + `libkrunfw` runtime pair was found anywhere |
 | `RuntimeIncompleteError` | `runtime-incomplete` | The selected runtime pair is partial, or `MSB_PATH` / `runtime_path` names an `msb` with no matching `libkrunfw` |
 | `SandboxNotFoundError` | `sandbox-not-found` | No sandbox with that name |

@@ -98,6 +98,23 @@ RSpec.describe "host paths are pinned at create time (fake runtime)", :fake_runt
     expect(tls.fetch("intercept_ca")).to include("cert_path" => here("cert.pem"), "key_path" => here("key.pem"))
   end
 
+  # Sandbox.restore (0.18.0, replacing 0.17's create(from_snapshot:)): a
+  # relative snapshot path is anchored to this directory at call time. No such
+  # snapshot exists, so the lookup error shows the path that was tried, and
+  # nothing is created. A bare name that is a file here is read as a path too
+  # (an archive), like the core does.
+  it "anchors a relative Sandbox.restore snapshot path to the current directory" do
+    ["./missing-snap", Pathname("missing-snap")].each do |snapshot|
+      expect { Microsandbox::Sandbox.restore(snapshot, name: name) }
+        .to raise_error(Microsandbox::SnapshotNotFoundError, /#{Regexp.escape(here("missing-snap"))}/)
+      expect { Microsandbox::Sandbox.get(name) }.to raise_error(Microsandbox::SandboxNotFoundError)
+    end
+    File.write("saved.tar.zst", "not an archive")
+    expect { Microsandbox::Sandbox.restore("saved.tar.zst", name: name) }
+      .to raise_error(Microsandbox::Error, /archive/)
+    expect { Microsandbox::Sandbox.get(name) }.to raise_error(Microsandbox::SandboxNotFoundError)
+  end
+
   it "stores relative patch sources as absolute paths, and still applies them" do
     config = persisted(image: here("rootfs"), patches: [
       Microsandbox::Patch.copy_file("data/seed.txt", "/seed.txt"),

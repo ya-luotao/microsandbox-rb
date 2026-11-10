@@ -50,7 +50,9 @@ hostname enforcement on by default. Migration notes are below.
   (`:block`, `:block_and_log` — the default — or `:block_and_terminate`). The
   passthrough policy is gone; list the hosts that may receive the unchanged
   placeholder in each secret's `allow_placeholder_for:`.
-- **`Sandbox.create(from_snapshot:)` is removed** and raises with directions.
+- **`Sandbox.create(from_snapshot:)` is removed** and raises with directions:
+  boot from a snapshot with `Sandbox.restore(snapshot, name:)`. A restored
+  sandbox is detached upstream, so without a block it outlives your process.
 - **`Snapshot.create(resumable:)` → `full:`.** `SnapshotInfo` gains `#id` and
   `#parent_id`; `#scope` is `:disk` or `:full`; `#path` may be `nil`, and
   `#parent_digest` is always `nil` (v0.7 descriptors link parents by id).
@@ -81,6 +83,19 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Added
 
+- **`Sandbox.restore(snapshot, name:, ...)`** boots a new sandbox from a
+  snapshot (a `SnapshotInfo`, id, `"group:member"`, digest or path; a relative
+  path is anchored when called). Destination options: `cpus:`, `memory:`,
+  `user:`, `log_level:`, `max_duration:`, `idle_timeout:`, `volumes:`,
+  `ports:`, `disable_network:`, `cow_memory:` (`forked:` is a deprecated
+  alias), `disk_only:`, `snapshot_base:`, `allow_missing_resources:`,
+  `external_mount_policy:`. A captured bind or named mount needs a
+  destination in `volumes:` (or `allow_missing_resources: true`), otherwise
+  `InvalidConfigError`. The block form stops the sandbox on exit. See
+  `docs/images.md#restoring-a-snapshot`.
+- **`Snapshot.create(guest_flush:)`** (`:auto`, `:required`, `:skip`) and
+  **`SnapshotInfo#reference`** / **`#reference_kind`**, the reference
+  `Sandbox.restore` takes back.
 - **`Microsandbox.runtime_info`** → `Microsandbox::RuntimeInfo`: the resolved
   `msb` + `libkrunfw` pair, where it came from (`origin`: `:environment`,
   `:sdk_package`, `:configuration`, `:home` or `:installed` — classified by the
@@ -158,6 +173,10 @@ hostname enforcement on by default. Migration notes are below.
   `Snapshot.create(resumable: true)` with `full: true`.
 - Keep `SnapshotInfo#id` from `Snapshot.create` and pass it (or
   `"<source-sandbox>:<name>"`) wherever a snapshot name was passed before.
+- Replace `Sandbox.create(name, from_snapshot: snap)` with
+  `Sandbox.restore(snap_info_or_id, name: name)`. Pass only destination
+  options; give captured bind/named mounts a destination in `volumes:`. Stop
+  a sandbox restored without a block yourself (or use the block form).
 - Give `MSB_PATH` its `libkrunfw` (next to it, in `../lib/`, or via
   `MSB_LIBKRUNFW_PATH`).
 - Pass `strict: false` where a hostname-rule allow must keep working without

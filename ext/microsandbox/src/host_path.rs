@@ -20,6 +20,9 @@
 //! - Only create-time input is resolved. A sandbox that was already persisted
 //!   with a relative path keeps it; nothing here rewrites saved state.
 //!
+//! The same anchoring applies to `Sandbox.restore`'s snapshot path and
+//! `snapshot_base:` (upstream resolves those at the same boundary).
+//!
 //! A vsock `host_socket` is deliberately not routed through here: the core
 //! refuses a relative one outright ("vsock host path must be absolute") before
 //! anything is persisted, so there is no stored relative path to pin.
@@ -72,6 +75,27 @@ impl HostPaths {
                 path.display()
             )))
         })
+    }
+
+    /// Pin a `Sandbox.restore` snapshot selector (or `snapshot_base:`) when it
+    /// names a path rather than an id, a `group:member` or a digest. Mirrors
+    /// v0.7.14's `resolve_snapshot_reference` for an auto reference: a value
+    /// that contains `/` or starts with `.` or `~` (the core's
+    /// `looks_like_path`), or that names an existing file (a bare archive
+    /// name in the current directory), is a path. (The core does not expand
+    /// `~`; like any other relative path it is anchored as written.)
+    pub fn pin_snapshot(self, raw: String) -> Result<String, Error> {
+        let path_like = raw.contains('/')
+            || raw.starts_with('.')
+            || raw.starts_with('~')
+            || std::path::Path::new(&raw).is_file();
+        if !path_like {
+            return Ok(raw);
+        }
+        Ok(self
+            .pin(raw, "snapshot path")?
+            .to_string_lossy()
+            .into_owned())
     }
 
     /// Classify `image:` text the way the core does and pin it when it names a

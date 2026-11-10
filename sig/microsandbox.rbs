@@ -318,6 +318,17 @@ module Microsandbox
     # Accepts the same keyword options as {create}.
     def self.create_with_progress: (String name, **untyped) -> PullSession
     def self.start: (String name, ?detached: bool) -> Sandbox
+    # Boot a new (detached upstream) sandbox from a snapshot; the block form
+    # stops it on exit. Network/security/vsock/connection-cap overrides are
+    # not accepted.
+    def self.restore: ((String | Pathname | SnapshotInfo) snapshot, name: String | Symbol,
+                       ?cpus: Integer?, ?memory: Integer?, ?user: String?,
+                       ?log_level: (String | Symbol)?, ?max_duration: Integer?, ?idle_timeout: Integer?,
+                       ?volumes: Hash[untyped, untyped]?, ?ports: Hash[untyped, untyped]?,
+                       ?disable_network: bool, ?cow_memory: bool, ?forked: bool?, ?disk_only: bool,
+                       ?snapshot_base: String?, ?allow_missing_resources: bool,
+                       ?external_mount_policy: (String | Symbol)?)
+                      ?{ (Sandbox) -> untyped } -> untyped
     def self.get: (String name) -> SandboxHandle
     def self.list: () -> SandboxPage
     def self.list_with: (?labels: Hash[untyped, untyped], ?limit: Integer?, ?cursor: String?) -> SandboxPage
@@ -528,6 +539,8 @@ module Microsandbox
     def initialize: (Hash[String, untyped] data) -> void
     def digest: () -> String
     def id: () -> String?
+    def reference: () -> String?
+    def reference_kind: () -> String?
     def parent_id: () -> String?
     def path: () -> String?
     def name: () -> String?
@@ -567,7 +580,7 @@ module Microsandbox
     # keyword so passing it raises with directions.
     def self.create: (String name, from_sandbox: String, ?dest_dir: String?,
                       ?labels: Hash[untyped, untyped]?, ?force: bool, ?record_integrity: bool,
-                      ?full: bool,
+                      ?full: bool, ?guest_flush: (String | Symbol)?,
                       ?resumable: nil) -> SnapshotInfo
     def self.open: (String name_or_path) -> SnapshotInfo
     def self.get: (String name_or_digest) -> SnapshotInfo

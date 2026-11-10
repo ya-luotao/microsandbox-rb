@@ -16,7 +16,10 @@ use crate::runtime::ruby;
 fn class_name(err: &MicrosandboxError) -> &'static str {
     use MicrosandboxError::*;
     match err {
-        InvalidConfig(_) => "InvalidConfigError",
+        // v0.7: a restore whose captured mounts/disks have no destination
+        // binding (the message names them and the remedy). Every other SDK
+        // reports it as an invalid configuration.
+        InvalidConfig(_) | MissingRestoreBindings { .. } => "InvalidConfigError",
         SandboxNotFound(_) => "SandboxNotFoundError",
         SandboxAlreadyExists(_) => "SandboxAlreadyExistsError",
         SandboxStillRunning(_) => "SandboxStillRunningError",

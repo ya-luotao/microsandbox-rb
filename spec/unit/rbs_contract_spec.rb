@@ -33,6 +33,7 @@ RSpec.describe "sig/microsandbox.rbs contract" do
     "Microsandbox::Sandbox.create" => :build_create_opts,
     "Microsandbox::Sandbox.connect_or_create" => :build_create_opts,
     "Microsandbox::Sandbox.create_with_progress" => :build_create_opts,
+    "Microsandbox::Sandbox.restore" => :build_restore_opts,
     "Microsandbox::Sandbox#modify" => :build_modify_opts,
     "Microsandbox::SandboxHandle#modify" => :build_modify_opts
   }.freeze

@@ -19,13 +19,14 @@ use microsandbox::logs::{
     LogCursor, LogEntry, LogOptions, LogSource, LogStreamOptions, LogStreamStart,
 };
 use microsandbox::sandbox::{
-    AttachOptionsBuilder, DestroyOptions, DiskImageFormat, EnvVar, FlatClone, FsEntry, FsEntryKind,
-    FsMetadata, HostPermissions, HttpDenyResponseFormat, Patch, PullPolicy, PullProgress,
-    PullProgressHandle, RestartOptions, RlimitResource, RootDiskBuilder, SandboxBuilder,
-    SandboxHandle, SandboxMetrics, SandboxModificationBuilder, SandboxModificationPatch,
-    SandboxStatus, SandboxStopResult, SecretBuilder, SecretModificationPatch, SecretSource,
-    SecurityProfile, StatVirtualization,
+    AttachOptionsBuilder, DestroyOptions, DiskImageFormat, EnvVar, ExternalMountRestorePolicy,
+    FlatClone, FsEntry, FsEntryKind, FsMetadata, HostPermissions, HttpDenyResponseFormat,
+    MountBuilder, Patch, PullPolicy, PullProgress, PullProgressHandle, RestartOptions,
+    RlimitResource, RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics,
+    SandboxModificationBuilder, SandboxModificationPatch, SandboxStatus, SandboxStopResult,
+    SecretBuilder, SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
 };
+use microsandbox::snapshot::SnapshotReference;
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
 use microsandbox::RegistryAuth;
@@ -229,119 +230,9 @@ impl Sandbox {
                 }
             }
         }
-        // volumes: each mount is normalized by the Ruby layer to a string-keyed
-        // Hash — guest (req), kind ("bind"/"named"/"tmpfs"/"disk"), source
-        // (bind/named/disk), size_mib (tmpfs/disk), format + fstype (disk),
-        // readonly/noexec/nosuid/nodev (bool), stat_virtualization,
-        // host_permissions, override_uid/override_gid (u32 pair).
-        // Enum-valued options are validated up front (the
-        // volume closure can't return an error); the core validates the rest
-        // (e.g. rejecting stat_virtualization on tmpfs/disk) at create().
-        for m in conv::opt_hash_vec(opts, "volumes")? {
-            let guest = conv::opt_string(m, "guest")?
-                .ok_or_else(|| error::base_error("volume mount is missing :guest"))?;
-            let kind = conv::opt_string(m, "kind")?
-                .ok_or_else(|| error::base_error("volume mount is missing :kind"))?;
-            let source = conv::opt_string(m, "source")?;
-            let size_mib = conv::opt_u32(m, "size_mib")?;
-            // Bind-mount guest-write quota override (MiB). The core's MountBuilder
-            // applies it to bind mounts only and rejects it on tmpfs/disk/named at
-            // build(); we forward it as-is so that validation lives in one place.
-            let quota_mib = conv::opt_u32(m, "quota_mib")?;
-            let fstype = conv::opt_string(m, "fstype")?;
-            let readonly = conv::opt_bool(m, "readonly")?;
-            let noexec = conv::opt_bool(m, "noexec")?;
-            let nosuid = conv::opt_bool(m, "nosuid")?;
-            let nodev = conv::opt_bool(m, "nodev")?;
-            let format = conv::opt_string(m, "format")?
-                .map(|f| disk_format_from_str(&f))
-                .transpose()?;
-            let stat_virt = conv::opt_string(m, "stat_virtualization")?
-                .map(|s| stat_virtualization_from_str(&s))
-                .transpose()?;
-            let host_perms = conv::opt_string(m, "host_permissions")?
-                .map(|s| host_permissions_from_str(&s))
-                .transpose()?;
-            // v0.6.15: the fallback guest owner presented for host files that
-            // carry no per-file stat override. The Ruby layer validates the pair
-            // (both-or-neither, u32 range, bind/named only, not with
-            // stat_virtualization=off); whether a *named* volume is directory-
-            // or disk-backed is known only to the core, which rejects the
-            // disk-backed case at build().
-            let override_uid = conv::opt_u32(m, "override_uid")?;
-            let override_gid = conv::opt_u32(m, "override_gid")?;
-            // v0.6.7: mount-root symlink protection is on by default; this is
-            // the per-mount opt-out. Valid for bind/named-directory mounts —
-            // the core rejects it elsewhere at build().
-            let follow_root_symlinks = conv::opt::<bool>(m, "follow_root_symlinks")?;
-            // bind/named/disk require a source; tmpfs must not have one. A
-            // bind or disk source is a host path; a named source is a volume
-            // name and is never resolved.
-            let backing = match (kind.as_str(), source) {
-                ("bind", Some(host)) => {
-                    MountBacking::Bind(host_paths.pin(host, "bind mount host path")?)
-                }
-                ("disk", Some(host)) => {
-                    MountBacking::Disk(host_paths.pin(host, "disk mount host path")?)
-                }
-                ("named", Some(name)) => MountBacking::Named(name),
-                ("bind" | "named" | "disk", None) => {
-                    return Err(error::base_error(format!(
-                        "volume mount kind {kind:?} requires a source"
-                    )))
-                }
-                ("tmpfs", _) => MountBacking::Tmpfs,
-                (other, _) => {
-                    return Err(error::base_error(format!(
-                        "unknown volume mount kind {other:?} (expected bind/named/tmpfs/disk)"
-                    )))
-                }
-            };
-            b = b.volume(guest, move |mut mb| {
-                mb = match backing {
-                    MountBacking::Named(name) => mb.named(name),
-                    MountBacking::Tmpfs => mb.tmpfs(),
-                    MountBacking::Disk(host) => mb.disk(host),
-                    MountBacking::Bind(host) => mb.bind(host),
-                };
-                if let Some(n) = size_mib {
-                    mb = mb.size(n);
-                }
-                if let Some(q) = quota_mib {
-                    mb = mb.quota(q);
-                }
-                if let Some(f) = format {
-                    mb = mb.format(f);
-                }
-                if let Some(ft) = fstype {
-                    mb = mb.fstype(ft);
-                }
-                if readonly {
-                    mb = mb.readonly();
-                }
-                if noexec {
-                    mb = mb.noexec();
-                }
-                if nosuid {
-                    mb = mb.nosuid();
-                }
-                if nodev {
-                    mb = mb.nodev();
-                }
-                if let Some(sv) = stat_virt {
-                    mb = mb.stat_virtualization(sv);
-                }
-                if let Some(hp) = host_perms {
-                    mb = mb.host_permissions(hp);
-                }
-                if let (Some(uid), Some(gid)) = (override_uid, override_gid) {
-                    mb = mb.owner(uid, gid);
-                }
-                if let Some(follow) = follow_root_symlinks {
-                    mb = mb.follow_root_symlinks(follow);
-                }
-                mb
-            });
+        // volumes: see `parse_volumes` (shared with `restore`).
+        for (guest, spec) in parse_volumes(opts, host_paths)? {
+            b = b.volume(guest, move |mb| spec.apply(mb));
         }
         // patches: rootfs modifications applied before boot. The Ruby layer
         // normalizes each `Microsandbox::Patch.*` into a string-keyed Hash with
@@ -662,6 +553,91 @@ impl Sandbox {
         let b = Self::build_builder(name, opts)?;
         prepare_local_sandboxes_dir()?;
         let inner = block_on(b.connect_or_create())?.map_err(error::to_ruby)?;
+        Ok(Sandbox::from_inner(inner))
+    }
+
+    /// Boot a new sandbox from a snapshot (runtime v0.7 `Sandbox::restore`).
+    /// `snapshot` is a selector — an id, `group:member`, digest or path — read
+    /// as `snapshot_kind` says: "auto" (the default, the core decides), "id"
+    /// or "path" (a `SnapshotInfo#reference` keeps its kind). `opts` is the
+    /// Ruby layer's whitelist: name (required), cpus, memory, user, log_level,
+    /// max_duration, idle_timeout, volumes, ports, disable_network,
+    /// cow_memory, disk_only, snapshot_base, allow_missing_resources,
+    /// external_mount_policy. Upstream always restores detached.
+    fn restore(snapshot: String, opts: RHash) -> Result<Sandbox, Error> {
+        // `Sandbox::restore` builds a `SandboxBuilder`, which reads the default
+        // backend synchronously, like `build_builder`.
+        crate::backend::ensure_this_process_backend()?;
+        let host_paths = HostPaths::for_default_backend()?;
+        let reference = match conv::opt_string(opts, "snapshot_kind")?.as_deref() {
+            None | Some("auto") => SnapshotReference::auto(host_paths.pin_snapshot(snapshot)?),
+            Some("id") => SnapshotReference::id(snapshot),
+            Some("path") => SnapshotReference::path(
+                host_paths
+                    .pin(snapshot, "snapshot path")?
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            Some(other) => {
+                return Err(error::base_error(format!(
+                    "unknown snapshot reference kind {other:?} (expected auto/id/path)"
+                )))
+            }
+        };
+        let name = conv::opt_string(opts, "name")?
+            .ok_or_else(|| error::base_error("restore needs name: (the new sandbox name)"))?;
+        let mut b = microsandbox::Sandbox::restore_ref(reference).name(name);
+        if let Some(v) = conv::opt_u8(opts, "cpus")? {
+            b = b.cpus(v);
+        }
+        if let Some(v) = conv::opt_u32(opts, "memory")? {
+            b = b.memory(v);
+        }
+        if let Some(v) = conv::opt_string(opts, "user")? {
+            b = b.user(v);
+        }
+        if let Some(level) = conv::opt_string(opts, "log_level")? {
+            b = b.log_level(log_level_from_str(&level)?);
+        }
+        if let Some(secs) = conv::opt::<u64>(opts, "max_duration")? {
+            b = b.max_duration(secs);
+        }
+        if let Some(secs) = conv::opt::<u64>(opts, "idle_timeout")? {
+            b = b.idle_timeout(secs);
+        }
+        for (guest, spec) in parse_volumes(opts, host_paths)? {
+            b = b.volume(guest, move |mb| spec.apply(mb));
+        }
+        for (host, guest) in conv::opt_port_map(opts, "ports")? {
+            b = b.port(host, guest);
+        }
+        if conv::opt_bool(opts, "disable_network")? {
+            b = b.disable_network();
+        }
+        if conv::opt_bool(opts, "cow_memory")? {
+            b = b.cow_memory();
+        }
+        if conv::opt_bool(opts, "disk_only")? {
+            b = b.disk_only();
+        }
+        if let Some(base) = conv::opt_string(opts, "snapshot_base")? {
+            b = b.snapshot_base(host_paths.pin_snapshot(base)?);
+        }
+        if conv::opt_bool(opts, "allow_missing_resources")? {
+            b = b.allow_missing_resources();
+        }
+        match conv::opt_string(opts, "external_mount_policy")?.as_deref() {
+            None => {}
+            Some("strict") => b = b.external_mount_policy(ExternalMountRestorePolicy::Strict),
+            Some("relaxed") => b = b.external_mount_policy(ExternalMountRestorePolicy::Relaxed),
+            Some(other) => {
+                return Err(error::base_error(format!(
+                    "unknown external_mount_policy {other:?} (expected strict/relaxed)"
+                )))
+            }
+        }
+        prepare_local_sandboxes_dir()?;
+        let inner = block_on(b.restore())?.map_err(error::to_ruby)?;
         Ok(Sandbox::from_inner(inner))
     }
 
@@ -1848,6 +1824,167 @@ enum MountBacking {
     Disk(PathBuf),
     Named(String),
     Tmpfs,
+}
+
+/// One parsed `volumes` entry (see [`parse_volumes`]).
+struct VolumeSpec {
+    backing: MountBacking,
+    size_mib: Option<u32>,
+    quota_mib: Option<u32>,
+    format: Option<DiskImageFormat>,
+    fstype: Option<String>,
+    readonly: bool,
+    noexec: bool,
+    nosuid: bool,
+    nodev: bool,
+    stat_virt: Option<StatVirtualization>,
+    host_perms: Option<HostPermissions>,
+    override_uid: Option<u32>,
+    override_gid: Option<u32>,
+    follow_root_symlinks: Option<bool>,
+}
+
+impl VolumeSpec {
+    /// Configure the core's `MountBuilder`. Create and restore share this:
+    /// both builders take `volume(guest, |m| …)`.
+    fn apply(self, mut mb: MountBuilder) -> MountBuilder {
+        mb = match self.backing {
+            MountBacking::Named(name) => mb.named(name),
+            MountBacking::Tmpfs => mb.tmpfs(),
+            MountBacking::Disk(host) => mb.disk(host),
+            MountBacking::Bind(host) => mb.bind(host),
+        };
+        if let Some(n) = self.size_mib {
+            mb = mb.size(n);
+        }
+        if let Some(q) = self.quota_mib {
+            mb = mb.quota(q);
+        }
+        if let Some(f) = self.format {
+            mb = mb.format(f);
+        }
+        if let Some(ft) = self.fstype {
+            mb = mb.fstype(ft);
+        }
+        if self.readonly {
+            mb = mb.readonly();
+        }
+        if self.noexec {
+            mb = mb.noexec();
+        }
+        if self.nosuid {
+            mb = mb.nosuid();
+        }
+        if self.nodev {
+            mb = mb.nodev();
+        }
+        if let Some(sv) = self.stat_virt {
+            mb = mb.stat_virtualization(sv);
+        }
+        if let Some(hp) = self.host_perms {
+            mb = mb.host_permissions(hp);
+        }
+        if let (Some(uid), Some(gid)) = (self.override_uid, self.override_gid) {
+            mb = mb.owner(uid, gid);
+        }
+        if let Some(follow) = self.follow_root_symlinks {
+            mb = mb.follow_root_symlinks(follow);
+        }
+        mb
+    }
+}
+
+/// Parse the `volumes` option: each mount is normalized by the Ruby layer to a string-keyed
+/// Hash — guest (req), kind ("bind"/"named"/"tmpfs"/"disk"), source
+/// (bind/named/disk), size_mib (tmpfs/disk), format + fstype (disk),
+/// readonly/noexec/nosuid/nodev (bool), stat_virtualization,
+/// host_permissions, override_uid/override_gid (u32 pair).
+/// Enum-valued options are validated up front (the
+/// volume closure can't return an error); the core validates the rest
+/// (e.g. rejecting stat_virtualization on tmpfs/disk) at create().
+fn parse_volumes(opts: RHash, host_paths: HostPaths) -> Result<Vec<(String, VolumeSpec)>, Error> {
+    let mut out = Vec::new();
+    for m in conv::opt_hash_vec(opts, "volumes")? {
+        let guest = conv::opt_string(m, "guest")?
+            .ok_or_else(|| error::base_error("volume mount is missing :guest"))?;
+        let kind = conv::opt_string(m, "kind")?
+            .ok_or_else(|| error::base_error("volume mount is missing :kind"))?;
+        let source = conv::opt_string(m, "source")?;
+        let size_mib = conv::opt_u32(m, "size_mib")?;
+        // Bind-mount guest-write quota override (MiB). The core's MountBuilder
+        // applies it to bind mounts only and rejects it on tmpfs/disk/named at
+        // build(); we forward it as-is so that validation lives in one place.
+        let quota_mib = conv::opt_u32(m, "quota_mib")?;
+        let fstype = conv::opt_string(m, "fstype")?;
+        let readonly = conv::opt_bool(m, "readonly")?;
+        let noexec = conv::opt_bool(m, "noexec")?;
+        let nosuid = conv::opt_bool(m, "nosuid")?;
+        let nodev = conv::opt_bool(m, "nodev")?;
+        let format = conv::opt_string(m, "format")?
+            .map(|f| disk_format_from_str(&f))
+            .transpose()?;
+        let stat_virt = conv::opt_string(m, "stat_virtualization")?
+            .map(|s| stat_virtualization_from_str(&s))
+            .transpose()?;
+        let host_perms = conv::opt_string(m, "host_permissions")?
+            .map(|s| host_permissions_from_str(&s))
+            .transpose()?;
+        // v0.6.15: the fallback guest owner presented for host files that
+        // carry no per-file stat override. The Ruby layer validates the pair
+        // (both-or-neither, u32 range, bind/named only, not with
+        // stat_virtualization=off); whether a *named* volume is directory-
+        // or disk-backed is known only to the core, which rejects the
+        // disk-backed case at build().
+        let override_uid = conv::opt_u32(m, "override_uid")?;
+        let override_gid = conv::opt_u32(m, "override_gid")?;
+        // v0.6.7: mount-root symlink protection is on by default; this is
+        // the per-mount opt-out. Valid for bind/named-directory mounts —
+        // the core rejects it elsewhere at build().
+        let follow_root_symlinks = conv::opt::<bool>(m, "follow_root_symlinks")?;
+        // bind/named/disk require a source; tmpfs must not have one. A
+        // bind or disk source is a host path; a named source is a volume
+        // name and is never resolved.
+        let backing = match (kind.as_str(), source) {
+            ("bind", Some(host)) => {
+                MountBacking::Bind(host_paths.pin(host, "bind mount host path")?)
+            }
+            ("disk", Some(host)) => {
+                MountBacking::Disk(host_paths.pin(host, "disk mount host path")?)
+            }
+            ("named", Some(name)) => MountBacking::Named(name),
+            ("bind" | "named" | "disk", None) => {
+                return Err(error::base_error(format!(
+                    "volume mount kind {kind:?} requires a source"
+                )))
+            }
+            ("tmpfs", _) => MountBacking::Tmpfs,
+            (other, _) => {
+                return Err(error::base_error(format!(
+                    "unknown volume mount kind {other:?} (expected bind/named/tmpfs/disk)"
+                )))
+            }
+        };
+        out.push((
+            guest,
+            VolumeSpec {
+                backing,
+                size_mib,
+                quota_mib,
+                format,
+                fstype,
+                readonly,
+                noexec,
+                nosuid,
+                nodev,
+                stat_virt,
+                host_perms,
+                override_uid,
+                override_gid,
+                follow_root_symlinks,
+            },
+        ));
+    }
+    Ok(out)
 }
 
 /// Parsed `root_disk` create option. Integer shorthand = managed upper of N
@@ -3044,6 +3181,7 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
         function!(Sandbox::connect_or_create, 2),
     )?;
     class.define_singleton_method("start", function!(Sandbox::start, 2))?;
+    class.define_singleton_method("restore", function!(Sandbox::restore, 2))?;
     class.define_singleton_method("get", function!(Sandbox::get, 1))?;
     class.define_singleton_method("list", function!(Sandbox::list, 0))?;
     class.define_singleton_method("list_with", function!(Sandbox::list_with, 1))?;

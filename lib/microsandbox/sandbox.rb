@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "pathname"
 
 module Microsandbox
   # A controllable handle to a sandbox, returned by {Sandbox.get}, {Sandbox.list},
@@ -527,11 +528,7 @@ module Microsandbox
         begin
           yield sandbox
         ensure
-          begin
-            sandbox.stop
-          rescue Microsandbox::Error
-            # best-effort cleanup; ignore stop failures during teardown
-          end
+          teardown(sandbox)
         end
       end
 
@@ -585,11 +582,7 @@ module Microsandbox
         begin
           yield sandbox
         ensure
-          begin
-            sandbox.stop if sandbox.owns_lifecycle?
-          rescue Microsandbox::Error
-            # best-effort cleanup; ignore stop failures during teardown
-          end
+          teardown(sandbox, only_if_owned: true)
         end
       end
 
@@ -669,9 +662,13 @@ module Microsandbox
       # callers, {create} included: a sandbox this call does not own is never
       # stopped here. Its reference is just let go (GC closes the handle, the
       # sandbox keeps running).
+      #
+      # {restore} passes `always_stop: true`: its sandbox is always new, but
+      # upstream starts it detached, so it never reports lifecycle ownership.
+      # @param always_stop [Boolean] stop even a sandbox this call does not own
       # @yieldreturn [Native::Sandbox]
       # @return [Sandbox]
-      def acquire
+      def acquire(always_stop: false)
         native = nil
         handed_off = false
         begin
@@ -684,7 +681,7 @@ module Microsandbox
         ensure
           if native && !handed_off
             begin
-              native.stop if native.owns_lifecycle
+              native.stop if always_stop || native.owns_lifecycle
             rescue Microsandbox::Error
               # best-effort cleanup; the interrupt is what the caller must see
             end
@@ -718,7 +715,7 @@ module Microsandbox
         unless from_snapshot.nil?
           raise ArgumentError,
             "from_snapshot: was removed in 0.18.0 (runtime v0.7); boot from a snapshot with " \
-            "Sandbox.restore(snapshot, name: ...)"
+            "Sandbox.restore(snapshot, name: ...), selecting it by id or path"
         end
         unless on_secret_violation.nil?
           raise ArgumentError,
@@ -806,6 +803,68 @@ module Microsandbox
         end
 
         opts
+      end
+
+      # Boot a new sandbox from a snapshot (runtime v0.7; replaces 0.17's
+      # `create(from_snapshot:)`). A disk snapshot cold-boots its captured
+      # disk; a full snapshot ({Snapshot.create}'s `full:`) resumes the
+      # captured execution unless `disk_only: true`.
+      #
+      # The snapshot keeps its image, command, environment and network
+      # configuration; restore takes only destination choices. The network
+      # policy, security profile, vsock routes and connection caps of the
+      # source are not overridable here (planned for a later release).
+      #
+      # Upstream restores **detached**: without a block the sandbox keeps
+      # running after this process exits, until {Sandbox#stop}/{Sandbox#destroy}
+      # (or `max_duration:`/`idle_timeout:`). The block form stops it on exit,
+      # like {create}'s.
+      #
+      # @param snapshot [String, Pathname, SnapshotInfo] the snapshot: an id,
+      #   `"<group>:<member>"`, a digest, or an artifact path (a relative path
+      #   is anchored to the current directory now); a bare name selects a
+      #   group head. A {SnapshotInfo} restores by its {SnapshotInfo#reference}.
+      # @param name [String] the new sandbox's name
+      # @param cpus [Integer, nil] guest vCPUs (disk boot; a full restore takes
+      #   only the captured count)
+      # @param memory [Integer, nil] guest memory in MiB (same rule as `cpus:`)
+      # @param user [String, nil] default user for new execs
+      # @param log_level [String, Symbol, nil] host runtime log level
+      # @param max_duration [Integer, nil] maximum lifetime in seconds
+      # @param idle_timeout [Integer, nil] auto-stop after this many idle seconds
+      # @param volumes [Hash, nil] destination backing for captured mounts,
+      #   in {create}'s `volumes:` shape, keyed by the captured guest path. By
+      #   default every captured bind/named mount must be given one.
+      # @param ports [Hash, nil] new published TCP ports (host => guest)
+      # @param disable_network [Boolean] no network device (disk boot only)
+      # @param cow_memory [Boolean] map captured RAM copy-on-write (full restore)
+      # @param forked [Boolean, nil] deprecated alias of `cow_memory:`
+      # @param disk_only [Boolean] cold-boot a full snapshot's disk instead of
+      #   resuming it
+      # @param snapshot_base [String, nil] the exact base snapshot for a
+      #   dependent snapshot archive
+      # @param allow_missing_resources [Boolean] restore even when captured
+      #   external resources have no destination backing (they stay unavailable)
+      # @param external_mount_policy [Symbol, String, nil] `:strict` (default)
+      #   or `:relaxed` validation of supplied mount mappings
+      # @yieldparam sandbox [Sandbox]
+      # @return [Sandbox, Object] the sandbox, or the block's return value
+      def restore(snapshot, name:, **kwargs, &block)
+        reference, kind = snapshot_reference(snapshot)
+        opts = build_restore_opts(name: name, **kwargs)
+        opts["snapshot_kind"] = kind
+        Microsandbox.ensure_runtime!
+        # Upstream restores detached, so the restored sandbox never reports
+        # lifecycle ownership; it is always new, so the interrupt cleanup stops
+        # it regardless.
+        sandbox = acquire(always_stop: true) { Native::Sandbox.restore(reference, opts) }
+        return sandbox unless block_given?
+
+        begin
+          yield sandbox
+        ensure
+          teardown(sandbox)
+        end
       end
 
       # Restart a previously-defined sandbox by name.
@@ -914,6 +973,77 @@ module Microsandbox
         opts = {}
         opts["force"] = true if force
         opts["timeout"] = coerce_duration(timeout, "timeout") if timeout
+        opts
+      end
+
+      # Block-form teardown shared by {create}, {connect_or_create} and
+      # {restore}: stop the sandbox (only when this call owns its lifecycle,
+      # for {connect_or_create}), best-effort.
+      def teardown(sandbox, only_if_owned: false)
+        sandbox.stop if !only_if_owned || sandbox.owns_lifecycle?
+      rescue Microsandbox::Error
+        # best-effort cleanup; ignore stop failures during teardown
+      end
+
+      # The `[value, kind]` pair {restore} hands the native layer: a String is
+      # read by the backend ("auto"), a Pathname is a path, and a
+      # {SnapshotInfo} keeps the kind of its reference.
+      def snapshot_reference(snapshot)
+        case snapshot
+        when SnapshotInfo
+          if snapshot.reference
+            [snapshot.reference, snapshot.reference_kind || "auto"]
+          elsif snapshot.path
+            [snapshot.path, "path"]
+          elsif snapshot.id
+            [snapshot.id, "id"]
+          else
+            [snapshot.digest, "auto"]
+          end
+        when Pathname
+          [snapshot.to_s, "path"]
+        when String, Symbol
+          [snapshot.to_s, "auto"]
+        else
+          raise ArgumentError,
+            "snapshot must be an id, \"<group>:<member>\", digest or path String, a Pathname, " \
+            "or a SnapshotInfo (got #{snapshot.class})"
+        end
+      end
+
+      RESTORE_MOUNT_POLICIES = %w[strict relaxed].freeze
+      private_constant :RESTORE_MOUNT_POLICIES
+
+      # Validation and normalization for {restore} (pure, like
+      # {build_create_opts}: a rejected option never provisions the runtime).
+      def build_restore_opts(name:, cpus: nil, memory: nil, user: nil, log_level: nil,
+        max_duration: nil, idle_timeout: nil, volumes: nil, ports: nil, disable_network: false,
+        cow_memory: false, forked: nil, disk_only: false, snapshot_base: nil,
+        allow_missing_resources: false, external_mount_policy: nil)
+        opts = {"name" => name.to_s}
+        opts["cpus"] = Integer(cpus) if cpus
+        opts["memory"] = Integer(memory) if memory
+        opts["user"] = user.to_s if user
+        opts["log_level"] = log_level.to_s if log_level
+        opts["max_duration"] = Integer(max_duration) if max_duration
+        opts["idle_timeout"] = Integer(idle_timeout) if idle_timeout
+        opts["volumes"] = normalize_volumes(volumes) if volumes
+        opts["ports"] = intify_ports(ports) if ports
+        opts["disable_network"] = true if disable_network
+        unless forked.nil?
+          warn "Microsandbox: Sandbox.restore(forked:) is deprecated; use cow_memory:", uplevel: 2
+        end
+        opts["cow_memory"] = true if cow_memory || forked
+        opts["disk_only"] = true if disk_only
+        opts["snapshot_base"] = snapshot_base.to_s if snapshot_base
+        opts["allow_missing_resources"] = true if allow_missing_resources
+        unless external_mount_policy.nil?
+          policy = external_mount_policy.to_s
+          unless RESTORE_MOUNT_POLICIES.include?(policy)
+            raise ArgumentError, "external_mount_policy: must be :strict or :relaxed, got #{external_mount_policy.inspect}"
+          end
+          opts["external_mount_policy"] = policy
+        end
         opts
       end
 

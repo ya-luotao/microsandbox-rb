@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use magnus::{function, prelude::*, Error, RArray, RHash, RModule, Ruby};
 use microsandbox::snapshot::{
-    SaveOpts, Snapshot, SnapshotFormat, SnapshotHandle, SnapshotScope, SnapshotVerifyReport,
-    UpperVerifyStatus,
+    GuestFlush, SaveOpts, Snapshot, SnapshotFormat, SnapshotHandle, SnapshotReference,
+    SnapshotScope, SnapshotVerifyReport, UpperVerifyStatus,
 };
 
 use crate::conv;
@@ -44,6 +44,26 @@ fn created_at_ms(rfc3339: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_millis())
 }
 
+/// The backend-neutral reference `Sandbox.restore` takes back: its value and
+/// how the backend reads it ("auto", "id" or "path"; a local artifact is
+/// referenced by its absolute path).
+fn set_reference(hash: &RHash, reference: &SnapshotReference) {
+    let _ = hash.aset("reference", reference.value().to_string());
+    let _ = hash.aset("reference_kind", reference.kind());
+}
+
+/// Parse `guest_flush:` (`auto`/`required`/`skip`).
+fn guest_flush_from_str(s: &str) -> Result<GuestFlush, Error> {
+    match s {
+        "auto" => Ok(GuestFlush::Auto),
+        "required" => Ok(GuestFlush::Required),
+        "skip" => Ok(GuestFlush::Skip),
+        other => Err(error::base_error(format!(
+            "unknown guest_flush {other:?} (expected auto/required/skip)"
+        ))),
+    }
+}
+
 /// Convert a fully-opened `Snapshot` into the `SnapshotInfo` Hash. Unlike a
 /// `SnapshotHandle` (a lightweight index row), an opened snapshot carries the
 /// full descriptor, so this is the richest shape — `create`/`open`/`list_dir`
@@ -59,6 +79,7 @@ pub(crate) fn snapshot_to_hash(snap: &Snapshot) -> RHash {
     let hash = ruby().hash_new();
     let _ = hash.aset("digest", snap.digest().to_string());
     let _ = hash.aset("id", snap.id().as_str().to_string());
+    set_reference(&hash, &snap.reference());
     // A cloud artifact has no local path (`path()` is `Unsupported` there).
     let _ = hash.aset(
         "path",
@@ -94,7 +115,7 @@ pub(crate) fn snapshot_to_hash(snap: &Snapshot) -> RHash {
 
 /// Create a snapshot artifact named `name` from a stopped sandbox. `opts`:
 /// from_sandbox (required), dest_dir, labels, force, record_integrity,
-/// full. Returns the full SnapshotInfo Hash.
+/// full, guest_flush. Returns the full SnapshotInfo Hash.
 fn create(name: String, opts: RHash) -> Result<RHash, Error> {
     let mut b = Snapshot::builder(name);
     match conv::opt_string(opts, "from_sandbox")? {
@@ -119,6 +140,9 @@ fn create(name: String, opts: RHash) -> Result<RHash, Error> {
     }
     if conv::opt_bool(opts, "full")? {
         b = b.full();
+    }
+    if let Some(policy) = conv::opt_string(opts, "guest_flush")? {
+        b = b.guest_flush(guest_flush_from_str(&policy)?);
     }
 
     let snap = block_on(b.create())?.map_err(error::to_ruby)?;
@@ -236,6 +260,7 @@ fn handle_to_hash(handle: &SnapshotHandle) -> RHash {
     // The stable portable identity: unlike the member `name` alias, it resolves
     // as a selector on its own (a bare name only selects a group head in v0.7).
     let _ = hash.aset("id", handle.id().to_string());
+    set_reference(&hash, &handle.reference());
     let _ = hash.aset("name", handle.name().map(str::to_string));
     let _ = hash.aset("parent_digest", handle.parent_digest().map(str::to_string));
     let _ = hash.aset("scope", scope_str(handle.scope()));

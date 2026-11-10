@@ -1101,6 +1101,98 @@ RSpec.describe Microsandbox::Sandbox do
     end
   end
 
+  # Sandbox.restore (runtime v0.7): stub-level; the real restores run in
+  # spec/integration/snapshot_spec.rb.
+  describe ".restore" do
+    before { allow(Microsandbox::Native::Sandbox).to receive(:restore).and_return(native) }
+
+    def restored_with
+      captured = nil
+      expect(Microsandbox::Native::Sandbox).to have_received(:restore) { |ref, opts| captured = [ref, opts] }
+      captured
+    end
+
+    it "maps the destination options and reads a String selector as auto" do
+      sb = Microsandbox::Sandbox.restore("snap_123", name: :child, cpus: 2, memory: 768, user: "app",
+        log_level: :debug, max_duration: 60, idle_timeout: 30, volumes: {"/data" => "/host/data"},
+        ports: {"8080" => "80"}, disable_network: true, cow_memory: true, disk_only: true,
+        snapshot_base: "base", allow_missing_resources: true, external_mount_policy: :relaxed)
+      expect(sb).to be_a(Microsandbox::Sandbox)
+      ref, opts = restored_with
+      expect(ref).to eq("snap_123")
+      expect(opts).to eq(
+        "snapshot_kind" => "auto", "name" => "child", "cpus" => 2, "memory" => 768, "user" => "app",
+        "log_level" => "debug", "max_duration" => 60, "idle_timeout" => 30,
+        "volumes" => [{"guest" => "/data", "kind" => "bind", "source" => "/host/data"}],
+        "ports" => {8080 => 80}, "disable_network" => true, "cow_memory" => true, "disk_only" => true,
+        "snapshot_base" => "base", "allow_missing_resources" => true, "external_mount_policy" => "relaxed"
+      )
+      expect(Microsandbox).to have_received(:ensure_runtime!)
+    end
+
+    it "sends only name: and the kind when nothing else is given" do
+      Microsandbox::Sandbox.restore("src:snap", name: "child")
+      expect(restored_with).to eq(["src:snap", {"name" => "child", "snapshot_kind" => "auto"}])
+    end
+
+    it "restores a SnapshotInfo by its reference and kind, falling back to path, id, then digest" do
+      {
+        {"reference" => "/snaps/a", "reference_kind" => "path", "path" => "/snaps/a", "id" => "snap_1"} => ["/snaps/a", "path"],
+        {"path" => "/snaps/b", "id" => "snap_2", "digest" => "sha256:b"} => ["/snaps/b", "path"],
+        {"id" => "snap_3", "digest" => "sha256:c"} => ["snap_3", "id"],
+        {"digest" => "sha256:d"} => ["sha256:d", "auto"]
+      }.each do |data, (ref, kind)|
+        RSpec::Mocks.space.proxy_for(Microsandbox::Native::Sandbox).reset
+        allow(Microsandbox::Native::Sandbox).to receive(:restore).and_return(native)
+        Microsandbox::Sandbox.restore(Microsandbox::SnapshotInfo.new(data), name: "child")
+        got_ref, opts = restored_with
+        expect([got_ref, opts["snapshot_kind"]]).to eq([ref, kind])
+      end
+    end
+
+    it "reads a Pathname as a path" do
+      Microsandbox::Sandbox.restore(Pathname("snaps/x"), name: "child")
+      expect(restored_with.last).to include("snapshot_kind" => "path")
+      expect(restored_with.first).to eq("snaps/x")
+    end
+
+    it "warns on the deprecated forked: and maps it to cow_memory" do
+      expect { Microsandbox::Sandbox.restore("s", name: "child", forked: true) }
+        .to output(/restore\(forked:\) is deprecated; use cow_memory:/).to_stderr
+      expect(restored_with.last).to include("cow_memory" => true)
+    end
+
+    it "rejects what restore cannot change, before provisioning the runtime" do
+      [
+        [{network: :none}, /unknown keyword: :network/],
+        [{security: :restricted}, /unknown keyword: :security/],
+        [{vsock: {"/s" => 1}}, /unknown keyword: :vsock/],
+        [{max_tcp_connections: 1}, /unknown keyword: :max_tcp_connections/],
+        [{image: "alpine"}, /unknown keyword: :image/],
+        [{external_mount_policy: :loose}, /external_mount_policy: must be :strict or :relaxed/]
+      ].each do |kwargs, message|
+        expect { Microsandbox::Sandbox.restore("s", name: "child", **kwargs) }.to raise_error(ArgumentError, message)
+      end
+      expect { Microsandbox::Sandbox.restore("s") }.to raise_error(ArgumentError, /missing keyword: :name/)
+      expect { Microsandbox::Sandbox.restore(42, name: "child") }.to raise_error(ArgumentError, /snapshot must be/)
+      expect(Microsandbox).not_to have_received(:ensure_runtime!)
+      expect(Microsandbox::Native::Sandbox).not_to have_received(:restore)
+    end
+
+    it "stops the restored sandbox after the block, though upstream starts it detached" do
+      allow(native).to receive(:owns_lifecycle).and_return(false)
+      expect(Microsandbox::Sandbox.restore("s", name: "child") { |sb| sb.name }).to eq("box")
+      expect(native).to have_received(:stop)
+    end
+
+    it "stops the unowned restored sandbox when the caller never gets it" do
+      allow(native).to receive(:owns_lifecycle).and_return(false)
+      allow(Microsandbox::Sandbox).to receive(:new).and_raise(IOError, "lost")
+      expect { Microsandbox::Sandbox.restore("s", name: "child") }.to raise_error(IOError, "lost")
+      expect(native).to have_received(:stop)
+    end
+  end
+
   # The acquisition entry points mask interrupts around the native call (so an
   # interrupted call's sandbox can be stopped), and a mask makes whatever runs
   # under it uninterruptible. It must therefore cover the native call only:
@@ -1116,7 +1208,7 @@ RSpec.describe Microsandbox::Sandbox do
       end.new("box")
     end
 
-    {create: {image: "python"}, connect_or_create: {image: "python"}, start: {}}.each do |entry, kwargs|
+    {create: {image: "python"}, connect_or_create: {image: "python"}, start: {}, restore: {name: "r"}}.each do |entry, kwargs|
       it ".#{entry} can be timed out while its arguments are prepared, before any native call" do
         allow(Microsandbox::Native::Sandbox).to receive(entry).and_return(native)
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)

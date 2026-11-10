@@ -235,5 +235,7 @@ versions before `0.17.1` kept the relative path and resolved it again on every
 start ([GHSA-mcw9-9rf6-p4rm](https://github.com/superradcompany/microsandbox/security/advisories/GHSA-mcw9-9rf6-p4rm));
 recreate those. On a cloud backend, host paths are sent as written.
 
-Booting from a snapshot is not bound in this build: `Sandbox.create(name,
-from_snapshot: ...)` was removed with runtime `v0.7` and raises with directions.
+`Sandbox.restore` anchors a relative snapshot path (and `snapshot_base:`) the
+same way, when it is called. It replaced `Sandbox.create(name, from_snapshot:
+...)`, which raises with directions since 0.18.0; see
+[images.md](images.md#restoring-a-snapshot).

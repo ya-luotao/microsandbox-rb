@@ -61,9 +61,11 @@ Without `registry_auth:`, the core's default credential resolution still applies
 `Microsandbox::Snapshot` covers create / open / get / list / list_dir / reindex /
 remove / verify / save / load. `Snapshot.create` captures the disk by default;
 `full: true` (it replaced `resumable:` in 0.18.0) captures a resumable
-checkpoint. Booting a sandbox from a snapshot is not bound yet in this build:
-`Sandbox.create(from_snapshot:)` was removed with runtime `v0.7` and raises
-with directions. Snapshot failures raise the typed `Snapshot*Error` classes listed in
+checkpoint, and `guest_flush:` (`:auto`, `:required`, `:skip`) chooses the
+optional guest writeback before capture (a stopped source cannot satisfy
+`:required`). `Sandbox.restore` boots a new sandbox from a snapshot (see
+[Restoring](#restoring-a-snapshot)); it replaced `Sandbox.create(from_snapshot:)`,
+which raises with directions since 0.18.0. Snapshot failures raise the typed `Snapshot*Error` classes listed in
 [errors.md](errors.md). Payload integrity is opt-in (`record_integrity:`), and
 `verify` can report `:not_recorded` for snapshots taken without it.
 
@@ -78,6 +80,7 @@ member aliased `name`, and makes it the group head. Selectors for `open` / `get`
 | `"src:name"` | that member |
 | `info.id` (`snap_…`) or `info.digest` (`sha256:…`) | that snapshot |
 | `info.path` (anything containing `/` or starting with `.`) | that artifact directory |
+| `info.reference` | that snapshot, read the way its backend wrote it (`SnapshotInfo#reference_kind`) |
 
 So the `name` given to `create` is not a selector on its own any more: keep the
 returned `SnapshotInfo#id`. `Snapshot.load` puts the copy into a fresh generated
@@ -90,3 +93,45 @@ info = Microsandbox::Snapshot.create("before-upgrade", from_sandbox: "worker")
 Microsandbox::Snapshot.verify(info.id)
 Microsandbox::Snapshot.get("worker:before-upgrade").id == info.id  # => true
 ```
+
+### Restoring a snapshot
+
+`Sandbox.restore(snapshot, name:, ...)` boots a new sandbox from a snapshot:
+a disk snapshot cold-boots its captured disk, and a full one resumes the
+captured execution (`disk_only: true` cold-boots its disk instead). Pass a
+`SnapshotInfo` (it restores by `#reference`), an id, `"group:member"`, a
+digest, or a path; a relative path is anchored to the current directory when
+you call it. A bare name selects a group head.
+
+```ruby
+info = Microsandbox::Snapshot.create("before-upgrade", from_sandbox: "worker")
+
+Microsandbox::Sandbox.restore(info, name: "worker-replay") do |sb|
+  sb.shell("cat /root/state.txt")
+end # stopped here
+
+sb = Microsandbox::Sandbox.restore(info.id, name: "worker-2", cpus: 2, memory: 1024)
+# ... keeps running, even after this process exits, until stopped
+sb.stop
+```
+
+The snapshot keeps its image, command, environment and network
+configuration; restore takes only destination choices: `cpus:`/`memory:`
+(disk boot; a full restore takes only the captured values), `user:`,
+`log_level:`, `max_duration:`, `idle_timeout:`, `volumes:`, `ports:`,
+`disable_network:` (disk boot), `cow_memory:` (full restore; `forked:` is a
+deprecated alias), `disk_only:`, `snapshot_base:` (the base of a dependent
+archive), `allow_missing_resources:` and `external_mount_policy:` (`:strict` or
+`:relaxed`). Overriding the network policy, security profile, vsock routes or
+connection caps on restore is not bound yet.
+
+A captured bind or named mount needs a destination: pass it in `volumes:`
+under the captured guest path (`volumes: { "/data" => "/srv/data" }`), or pass
+`allow_missing_resources: true` to restore without it (the mount stays
+unavailable). Otherwise restore raises `InvalidConfigError` ("restore requires
+destination bindings for: mount /data; …").
+
+Upstream always restores **detached**: `#owns_lifecycle?` is `false`, and a
+sandbox restored without a block keeps running after your process exits
+(0.17's `create(from_snapshot:)` was stopped with it). The block form stops it
+on exit, and an interrupt that lands before `restore` returns stops it too.
