@@ -16,7 +16,7 @@ group :development do
   # Parses sig/microsandbox.rbs for spec/unit/rbs_contract_spec.rb and backs
   # `rbs -I sig validate` in CI. Held on the 3.x line; moving to rbs 4 is a
   # separate change (the Ruby 3.1 floor that forced the pin is gone in 0.18.0).
-  gem "rbs", "~> 3.10"
+  gem "rbs", "~> 4.2"
   gem "rspec", "~> 3.13"
   # Retries only the :integration examples (see spec/spec_helper.rb) so a microVM
   # that loses the GitHub-hosted nested-KVM boot-latency lottery and trips the
