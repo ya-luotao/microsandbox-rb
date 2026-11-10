@@ -2051,13 +2051,12 @@ module Microsandbox
 
     # Latest resource-usage snapshot.
     #
-    # Raises a {Microsandbox::Error} ("sandbox N has no live metrics slot") when
-    # called in the brief window right after {Sandbox.create} returns, before the
-    # runtime has registered the sandbox's metrics slot. On `v0.6.x` runtimes
-    # the spawn handshake no longer blocks create until the first sample is
-    # written, so the slot goes live a beat *after* boot (within a few hundred
-    # milliseconds); retry for that window rather than treating the first failure
-    # as fatal.
+    # Raises a {Microsandbox::Error} ("sandbox N has no verified live metrics
+    # slot" since runtime v0.7) when called in the brief window right after
+    # {Sandbox.create} returns, before the runtime has registered the
+    # sandbox's metrics slot: create does not wait for the first sample, so the
+    # slot goes live a beat *after* boot (within a few hundred milliseconds);
+    # retry for that window rather than treating the first failure as fatal.
     # @return [Metrics]
     def metrics
       Metrics.new(@native.metrics)
@@ -2141,7 +2140,8 @@ module Microsandbox
     #
     # The first tick fires immediately, so opening the stream right after
     # {Sandbox.create} can hit the same metrics-slot startup window as {#metrics}
-    # and yield a transient "no live metrics slot" error on that first tick.
+    # and yield a transient "no verified live metrics slot" error on that first
+    # tick.
     # Because the stream is single-pass (a drained or errored stream is spent),
     # make sure the slot is live *before* opening it — e.g. retry {#metrics}
     # until it succeeds (the slot goes live within a few hundred milliseconds of

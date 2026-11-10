@@ -4,9 +4,9 @@
 
 ```ruby
 Microsandbox::Sandbox.create("obs", image: "public.ecr.aws/docker/library/alpine:latest") do |sb|
-  # On v0.6.x runtimes the metrics slot goes live a beat after create returns,
-  # so `metrics` can briefly raise "no live metrics slot" right after boot —
-  # retry for a few hundred ms rather than treating the first failure as fatal.
+  # The metrics slot goes live a beat after create returns, so `metrics` can
+  # briefly raise "... no verified live metrics slot" right after boot — retry
+  # for a few hundred ms rather than treating the first failure as fatal.
   m = sb.metrics                       # => Microsandbox::Metrics
   m.cpu_percent
   m.memory_bytes
@@ -25,15 +25,17 @@ and `sb.log_stream` (`LogStream` over `LogEntry`) — both single-pass, see
 
 `MetricsDisabledError` means metrics are turned off for the sandbox. The
 metrics slot goes live a moment *after* `create` returns; a call inside that
-window raises the base `Microsandbox::Error` with a message containing
-`no live metrics slot` (not `MetricsUnavailableError`, which the pinned runtime
-never raises). Retry on that message:
+window raises the base `Microsandbox::Error` with the message
+`sandbox N has no verified live metrics slot` (runtime `v0.7`; it read
+`no live metrics slot` before 0.18.0) — not `MetricsUnavailableError`, which
+the pinned runtime never raises. Retry on that message, and match both
+spellings if you support older gems too:
 
 ```ruby
 metrics = begin
   sb.metrics
 rescue Microsandbox::Error => e
-  raise unless e.message.include?("no live metrics slot")
+  raise unless e.message.match?(/no (verified )?live metrics slot/)
   sleep 0.1
   retry
 end

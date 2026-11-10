@@ -136,6 +136,11 @@ hostname enforcement on by default. Migration notes are below.
   or HTTPS under TLS interception; a secret-policy block is answered the same
   way. This applies to sandboxes created by 0.17.x too, from their next start.
   Pass `http: { deny_response: false }` for the old behaviour.
+- The transient error right after boot, before a sandbox's metrics slot is
+  live, now reads `sandbox N has no verified live metrics slot` (it was
+  `… has no live metrics slot`); code that retries on the message must match
+  the new text (`/no (verified )?live metrics slot/`). See
+  `docs/observability.md`.
 - Execution flow control is fixed by the runtime: at most 128 executions per
   sandbox (exited streams with unread output included), 64 KiB of pending
   stdin, 1 MiB of unread output, 16 KiB chunks. See `docs/execution.md`.

@@ -124,17 +124,17 @@ end
 
 # Block until a freshly-created sandbox's metrics slot is live, returning the
 # first successful Metrics snapshot. The per-sandbox metrics slot goes live a
-# beat AFTER Sandbox.create returns on v0.6.x runtimes — the spawn handshake
-# (upstream #1036) no longer blocks create until the first sample is written, so
-# `metrics`/`metrics_stream` briefly raise "sandbox N has no live metrics slot"
-# right after boot. Poll past that startup window so streaming assertions don't
+# beat AFTER Sandbox.create returns — the spawn handshake (upstream #1036) does
+# not block create until the first sample is written, so `metrics`/
+# `metrics_stream` briefly raise "sandbox N has no verified live metrics slot"
+# (runtime v0.7; "no live metrics slot" on v0.6.x) right after boot. Poll past that startup window so streaming assertions don't
 # race it; this mirrors how a real caller must treat the window (see the metrics
 # docs). Only the transient slot error is retried — any other error propagates.
 def wait_for_metrics_slot(sandbox, attempts: 50, delay: 0.1)
   attempts.times do
     return sandbox.metrics
   rescue Microsandbox::Error => e
-    raise unless e.message.include?("no live metrics slot")
+    raise unless e.message.match?(/no (verified )?live metrics slot/)
     sleep delay
   end
   raise "metrics slot never went live after #{attempts} attempts"
