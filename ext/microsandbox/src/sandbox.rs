@@ -785,7 +785,8 @@ impl Sandbox {
         Ok(ExecHandle::from_core(handle))
     }
 
-    /// Graceful stop (SIGTERM→SIGKILL escalation with a 10s default), routed
+    /// Graceful stop, waiting without a deadline (runtime v0.7 never escalates
+    /// to a kill; see `stop_with_timeout`), routed
     /// straight through the live sandbox like every other lifecycle method here
     /// and like both official bindings (`sdk/python/src/sandbox.rs`,
     /// `sdk/ruby/ext/.../lib.rs`).
@@ -813,10 +814,26 @@ impl Sandbox {
         Ok(exit_status_to_hash(status))
     }
 
-    /// Force kill (SIGKILL).
+    /// Graceful stop under one budget (seconds), including dispatch and the
+    /// runtime's release. Expiry is `StopTimeoutError` and kills nothing; a
+    /// zero budget times out before dispatch (runtime v0.7).
+    fn stop_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        let duration = secs_to_duration(secs)?;
+        let inner = self.inner.get()?;
+        block_on(inner.stop_with_timeout(duration))?.map_err(error::to_ruby)
+    }
+
+    /// Force kill, waiting up to 5 s for the stopped state.
     fn kill(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.kill())?.map_err(error::to_ruby)
+    }
+
+    /// Force kill, waiting up to `secs` for the stopped state.
+    fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        let duration = secs_to_duration(secs)?;
+        let inner = self.inner.get()?;
+        block_on(inner.kill_with_timeout(duration))?.map_err(error::to_ruby)
     }
 
     /// Trigger a graceful drain (SIGUSR1 on local).
@@ -2947,25 +2964,27 @@ impl SbHandle {
             .map(|dt| dt.timestamp_millis())
     }
 
-    /// Graceful stop (SIGTERM→SIGKILL escalation, 10s default) and wait.
+    /// Graceful stop, waiting without a deadline (runtime v0.7: no escalation
+    /// to a kill).
     fn stop(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.stop())?.map_err(error::to_ruby)
     }
 
-    /// Graceful stop with a custom escalation timeout (seconds).
+    /// Graceful stop under one budget (seconds); expiry is `StopTimeoutError`
+    /// and kills nothing.
     fn stop_with_timeout(&self, secs: f64) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.stop_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
     }
 
-    /// Force kill (SIGKILL) and wait.
+    /// Force kill, waiting up to 5 s for the stopped state.
     fn kill(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.kill())?.map_err(error::to_ruby)
     }
 
-    /// Force kill, waiting up to `secs` for the process to disappear.
+    /// Force kill, waiting up to `secs` for the stopped state.
     fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.kill_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
@@ -3201,6 +3220,8 @@ pub fn define(ruby: &Ruby, native: &RModule) -> Result<(), Error> {
     class.define_method("stop", method!(Sandbox::stop, 0))?;
     class.define_method("stop_and_wait", method!(Sandbox::stop_and_wait, 0))?;
     class.define_method("kill", method!(Sandbox::kill, 0))?;
+    class.define_method("stop_with_timeout", method!(Sandbox::stop_with_timeout, 1))?;
+    class.define_method("kill_with_timeout", method!(Sandbox::kill_with_timeout, 1))?;
     class.define_method("drain", method!(Sandbox::drain, 0))?;
     class.define_method("wait", method!(Sandbox::wait, 0))?;
     class.define_method("wait_for_status", method!(Sandbox::wait_for_status, 1))?;

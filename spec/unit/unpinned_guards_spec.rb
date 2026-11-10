@@ -3,7 +3,7 @@
 # Behaviour that no other spec pinned: each example fails if the guard it
 # names is removed or inverted. Stub-level, like sandbox_spec.rb.
 RSpec.describe "guards no other spec pins" do
-  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil) }
+  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil, stop_with_timeout: nil, kill: nil) }
 
   before do
     allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
@@ -45,12 +45,12 @@ RSpec.describe "guards no other spec pins" do
 
   describe "block-form teardown" do
     it "swallows a stop failure after the .create block and still returns the block value" do
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxNotRunningError, "gone")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxNotRunningError, "gone")
       expect(Microsandbox::Sandbox.create("box", image: "x") { :value }).to eq(:value)
     end
 
     it "lets the block's own exception win over a stop failure after .create" do
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxNotRunningError, "gone")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxNotRunningError, "gone")
       expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "from block" } }
         .to raise_error(IOError, "from block")
     end
@@ -59,7 +59,7 @@ RSpec.describe "guards no other spec pins" do
       allow(native).to receive(:owns_lifecycle).and_return(true)
       expect { Microsandbox::Sandbox.connect_or_create("box", image: "x") { raise "boom" } }
         .to raise_error("boom")
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout)
     end
 
     it "closes the write sink when the fs.write_stream block raises" do

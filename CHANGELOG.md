@@ -93,6 +93,9 @@ hostname enforcement on by default. Migration notes are below.
   destination in `volumes:` (or `allow_missing_resources: true`), otherwise
   `InvalidConfigError`. The block form stops the sandbox on exit. See
   `docs/images.md#restoring-a-snapshot`.
+- **`Sandbox#stop_with_timeout(seconds)` / `#kill_with_timeout(seconds)`** on
+  the live sandbox (they were on `SandboxHandle` only), and
+  **`Sandbox::BLOCK_STOP_TIMEOUT`** (10).
 - **`Snapshot.create(guest_flush:)`** (`:auto`, `:required`, `:skip`) and
   **`SnapshotInfo#reference`** / **`#reference_kind`**, the reference
   `Sandbox.restore` takes back.
@@ -122,6 +125,12 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Changed
 
+- **A graceful stop never escalates to a kill** (runtime `v0.7`). `#stop`
+  waits without a deadline; `stop_with_timeout` and `restart`/`destroy`'s
+  `timeout:` raise `StopTimeoutError` on expiry and kill nothing. The block
+  forms of `create`, `connect_or_create` and `restore` therefore stop with a
+  `BLOCK_STOP_TIMEOUT` budget and kill when it runs out, so a block exit cannot
+  hang; an interrupted create does the same.
 - **A request the network policy denies gets an HTTP `403` with a JSON body**
   (`code: "network_policy_denied"`) instead of a reset, when it is plain HTTP
   or HTTPS under TLS interception; a secret-policy block is answered the same

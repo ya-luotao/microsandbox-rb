@@ -52,29 +52,37 @@ module Microsandbox
       Microsandbox.time_from_ms(ms)
     end
 
-    # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default).
+    # Request a graceful shutdown and wait, without a deadline, until the
+    # runtime has released the sandbox. Since runtime v0.7 nothing escalates to
+    # a kill: bound the wait with {#stop_with_timeout}, force it with {#kill}.
     # @return [nil]
     def stop
       @native.stop
       nil
     end
 
-    # Gracefully stop with a custom escalation timeout.
-    # @param timeout [Numeric] seconds to wait before escalating to SIGKILL
+    # Request a graceful shutdown and wait at most `timeout` seconds (one
+    # budget for dispatch and the runtime's release). Expiry raises
+    # {StopTimeoutError} and kills nothing — the shutdown may still complete
+    # later; call {#kill} if it must end now. A zero budget times out before
+    # the request is sent.
+    # @param timeout [Numeric] seconds
+    # @raise [StopTimeoutError] when the budget runs out
     # @return [nil]
     def stop_with_timeout(timeout)
       @native.stop_with_timeout(Sandbox.send(:coerce_duration, timeout, "timeout"))
       nil
     end
 
-    # Force-kill the sandbox (SIGKILL).
+    # Force-kill the sandbox, waiting up to 5 seconds to observe it stopped.
     # @return [nil]
     def kill
       @native.kill
       nil
     end
 
-    # Force-kill, waiting up to `timeout` seconds for the process to disappear.
+    # Force-kill, waiting up to `timeout` seconds to observe it stopped (expiry
+    # raises {Error}).
     # @param timeout [Numeric]
     # @return [nil]
     def kill_with_timeout(timeout)
@@ -141,9 +149,10 @@ module Microsandbox
 
     # Stop and start *this exact* sandbox, returning the new live sandbox
     # (runtime v0.6.16). A created/stopped/crashed sandbox is started directly.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @param detached [Boolean] start the replacement detached
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [Sandbox]
@@ -156,9 +165,10 @@ module Microsandbox
     # Stop and remove *this exact* sandbox (runtime v0.6.16) — {#stop} plus
     # {Sandbox.remove} in one convergent step, with an identity check that
     # refuses to remove a same-name replacement.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [nil]
     def destroy(force: false, timeout: nil)
@@ -343,12 +353,20 @@ module Microsandbox
     # arguments of {Sandbox#wait_for_status} / {SandboxHandle#wait_for_status}.
     STATUSES = %i[created starting running draining paused stopped crashed].freeze
 
+    # Seconds the block forms of {create}, {connect_or_create} and {restore}
+    # give the graceful stop on exit before they kill the sandbox (runtime
+    # v0.7's own default graceful-stop budget). The public {#stop} still waits
+    # without a deadline.
+    BLOCK_STOP_TIMEOUT = 10
+
     class << self
       # Create and boot a sandbox.
       #
       # When a block is given the sandbox is yielded and stopped automatically
-      # when the block returns (the block's value is returned); otherwise the
-      # live {Sandbox} is returned and you are responsible for calling {#stop}.
+      # when the block returns (the block's value is returned): a graceful stop
+      # with a {BLOCK_STOP_TIMEOUT} budget, then a kill, so leaving the block
+      # never hangs. Otherwise the live {Sandbox} is returned and you are
+      # responsible for calling {#stop}.
       #
       # @param name [String] sandbox name (max 128 UTF-8 bytes)
       # @param image [String, nil] OCI image reference (e.g. "python")
@@ -681,7 +699,7 @@ module Microsandbox
         ensure
           if native && !handed_off
             begin
-              native.stop if always_stop || native.owns_lifecycle
+              bounded_stop(native) if always_stop || native.owns_lifecycle
             rescue Microsandbox::Error
               # best-effort cleanup; the interrupt is what the caller must see
             end
@@ -977,12 +995,22 @@ module Microsandbox
       end
 
       # Block-form teardown shared by {create}, {connect_or_create} and
-      # {restore}: stop the sandbox (only when this call owns its lifecycle,
-      # for {connect_or_create}), best-effort.
+      # {restore}: a bounded stop (see {bounded_stop}) — only when this call
+      # owns the lifecycle, for {connect_or_create} — best-effort.
       def teardown(sandbox, only_if_owned: false)
-        sandbox.stop if !only_if_owned || sandbox.owns_lifecycle?
+        bounded_stop(sandbox) if !only_if_owned || sandbox.owns_lifecycle?
       rescue Microsandbox::Error
         # best-effort cleanup; ignore stop failures during teardown
+      end
+
+      # Stop `target` (a {Sandbox} or its native object) without hanging: a
+      # graceful stop with a {BLOCK_STOP_TIMEOUT} budget, then a kill (itself
+      # bounded at 5 seconds). Since runtime v0.7 a plain stop waits forever
+      # and never escalates.
+      def bounded_stop(target)
+        target.stop_with_timeout(BLOCK_STOP_TIMEOUT.to_f)
+      rescue StopTimeoutError
+        target.kill
       end
 
       # The `[value, kind]` pair {restore} hands the native layer: a String is
@@ -2144,9 +2172,11 @@ module Microsandbox
       LogStream.new(@native.log_stream(opts))
     end
 
-    # Gracefully stop the sandbox (SIGTERM→SIGKILL escalation, 10s default) and
-    # wait for it to terminate. For a custom timeout or fire-and-return
-    # `request_*` control, fetch a {SandboxHandle} via {Sandbox.get}.
+    # Request a graceful shutdown and wait, without a deadline, until the
+    # runtime has released the sandbox. Since runtime v0.7 nothing escalates to
+    # a kill: bound the wait with {#stop_with_timeout}, force it with {#kill}.
+    # For fire-and-return `request_*` control, fetch a {SandboxHandle} via
+    # {Sandbox.get}.
     #
     # Scoped to *this exact* sandbox: as of runtime v0.6.16 the stop carries this
     # object's {#id}, so if the name has since been removed and recreated the
@@ -2166,10 +2196,32 @@ module Microsandbox
       ExitStatus.new(@native.stop_and_wait)
     end
 
-    # Force-kill the sandbox (SIGKILL).
+    # Request a graceful shutdown and wait at most `timeout` seconds (one
+    # budget for dispatch and the runtime's release; runtime v0.7). Expiry
+    # raises {StopTimeoutError} and kills nothing — the shutdown may still
+    # complete later; call {#kill} if it must end now. A zero budget times out
+    # before the request is sent. Scoped to this sandbox's {#id}, like {#stop}.
+    # @param timeout [Numeric] seconds
+    # @raise [StopTimeoutError] when the budget runs out
+    # @return [nil]
+    def stop_with_timeout(timeout)
+      @native.stop_with_timeout(coerce_duration(timeout, "timeout"))
+      nil
+    end
+
+    # Force-kill the sandbox, waiting up to 5 seconds to observe it stopped.
     # @return [nil]
     def kill
       @native.kill
+      nil
+    end
+
+    # Force-kill, waiting up to `timeout` seconds to observe it stopped (expiry
+    # raises {Error}).
+    # @param timeout [Numeric]
+    # @return [nil]
+    def kill_with_timeout(timeout)
+      @native.kill_with_timeout(coerce_duration(timeout, "timeout"))
       nil
     end
 
@@ -2212,9 +2264,10 @@ module Microsandbox
     # Stop and start *this exact* sandbox, returning the new live sandbox
     # (runtime v0.6.16). A created/stopped/crashed sandbox is started directly.
     # This handle is spent afterwards — use the returned one.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @param detached [Boolean] start the replacement detached
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [Sandbox]
@@ -2229,9 +2282,10 @@ module Microsandbox
     # Stop and remove *this exact* sandbox (runtime v0.6.16) — the convergent
     # equivalent of {#stop} followed by {Sandbox.remove}, with an identity check
     # that refuses to remove a same-name replacement.
-    # @param force [Boolean] SIGKILL instead of requesting a graceful shutdown
-    # @param timeout [Numeric, nil] graceful-shutdown seconds before escalating
-    #   (the core's default is 10)
+    # @param force [Boolean] force-kill instead of requesting a graceful shutdown
+    # @param timeout [Numeric, nil] graceful-shutdown budget in seconds (the
+    #   core's default is 10); expiry raises {StopTimeoutError} and kills
+    #   nothing (runtime v0.7)
     # @raise [SandboxReplacedError] if the name now refers to a different sandbox
     # @return [nil]
     def destroy(force: false, timeout: nil)

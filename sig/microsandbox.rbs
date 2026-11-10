@@ -279,6 +279,8 @@ module Microsandbox
 
   class Sandbox
     STATUSES: Array[Symbol]
+    # Graceful-stop budget (seconds) of the block forms before they kill.
+    BLOCK_STOP_TIMEOUT: Integer
 
     # `from_snapshot:` and `on_secret_violation:` were removed in 0.18.0; they
     # stay as `nil`-only keywords so passing one raises with directions.
@@ -377,8 +379,10 @@ module Microsandbox
     def log_stream: (?sources: Array[String | Symbol]?, ?since_ms: Numeric?,
                      ?from_cursor: String?, ?until_ms: Numeric?, ?follow: bool) -> LogStream
     def stop: () -> nil
+    def stop_with_timeout: (Numeric timeout) -> nil
     def stop_and_wait: () -> ExitStatus
     def kill: () -> nil
+    def kill_with_timeout: (Numeric timeout) -> nil
     def drain: () -> nil
     def wait: () -> ExitStatus
     def wait_for_status: (Symbol | String status) -> SandboxHandle

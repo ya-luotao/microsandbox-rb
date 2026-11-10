@@ -6,8 +6,10 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
 
 ## Implemented
 
-- **Sandbox lifecycle** — the live `Sandbox` (`stop`/`stop_and_wait`/`kill`/
-  `drain`/`wait`/`status`/`detach`/`owns_lifecycle?`), the `SandboxHandle`
+- **Sandbox lifecycle** — the live `Sandbox` (`stop`/`stop_with_timeout`/
+  `stop_and_wait`/`kill`/`kill_with_timeout`/`drain`/`wait`/`status`/`detach`/
+  `owns_lifecycle?`; block forms stop within `BLOCK_STOP_TIMEOUT`, then kill),
+  the `SandboxHandle`
   controls from `Sandbox.get` (`stop_with_timeout`/`request_stop`/
   `request_kill`/`request_drain`/`wait_until_stopped`/`config`/`config_json`/
   `snapshot`), the cursor-paginated `list`/`list_with` with label filters, and

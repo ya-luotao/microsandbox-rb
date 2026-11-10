@@ -32,9 +32,11 @@ sb = Microsandbox::Sandbox.create("box", image: "public.ecr.aws/docker/library/a
 begin
   # ...
 ensure
-  sb.stop          # graceful (SIGTERM→SIGKILL escalation, 10s default)
+  sb.stop          # graceful; waits without a deadline (never escalates)
+  # sb.stop_with_timeout(10) # graceful within 10s, else StopTimeoutError (no kill)
   # sb.stop_and_wait # graceful, then wait → ExitStatus(#exit_code, #success?)
-  # sb.kill          # force (SIGKILL); sb.drain for a graceful drain
+  # sb.kill          # force; waits up to 5s (kill_with_timeout(n) for more)
+  # sb.drain         # graceful drain
 end
 
 # Inspect / manage existing sandboxes. `list` returns a cursor-paginated,
@@ -44,7 +46,7 @@ Microsandbox::Sandbox.list.map(&:name)  # enumerate the page's handles
 # next page: Sandbox.list_with(cursor: page.next_cursor, limit: 50)
 h = Microsandbox::Sandbox.get("box")  # => Microsandbox::SandboxHandle
 h.status                              # :running, :stopped, :created, ...
-h.stop_with_timeout(5)                # custom escalation timeout
+h.stop_with_timeout(5)                # graceful within 5s, else StopTimeoutError
 h.request_stop                        # fire-and-return; pair with #wait_until_stopped
 h.request_kill
 h.request_drain
@@ -89,6 +91,32 @@ These methods hold queued interrupts back while they acquire the sandbox, so
 an exception you deferred with `Thread.handle_interrupt(X => :on_blocking)` is
 not raised by them: you get the sandbox, and the exception arrives at the
 thread's next blocking operation.
+
+### Stopping since runtime `v0.7`
+
+A graceful stop no longer escalates to a kill. `#stop` sends the shutdown
+request and waits, without a deadline, until the runtime has released the
+sandbox. `#stop_with_timeout(n)` waits at most `n` seconds and then raises
+`Microsandbox::StopTimeoutError` — it kills nothing, and the shutdown may still
+complete later (a zero budget times out before the request is sent). End it
+for sure with `#kill` (it waits up to 5 seconds to see the sandbox stopped;
+`#kill_with_timeout(n)` for longer). `restart`/`destroy` take the same kind of
+budget in `timeout:` (10 seconds by default) and raise `StopTimeoutError` when
+it runs out, unless `force: true`.
+
+The block forms of `create`, `connect_or_create` and `restore` stop the sandbox
+on exit with a budget of `Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT` (10)
+seconds and kill it when that runs out, so leaving a block never hangs on a
+guest that does not shut down. Errors in that teardown are swallowed (the
+block's own result or exception wins).
+
+```ruby
+begin
+  sb.stop_with_timeout(10)
+rescue Microsandbox::StopTimeoutError
+  sb.kill
+end
+```
 
 ## Convergent lifecycle
 

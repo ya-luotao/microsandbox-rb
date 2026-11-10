@@ -32,7 +32,7 @@ options) raises a plain `ArgumentError` before the native layer is reached.
 | `SandboxNotRunningError` | `sandbox-not-running` | Operation needs a running guest (`ping`/`touch`/`exec` on a stopped sandbox) |
 | `SandboxAlreadyExistsError` | `sandbox-already-exists` | Name clash on `create` without `replace:` |
 | `SandboxStillRunningError` | `sandbox-still-running` | `remove` on a running sandbox |
-| `StopTimeoutError` | `stop-timeout` | A graceful stop did not complete within its budget; the stop may still complete and no kill was requested |
+| `StopTimeoutError` | `stop-timeout` | A graceful stop (`stop_with_timeout`, or `restart`/`destroy`'s `timeout:`) did not complete within its budget; the stop may still complete and no kill was requested. The block forms catch it and kill |
 | `SandboxStopTimedOutError` | `sandbox-stop-timed-out` | Reserved for parity; not raised at the pinned runtime |
 | `SandboxReplacedError` | `sandbox-replaced` | The identity a handle was bound to no longer owns the name (see [lifecycle.md](lifecycle.md#convergent-lifecycle)) |
 | `ExecTimeoutError` | `exec-timeout` | `exec(timeout:)` / `shell(timeout:)` deadline hit |

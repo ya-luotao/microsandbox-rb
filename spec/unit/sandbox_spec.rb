@@ -6,7 +6,7 @@ require "timeout"
 # WITHOUT booting a real microVM, by stubbing the native layer. The native
 # binding itself is covered by the integration specs.
 RSpec.describe Microsandbox::Sandbox do
-  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil) }
+  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil, stop_with_timeout: nil, kill: nil) }
 
   before do
     allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
@@ -873,14 +873,36 @@ RSpec.describe Microsandbox::Sandbox do
         :done
       end
       expect(result).to eq(:done)
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
+      expect(native).not_to have_received(:kill)
     end
 
     it "stops the sandbox even if the block raises" do
       expect do
         Microsandbox::Sandbox.create("box", image: "x") { raise "boom" }
       end.to raise_error("boom")
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
+    end
+
+    # Runtime v0.7: a graceful stop never escalates, so the block form bounds
+    # it and kills on expiry rather than hanging on the way out.
+    it "kills the sandbox when the bounded stop times out on block exit" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      expect(Microsandbox::Sandbox.create("box", image: "x") { :done }).to eq(:done)
+      expect(native).to have_received(:kill)
+    end
+
+    it "uses BLOCK_STOP_TIMEOUT as the block-form budget" do
+      stub_const("Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT", 3)
+      Microsandbox::Sandbox.create("box", image: "x") { :done }
+      expect(native).to have_received(:stop_with_timeout).with(3.0)
+    end
+
+    it "swallows a failing kill after a timed-out stop and keeps the block's exception" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      allow(native).to receive(:kill).and_raise(Microsandbox::Error, "kill timed out")
+      expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "boom" } }
+        .to raise_error(IOError, "boom")
     end
   end
 
@@ -983,6 +1005,26 @@ RSpec.describe Microsandbox::Sandbox do
 
     it "exposes the live #status as a Symbol" do
       expect(sb.status).to eq(:running)
+    end
+
+    # Runtime v0.7: the live sandbox's bounded variants (the plain #stop waits
+    # forever and never escalates).
+    it "forwards #stop_with_timeout / #kill_with_timeout as seconds, rejecting bad budgets" do
+      allow(native).to receive(:kill_with_timeout)
+      expect(sb.stop_with_timeout(2)).to be_nil
+      expect(sb.kill_with_timeout(0.5)).to be_nil
+      expect(native).to have_received(:stop_with_timeout).with(2.0)
+      expect(native).to have_received(:kill_with_timeout).with(0.5)
+      [-1, Float::NAN, Float::INFINITY].each do |bad|
+        expect { sb.stop_with_timeout(bad) }.to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+        expect { sb.kill_with_timeout(bad) }.to raise_error(ArgumentError, /timeout must be a finite, non-negative/)
+      end
+    end
+
+    it "lets StopTimeoutError from #stop_with_timeout surface (nothing is killed)" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      expect { sb.stop_with_timeout(1) }.to raise_error(Microsandbox::StopTimeoutError)
+      expect(native).not_to have_received(:kill)
     end
 
     # The binding routes the live #stop through the sandbox object itself (not a
@@ -1182,14 +1224,14 @@ RSpec.describe Microsandbox::Sandbox do
     it "stops the restored sandbox after the block, though upstream starts it detached" do
       allow(native).to receive(:owns_lifecycle).and_return(false)
       expect(Microsandbox::Sandbox.restore("s", name: "child") { |sb| sb.name }).to eq("box")
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
     end
 
     it "stops the unowned restored sandbox when the caller never gets it" do
       allow(native).to receive(:owns_lifecycle).and_return(false)
       allow(Microsandbox::Sandbox).to receive(:new).and_raise(IOError, "lost")
       expect { Microsandbox::Sandbox.restore("s", name: "child") }.to raise_error(IOError, "lost")
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
     end
   end
 
@@ -1258,13 +1300,14 @@ RSpec.describe Microsandbox::Sandbox do
       yielded = nil
       Microsandbox::Sandbox.connect_or_create("box", image: "x") { |sb| yielded = sb }
       expect(yielded).to be_a(Microsandbox::Sandbox)
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout).with(10.0)
     end
 
     it "leaves a merely-connected sandbox running after the .connect_or_create block form" do
       allow(native).to receive(:owns_lifecycle).and_return(false)
       Microsandbox::Sandbox.connect_or_create("box", image: "x") { |sb| sb.name }
-      expect(native).not_to have_received(:stop)
+      expect(native).not_to have_received(:stop_with_timeout)
+      expect(native).not_to have_received(:kill)
     end
 
     it "leaves a detached sandbox running after the .connect_or_create block form" do
@@ -1273,12 +1316,12 @@ RSpec.describe Microsandbox::Sandbox do
       expect(Microsandbox::Native::Sandbox).to have_received(:connect_or_create).with(
         "box", hash_including("detached" => true)
       )
-      expect(native).not_to have_received(:stop)
+      expect(native).not_to have_received(:stop_with_timeout)
     end
 
     it "still returns the block's value and swallows a teardown stop failure" do
       allow(native).to receive(:owns_lifecycle).and_return(true)
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxNotRunningError, "gone")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxNotRunningError, "gone")
       result = Microsandbox::Sandbox.connect_or_create("box", image: "x") { :block_value }
       expect(result).to eq(:block_value)
     end
@@ -1289,10 +1332,11 @@ RSpec.describe Microsandbox::Sandbox do
     # best-effort teardown failure — the block's value still comes back.
     it "swallows SandboxReplacedError from the block-form teardown" do
       allow(native).to receive(:owns_lifecycle).and_return(true)
-      allow(native).to receive(:stop).and_raise(Microsandbox::SandboxReplacedError, "replaced")
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::SandboxReplacedError, "replaced")
       result = Microsandbox::Sandbox.connect_or_create("box", image: "x") { :block_value }
       expect(result).to eq(:block_value)
-      expect(native).to have_received(:stop)
+      expect(native).to have_received(:stop_with_timeout)
+      expect(native).not_to have_received(:kill)
     end
 
     it "exposes the sandbox identity as #id" do
