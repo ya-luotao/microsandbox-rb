@@ -90,9 +90,12 @@ RSpec.describe "bundled runtime activation (subprocess)" do
   it "refuses an MSB_PATH executable with no libkrunfw to pair it with (runtime v0.7)" do
     Dir.mktmpdir do |dir|
       fake_companion(dir)
-      out, err, status = run_child(dir, report, "MSB_PATH" => "/opt/custom/msb")
+      classed = 'require "microsandbox"; begin; print Microsandbox.runtime_path; ' \
+        'rescue Microsandbox::Error => e; print "ERROR " + e.class.name + " " + e.code + ": " + e.message; end'
+      out, err, status = run_child(dir, classed, "MSB_PATH" => "/opt/custom/msb")
       expect(status).to be_success, err
-      expect(out).to start_with("ERROR: ").and include("/opt/custom/msb has no matching libkrunfw")
+      expect(out).to start_with("ERROR Microsandbox::RuntimeIncompleteError runtime-incomplete: ")
+        .and include("/opt/custom/msb has no matching libkrunfw")
     end
   end
 

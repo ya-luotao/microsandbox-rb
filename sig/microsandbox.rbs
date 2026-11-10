@@ -35,11 +35,15 @@ module Microsandbox
   end
 
   class InvalidConfigError < Error end
+  class RuntimeNotInstalledError < Error end
+  class RuntimeIncompleteError < Error end
   class SandboxNotFoundError < Error end
   class SandboxNotRunningError < Error end
   class SandboxAlreadyExistsError < Error end
   class SandboxStillRunningError < Error end
   class SandboxReplacedError < Error end
+  class StopTimeoutError < Error end
+  class SandboxStopTimedOutError < Error end
   class ExecTimeoutError < Error end
   class ExecFailedError < Error end
   class NoDefaultCommandError < Error end
@@ -56,6 +60,19 @@ module Microsandbox
   class SnapshotImageMissingError < Error end
   class SnapshotIntegrityError < Error end
   class SnapshotMigrationError < Error end
+  class SnapshotSourceRecoveryError < Error
+    def source_sandbox: () -> String?
+    def checkpoint_id: () -> String?
+    def checkpoint_root: () -> String?
+    def checkpoint_path: () -> String?
+    def artifact: () -> Hash[String, String]?
+    def detail: () -> String?
+    def publication_error: () -> String?
+
+    private
+
+    def __apply_recovery: (Hash[String, untyped] details) -> self
+  end
   class NetworkPolicyError < Error end
   class SecretViolationError < Error end
   class TlsError < Error end
@@ -64,6 +81,7 @@ module Microsandbox
   class MetricsUnavailableError < Error end
   class UnsupportedOperationError < Error end
   class CloudHttpError < Error end
+  class ModificationNotConfirmedError < Error end
   class ForkedHandleError < Error end
   class UnsupportedError < Error
     def operation: () -> String?

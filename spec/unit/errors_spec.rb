@@ -10,11 +10,15 @@ RSpec.describe "Microsandbox error hierarchy" do
   expected_codes = {
     "Error" => "microsandbox-error",
     "InvalidConfigError" => "invalid-config",
+    "RuntimeNotInstalledError" => "runtime-not-installed",
+    "RuntimeIncompleteError" => "runtime-incomplete",
     "SandboxNotFoundError" => "sandbox-not-found",
     "SandboxNotRunningError" => "sandbox-not-running",
     "SandboxAlreadyExistsError" => "sandbox-already-exists",
     "SandboxStillRunningError" => "sandbox-still-running",
     "SandboxReplacedError" => "sandbox-replaced",
+    "StopTimeoutError" => "stop-timeout",
+    "SandboxStopTimedOutError" => "sandbox-stop-timed-out",
     "ExecTimeoutError" => "exec-timeout",
     "ExecFailedError" => "exec-failed",
     "NoDefaultCommandError" => "no-default-command",
@@ -31,6 +35,7 @@ RSpec.describe "Microsandbox error hierarchy" do
     "SnapshotImageMissingError" => "snapshot-image-missing",
     "SnapshotIntegrityError" => "snapshot-integrity",
     "SnapshotMigrationError" => "snapshot-migration",
+    "SnapshotSourceRecoveryError" => "snapshot-source-recovery",
     "NetworkPolicyError" => "network-policy-error",
     "SecretViolationError" => "secret-violation",
     "TlsError" => "tls-error",
@@ -40,6 +45,7 @@ RSpec.describe "Microsandbox error hierarchy" do
     "UnsupportedOperationError" => "unsupported-operation",
     "CloudHttpError" => "cloud-http",
     "UnsupportedError" => "unsupported",
+    "ModificationNotConfirmedError" => "modification-not-confirmed",
     "ForkedHandleError" => "forked-handle"
   }
 
@@ -137,6 +143,33 @@ RSpec.describe "Microsandbox error hierarchy" do
           expect(e.hint).to eq("use a local backend")
         }
     end
+  end
+
+  it "defaults SnapshotSourceRecoveryError's recovery attributes to nil when constructed directly" do
+    err = Microsandbox::SnapshotSourceRecoveryError.new("boom")
+    %i[source_sandbox checkpoint_id checkpoint_root checkpoint_path artifact detail publication_error].each do |attr|
+      expect(err.public_send(attr)).to be_nil
+    end
+  end
+
+  # The native layer attaches the core's serialized recovery record through this
+  # private hook (SnapshotSourceRecovery is only reachable from a real `full:`
+  # capture whose source fails to thaw, so the record shape is pinned here).
+  it "fills SnapshotSourceRecoveryError's attributes from the core's recovery record" do
+    record = {
+      "source_sandbox" => "worker", "checkpoint_id" => "ckpt_1", "checkpoint_root" => "sha256:abc",
+      "checkpoint_path" => "/home/.microsandbox/sandboxes/worker/checkpoints/ckpt_1",
+      "artifact" => {"kind" => "installed", "path" => "/snaps/worker/snap_1", "snapshot_id" => "snap_1",
+                     "digest" => "sha256:def"},
+      "detail" => "thaw failed", "publication_error" => nil
+    }
+    err = Microsandbox::SnapshotSourceRecoveryError.new("recovery needed").send(:__apply_recovery, record)
+    expect(err.source_sandbox).to eq("worker")
+    expect(err.checkpoint_path).to end_with("ckpt_1")
+    expect(err.artifact).to include("kind" => "installed", "snapshot_id" => "snap_1")
+    expect(err.detail).to eq("thaw failed")
+    expect(err.publication_error).to be_nil
+    expect(err.code).to eq("snapshot-source-recovery")
   end
 
   it "defaults UnsupportedError operation/hint to nil when constructed directly" do

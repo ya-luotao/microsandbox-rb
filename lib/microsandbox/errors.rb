@@ -30,6 +30,15 @@ module Microsandbox
   # Configuration / validation errors --------------------------------------
   define_error(:InvalidConfigError, "invalid-config")
 
+  # Host runtime resolution (runtime v0.7) -----------------------------------
+  # No `msb` + `libkrunfw` pair could be found anywhere. Mirrors the Python
+  # SDK's RuntimeNotInstalledError.
+  define_error(:RuntimeNotInstalledError, "runtime-not-installed")
+  # The selected runtime pair is partial, or an explicit `MSB_PATH` /
+  # `runtime_path` names an executable with no matching `libkrunfw`. Mirrors
+  # the Python SDK's RuntimeIncompleteError.
+  define_error(:RuntimeIncompleteError, "runtime-incomplete")
+
   # Lifecycle errors --------------------------------------------------------
   define_error(:SandboxNotFoundError, "sandbox-not-found")
   define_error(:SandboxNotRunningError, "sandbox-not-running")
@@ -42,6 +51,13 @@ module Microsandbox
   # letting them act on the replacement. Mirrors the Python SDK's
   # SandboxReplacedError.
   define_error(:SandboxReplacedError, "sandbox-replaced")
+  # v0.7: a graceful stop did not establish completion within its budget; the
+  # shutdown request may still complete, and no kill was requested. Mirrors
+  # the Python SDK's StopTimeoutError (kept flat here: no TimeoutError mixin).
+  define_error(:StopTimeoutError, "stop-timeout")
+  # Reserved for parity (Python SandboxStopTimedOutError): the core variant has
+  # no raise site at the pinned runtime.
+  define_error(:SandboxStopTimedOutError, "sandbox-stop-timed-out")
 
   # Execution errors --------------------------------------------------------
   define_error(:ExecTimeoutError, "exec-timeout")
@@ -77,6 +93,11 @@ module Microsandbox
   # backend connect / artifact open) was blocked and needs repair. Mirrors the
   # Python SDK's SnapshotMigrationError (code "snapshot-migration").
   define_error(:SnapshotMigrationError, "snapshot-migration")
+  # v0.7: a full checkpoint was captured, but the source sandbox failed to
+  # recover afterwards and needs recovery before further use. Carries the
+  # recovery locator as attributes (see the class body below). Mirrors the
+  # Python SDK's SnapshotSourceRecoveryError.
+  define_error(:SnapshotSourceRecoveryError, "snapshot-source-recovery")
 
   # Networking / secrets errors ---------------------------------------------
   # NetworkPolicyError now also carries the core's `NetworkBuilder` build/parse
@@ -101,6 +122,11 @@ module Microsandbox
   # cloud backend) is distinct from `UnsupportedOperationError` above.
   define_error(:CloudHttpError, "cloud-http")
   define_error(:UnsupportedError, "unsupported")
+  # v0.7 (cloud only): a change did not complete as asked — it may be saved
+  # without being in effect on the running sandbox, or its outcome is unknown.
+  # The message says which and whether resending retries it; it never holds a
+  # secret value. Mirrors the Python SDK's ModificationNotConfirmedError.
+  define_error(:ModificationNotConfirmedError, "modification-not-confirmed")
 
   # Process model ------------------------------------------------------------
   # A handle (a Sandbox, a SandboxHandle, an ExecHandle, a stream, an SSH or
@@ -120,5 +146,42 @@ module Microsandbox
     attr_reader :operation
     # @return [String, nil] why it was rejected / what to use instead
     attr_reader :hint
+  end
+
+  # Capture completed, but the source requires recovery before further use.
+  # {#artifact} is set only when the requested snapshot was published;
+  # otherwise {#checkpoint_path} locates the retained runtime-local checkpoint
+  # (removing the source may remove it). The error does not imply that an
+  # ordinary resume is safe.
+  class SnapshotSourceRecoveryError
+    # @return [String, nil] sandbox whose post-capture recovery failed
+    attr_reader :source_sandbox
+    # @return [String, nil] verified runtime checkpoint id
+    attr_reader :checkpoint_id
+    # @return [String, nil] content-addressed root of that checkpoint
+    attr_reader :checkpoint_root
+    # @return [String, nil] runtime-local checkpoint path
+    attr_reader :checkpoint_path
+    # @return [Hash, nil] the published artifact, when publication completed:
+    #   `{"kind" => "installed" | "archive", "path" =>, "snapshot_id" =>, "digest" =>}`
+    attr_reader :artifact
+    # @return [String, nil] the runtime's recovery diagnostic
+    attr_reader :detail
+    # @return [String, nil] a further failure while publishing the artifact
+    attr_reader :publication_error
+
+    private
+
+    # Called by the native layer with the core's serialized recovery record.
+    def __apply_recovery(details)
+      @source_sandbox = details["source_sandbox"]
+      @checkpoint_id = details["checkpoint_id"]
+      @checkpoint_root = details["checkpoint_root"]
+      @checkpoint_path = details["checkpoint_path"]
+      @artifact = details["artifact"]
+      @detail = details["detail"]
+      @publication_error = details["publication_error"]
+      self
+    end
   end
 end

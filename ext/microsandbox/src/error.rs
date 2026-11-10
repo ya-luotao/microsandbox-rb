@@ -78,6 +78,23 @@ fn class_name(err: &MicrosandboxError) -> &'static str {
         // ENTRYPOINT+CMD provide no executable command. Mirrors the Python
         // SDK's `NoDefaultCommandError`.
         NoDefaultCommand => "NoDefaultCommandError",
+        // v0.7: host runtime resolution. `RuntimeNotInstalled` = no runtime
+        // pair anywhere; `RuntimeIncomplete` = the selected pair is partial or
+        // an explicit `MSB_PATH`/`runtime_path` has no matching libkrunfw.
+        // Mirrors the Python SDK.
+        RuntimeNotInstalled(_) => "RuntimeNotInstalledError",
+        RuntimeIncomplete(_) => "RuntimeIncompleteError",
+        // v0.7: a graceful stop did not complete within its budget (no kill was
+        // requested). `SandboxStopTimedOut` has no raise site at v0.7.14; the
+        // class is reserved so callers can rescue it already.
+        StopTimeout { .. } => "StopTimeoutError",
+        SandboxStopTimedOut { .. } => "SandboxStopTimedOutError",
+        // v0.7: a full checkpoint was captured but the source failed to
+        // recover; built with structured attributes by `to_ruby` below.
+        SnapshotSourceRecovery(_) => "SnapshotSourceRecoveryError",
+        // v0.7 (cloud only): a modification was saved but is not in effect, or
+        // its outcome is unknown. `cause` never holds a secret value.
+        ModificationNotConfirmed { .. } => "ModificationNotConfirmedError",
         _ => "Error",
     }
 }
@@ -108,6 +125,13 @@ pub fn to_ruby(err: MicrosandboxError) -> Error {
         return unsupported_error(&ruby, &ruby_api_name(*op), &ruby_hint(reason));
     }
 
+    // `SnapshotSourceRecovery` keeps its structured recovery locator (where the
+    // checkpoint and any published artifact are) as attributes, so callers never
+    // parse the message. Mirrors the Python SDK's keyword attributes.
+    if let MicrosandboxError::SnapshotSourceRecovery(recovery) = &err {
+        return source_recovery_error(&ruby, &message, recovery);
+    }
+
     match exception_class(&ruby, class_name(&err)) {
         Some(class) => Error::new(class, message),
         None => Error::new(ruby.exception_runtime_error(), message),
@@ -120,6 +144,37 @@ pub fn to_ruby(err: MicrosandboxError) -> Error {
 /// the Python SDK's name-based `local_only` helper.
 pub fn local_only(name: &str) -> Error {
     unsupported_error(&ruby(), name, "use a local backend")
+}
+
+/// Build a `Microsandbox::SnapshotSourceRecoveryError` whose attributes come
+/// from the core's serialized recovery record (`source_sandbox`,
+/// `checkpoint_id`, `checkpoint_root`, `checkpoint_path`, `artifact`, `detail`,
+/// `publication_error`). Falls back to a message-only error, which still names
+/// the locator, if the record cannot be attached.
+fn source_recovery_error(
+    ruby: &Ruby,
+    message: &str,
+    recovery: &microsandbox::SnapshotSourceRecoveryError,
+) -> Error {
+    let Some(class) = exception_class(ruby, "SnapshotSourceRecoveryError") else {
+        return Error::new(ruby.exception_runtime_error(), message.to_string());
+    };
+    let Ok(details) = serde_json::to_value(recovery) else {
+        return Error::new(class, message.to_string());
+    };
+    match class
+        .as_value()
+        .funcall::<_, _, magnus::Exception>("new", (message,))
+    {
+        Ok(exc) => {
+            let _ = exc.funcall::<_, _, magnus::Value>(
+                "__apply_recovery",
+                (crate::conv::json_to_ruby(&details),),
+            );
+            exc.into()
+        }
+        Err(_) => Error::new(class, message.to_string()),
+    }
 }
 
 /// Build a `Microsandbox::UnsupportedError` carrying the rendered message and

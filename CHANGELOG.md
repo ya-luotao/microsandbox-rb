@@ -69,6 +69,18 @@ hostname enforcement on by default. Migration notes are below.
   misconfigured backend selection instead of reporting `:cloud`.
 - Ruby `ExecStdin#write("")` is a no-op; it used to send EOF. Call `#close`.
 
+### Added
+
+- **Error classes for the v0.7 core variants**, mirroring the Python SDK:
+  `RuntimeNotInstalledError` (`runtime-not-installed`),
+  `RuntimeIncompleteError` (`runtime-incomplete` — e.g. an `MSB_PATH` with no
+  matching `libkrunfw`), `StopTimeoutError`
+  (`stop-timeout`), `SnapshotSourceRecoveryError`
+  (`snapshot-source-recovery`, with the recovery locator as attributes) and
+  the cloud-only `ModificationNotConfirmedError`
+  (`modification-not-confirmed`). `SandboxStopTimedOutError`
+  (`sandbox-stop-timed-out`) is reserved: the core does not raise it yet.
+
 ### Changed
 
 - `max_connections:` maps to the runtime's `max_tcp_connections` (same
