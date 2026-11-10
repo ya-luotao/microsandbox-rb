@@ -14,8 +14,8 @@ Lightweight microVM sandboxes for Ruby. Run AI agents and untrusted code with ha
 
 - **Real VMs, not containers.** Every sandbox has its own Linux kernel under KVM (Linux) or the Hypervisor framework (Apple Silicon). Sub-100 ms boot; the runtime lives in your process.
 - **Synchronous, idiomatic Ruby.** Keyword arguments, block-scoped lifecycle, a flat typed error hierarchy with stable `#code`s, and hand-maintained RBS signatures. The GVL is released during native calls, so other threads keep running.
-- **The whole core surface.** Collected *and* streaming exec, logs, metrics, and filesystem handles; live `modify` with dry-run plans; snapshots; named volumes with host-side access; image cache management; interactive `attach`; in-process SSH/SFTP; a raw `agentd` client.
-- **Network policy as data.** Composable profiles plus per-rule CIDR/domain allow-deny policies, TLS interception, outbound SOCKS4/SOCKS5 proxies, fail-closed strict hostname mode, and secrets injection with host allow-lists.
+- **The whole core surface.** Collected *and* streaming exec, logs, metrics, and filesystem handles; live `modify` with dry-run plans; snapshots and `Sandbox.restore`; named volumes with host-side access; image cache management; interactive `attach`; in-process SSH/SFTP; a raw `agentd` client.
+- **Network policy as data.** Composable profiles plus per-rule CIDR/domain allow-deny policies, TLS interception, outbound SOCKS4/SOCKS5 proxies, fail-closed strict hostname mode, and secret substitution with per-host allow-lists.
 - **Convergent lifecycle.** `connect_or_create`, `restart`, `destroy`, and `wait_for_status` take a name to the state you want and refuse to touch a sandbox someone recreated under the same name.
 - **Hermetic runtime.** The optional `microsandbox-rb-binaries` companion gem vendors a checksum-verified `msb` + `libkrunfw` in lockstep with the SDK, so production never downloads on first use. Without it, the runtime is provisioned into `~/.microsandbox` on demand.
 - **Local or cloud.** The same API runs against the local libkrun backend or the microsandbox cloud, selected per process or per block.
@@ -39,7 +39,7 @@ gem compiles the Rust extension, so the first install takes a few minutes.
 - Ruby 3.3 or newer.
 - Linux with KVM enabled, or macOS on Apple Silicon. Cloud-only users
   (`MSB_BACKEND=cloud`) need neither.
-- A stable Rust toolchain (1.91 or newer) on `PATH` to compile the source gem.
+- A stable Rust toolchain (1.94 or newer) on `PATH` to compile the source gem.
   Precompiled extension gems are not published; see
   [docs/releasing.md](docs/releasing.md).
 - The `msb` runtime and `libkrunfw` firmware, from the companion gem above or
@@ -138,16 +138,17 @@ Microsandbox::Sandbox.create("agent", image: "public.ecr.aws/docker/library/pyth
   network: Microsandbox::NetworkPolicy.custom(default_egress: :deny,
     rules: [{ action: :allow, direction: :egress, protocol: :tcp, port: 443,
               destination: Microsandbox::Destination.domain("api.example.com") }]),
-  strict: true,
   proxy: Microsandbox::OutboundProxy.socks5("127.0.0.1:1080"),
-  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), host: "api.example.com" }]
+  secrets: [{ env: "API_KEY", value: ENV.fetch("HOST_API_KEY"), allow: ["api.example.com"] }]
 ) do |sb|
   # ...
 end
 ```
 
-See [docs/configuration.md](docs/configuration.md) for every create option,
-including resources, ports, volumes, and root-disk layout.
+Strict hostname enforcement is on by default since 0.18.0, and a denied HTTP
+request gets a JSON `403`. See [docs/configuration.md](docs/configuration.md)
+for every create option, including resources, ports, volumes, root-disk
+layout, the secrets keys, and the HTTP deny response.
 
 ### Observability and live modification
 
@@ -187,17 +188,18 @@ Since upstream `v0.6.9` the microsandbox repository ships an official
 [`sdk/ruby`](https://github.com/superradcompany/microsandbox/tree/main/sdk/ruby),
 a compact veneer over the same Rust SDK. Both gems define the `Microsandbox`
 module, so use one or the other in a process, not both. Differences below are
-taken from the official gem's own README as of upstream `v0.6.18`.
+taken from the official gem's own README as of upstream `v0.7.14`.
 
 | Capability | `microsandbox-rb` (this gem) | official `microsandbox` gem |
 |---|:---:|:---:|
 | Lifecycle, convergent `connect_or_create`, local/cloud backends | ✅ | ✅ |
 | Collected `exec`/`shell`, logs, metrics, guest filesystem | ✅ | ✅ |
 | Image, volume, and snapshot management | ✅ | ✅ |
+| Booting a sandbox from a snapshot (`Sandbox.restore`) | ✅ | not exposed |
 | Streaming exec, logs, metrics, filesystem handles | ✅ | not exposed |
 | Interactive SSH/SFTP client and server | ✅ | `ssh_exec` only |
 | Live modification plans (`modify`, dry-run) | ✅ | not exposed |
-| Outbound SOCKS proxy (`proxy:`) | ✅ | ✅ |
+| Outbound proxy (`proxy:`) | SOCKS4/SOCKS5 | HTTP CONNECT |
 | Full network policy and mount builders, strict hostname mode | ✅ | not exposed |
 | Rootfs patches, structured root disk, raw `agentd` client | ✅ | — |
 | RBS type signatures | ✅ | — |

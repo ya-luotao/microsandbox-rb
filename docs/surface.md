@@ -108,9 +108,12 @@ since 0.18.0: `from_snapshot` and `on_secret_violation`.
 ## Not yet exposed
 
 A few secondary upstream knobs are not yet exposed: per-published-port host
-bind address (ports always bind loopback), network interface overrides, and
+bind address (ports always bind loopback), network interface overrides,
 inline named-volume create-mode (pre-create the volume with `Volume.create`,
-then mount it with `{ named: "…" }`).
+then mount it with `{ named: "…" }`), HTTP CONNECT outbound proxies (`proxy:`
+takes SOCKS4/SOCKS5), the inbound published-port caps
+(`max_inbound_tcp_connections`, `tcp_accept_queue_size`), `nested_virt`, and
+detached jobs.
 
 Restore does not yet take the network policy, security profile, vsock routes,
 connection caps, UDP ports, captured-disk selection (`captured`), resource

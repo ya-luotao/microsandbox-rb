@@ -21,6 +21,9 @@ hostname enforcement on by default. Migration notes are below.
   end-of-life, and on the `ubuntu-26.04` image setup-ruby ships no 3.1 build
   while rb-sys's bindgen step fails on the 3.2 headers. CI now runs Ruby 3.3
   and 3.4 on `ubuntu-latest` and `macos-15`.
+- **Building the source gem needs Rust 1.94 or newer** (was 1.91): runtime
+  `v0.7` pulls sea-orm 2 / sqlx 0.9. The `extconf.rb` preflight says so up
+  front.
 - **The runtime must be exactly `v0.7.14`.** The core reads the version
   embedded in the `msb` executable and refuses every other runtime at launch
   ("does not advertise protected sandbox state" for a `0.6.x` or older `0.7.x`
@@ -160,6 +163,26 @@ hostname enforcement on by default. Migration notes are below.
   well as the `msb` one (unless `MSB_PATH` is set when `microsandbox` is
   required), so `Microsandbox.libkrunfw_path=` is a no-op with it, like
   `runtime_path=`.
+- **SSH `exec`/`attach` report abnormal exits** (upstream #2011): a command
+  killed by a signal returns status `128 + <signal number>` (`128` for an
+  unknown signal name) instead of a success, an agent exit code of `-1`
+  becomes `1`, and a channel that closes with no exit status raises instead of
+  reporting `0`.
+- `modify` works on cloud sandboxes for secrets (`secrets:`/`remove_secrets:`,
+  upstream #1849); other fields still raise `UnsupportedError` there, and a
+  change the cloud did not confirm raises `ModificationNotConfirmedError`.
+- `modify(labels:)` on a running sandbox applies live (upstream #1881) instead
+  of at the next start. `modify` refuses an empty label key and the reserved
+  `sandbox.`/`microsandbox.`/`service.` prefixes (#1857), and `create`/`modify`
+  refuse env the guest cannot boot with: an empty key, a key containing `=`
+  or NUL, or a value containing NUL (#1863). Nothing is saved; removing such
+  a key stays allowed.
+- The runtime configuration can restrict backends (`allowed_backends`,
+  upstream #1898, in the user or managed config file); resolving a backend it
+  does not allow raises a configuration error.
+- Published ports: finished inbound TCP connections free their slot at once,
+  and the inbound limit (256 before) is unlimited by default (upstream #1815;
+  the knob itself is not bound yet).
 
 ### Fixed
 
@@ -170,6 +193,12 @@ hostname enforcement on by default. Migration notes are below.
   ([superradcompany/microsandbox#2041](https://github.com/superradcompany/microsandbox/issues/2041)).
   The SDK creates `<home>/sandboxes` before every local create once a runtime
   resolves.
+- Runtime fixes that clear the known issues of 0.17.x: on macOS hosts a guest
+  `fallocate` no longer truncates a file on a bind mount or directory-backed
+  volume (upstream `v0.7.0`); `modify(secrets:)` that adds a sandbox's first
+  secret turns TLS interception on, so the value is substituted (`v0.7.3`);
+  `patches:` keeps the image's owner and mode on parent directories that
+  already exist (`v0.7.5`).
 
 ### Deprecated
 
@@ -186,6 +215,15 @@ hostname enforcement on by default. Migration notes are below.
   owner-only since runtime `v0.7.12`. The three zstd ignores of 0.17.5 are
   gone: the runtime's external-kernel path (msb_krun_vmm 0.1.45) now pulls
   zstd 0.13.4 / zstd-safe 7.4.0, which carry the fixes.
+
+### Known issues
+
+- On Linux, a detached sandbox (`detached: true`, `Sandbox.start(detached:
+  true)`, `#detach`, or a no-block `Sandbox.restore`) leaves a `<defunct>` VM
+  child in the SDK process after it stops, until that process exits
+  ([superradcompany/microsandbox#1950](https://github.com/superradcompany/microsandbox/issues/1950),
+  open upstream). macOS reaps them. Long-running Ruby processes that create
+  many detached sandboxes accumulate zombies.
 
 ### Migration notes
 
@@ -213,6 +251,24 @@ hostname enforcement on by default. Migration notes are below.
   `Sandbox.recover_storage(name, legacy_writers_stopped: true)` for each
   stopped sandbox (`Microsandbox.diagnose_storage(all_sandboxes: true)` lists
   which need it). On Linux the move happens on the next start.
+- A VM that 0.17.x started and that is still running keeps working for
+  `exec` and stop, but cannot be snapshotted, forked or have its disk grown
+  until it is stopped and started again under 0.18.0.
+- The upgrade is one-way. The first `v0.7` runtime to open a runtime home
+  applies eight catalog migrations (`split_snapshot_identity`,
+  `snapshot_groups`, `migrate_secret_config`, `guest_clock_config`,
+  `sandbox_caller_config_overrides`, `sandbox_creation`, `volume_creation`,
+  `protected_sandbox_state`); 0.17.x then fails there with `database schema is
+  newer than this msb binary`. Try 0.18.0 against a copy of the home, or a
+  separate `MSB_HOME`, first.
+- The runtime home must be private: no group- or world-writable ancestor
+  without the sticky bit.
+- Denied plain-HTTP (and intercepted HTTPS) requests now get a JSON `403`,
+  in old sandboxes too; pass `http: { deny_response: false }` where clients
+  relied on the reset.
+- Send EOF with `ExecStdin#close`; `write("")` no longer closes stdin.
+- Code that read an SSH `exec` status of `0` as success for a signalled
+  command now sees `128 + signal`.
 
 ## [0.17.5] - 2026-10-27
 

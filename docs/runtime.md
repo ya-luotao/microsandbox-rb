@@ -301,8 +301,8 @@ export MSB_HOME="$HOME/.microsandbox-rb"
 
 ## Known issues at the pinned runtime
 
-These are fixed upstream in runtime releases this gem has not adopted yet. See
-[SECURITY.md](../SECURITY.md) for the security advisories.
+Open upstream at runtime `v0.7.14`. See [SECURITY.md](../SECURITY.md) for the
+security advisories.
 
 - **A fresh runtime home cannot create a sandbox from a directory or disk
   image** ([superradcompany/microsandbox#2041](https://github.com/superradcompany/microsandbox/issues/2041)).
@@ -311,21 +311,16 @@ These are fixed upstream in runtime releases this gem has not adopted yet. See
   no install ever ran (the runtime came from `MSB_PATH` or the binaries gem)
   such a create failed with `No such file or directory`. **Worked around in
   the SDK:** before every local `create` / `connect_or_create` /
-  `create_with_progress` it creates `<home>/sandboxes` (with the mode the OCI
-  path gives it), once a runtime resolves — so a create that is about to fail
-  with `RuntimeNotInstalledError` still writes nothing.
-- **macOS hosts: guest `fallocate` can truncate a file on a bind mount or a
-  directory-backed named volume.** Preallocating a range that ends inside an
-  existing file shrinks the file to the end of that range, and the call
-  reports success. Fixed upstream in `v0.7.0`. Until then, keep data that
-  guest programs preallocate (databases, download tools) on the guest's OCI
-  root disk or a `disk:` volume, not on a host directory.
-- **`modify(secrets:)` adding the first secret** to a sandbox created without
-  any does not turn on TLS interception, so the value is not substituted.
-  Create the sandbox with at least one secret.
-- **`patches:`** resets the owner and mode of parent directories that already
-  exist in the image to `root:root 0755`. Write after boot with `sb.fs`, or
-  restore ownership yourself.
+  `create_with_progress` / `restore` it creates `<home>/sandboxes` (with the
+  mode the OCI path gives it), once a runtime resolves — so a create that is
+  about to fail with `RuntimeNotInstalledError` still writes nothing.
+- **Linux: a detached sandbox leaves a zombie VM process**
+  ([superradcompany/microsandbox#1950](https://github.com/superradcompany/microsandbox/issues/1950)).
+  After a sandbox started with `detached: true` (or `#detach`ed, or restored
+  without a block) stops, its VM child stays `<defunct>` in the SDK process
+  until that process exits. macOS reaps it. A long-running process that
+  creates many detached sandboxes accumulates them; prefer attached
+  sandboxes there.
 
 ## Environment variables
 

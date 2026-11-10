@@ -25,14 +25,17 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the p
 ## Build / test / lint
 
 - Compile the native ext: `bundle exec rake compile` (release: `rake compile:release`). Requires
-  **stable Rust ≥ 1.91** on PATH — the core crate is edition 2024 / pulls smoltcp; an older rustc
-  fails the `extconf.rb` preflight. `rust-toolchain.toml` pins `stable`.
+  **stable Rust ≥ 1.94** on PATH — the core crate is edition 2024 and pulls sea-orm 2 / sqlx 0.9
+  (rustc 1.94); an older rustc fails the `extconf.rb` preflight. `rust-toolchain.toml` pins
+  `stable`.
 - Unit specs (no runtime needed): `bundle exec rake spec` (the default task; auto-compiles first).
   It runs TWO rspec processes: `spec:unit`, then `spec:fake_runtime`.
 - Fake-runtime specs (`spec/fake_runtime/`, `bundle exec rake spec:fake_runtime`): the real native
   extension driven against a fake `msb` + agent relay (`spec/support/fake_runtime/`, no microVM).
   They run in their own process because they point `MSB_PATH` at the fake for the whole process,
-  while unit specs assert what happens when no runtime is found; in a mixed run they skip.
+  while unit specs assert what happens when no runtime is found; in a mixed run they skip. The
+  harness compiles a tiny C `msb` stub (runtime v0.7 refuses `#!` wrapper scripts), so they need
+  a C compiler (`RbConfig::CONFIG["CC"]`, else `cc`).
 - Integration specs (boot real microVMs, **Linux+KVM or macOS Apple Silicon**):
   `MICROSANDBOX_INTEGRATION=1 bundle exec rspec spec/integration`. They auto-skip without that env
   var or a missing runtime — never assume a green unit run exercised them.
@@ -76,7 +79,8 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the p
    (`binaries/lib/microsandbox/binaries.rb`) MUST equal `Microsandbox::VERSION`, and
    `Microsandbox::Binaries::RUNTIME_VERSION` MUST equal `Microsandbox::RUNTIME_VERSION`.
    `spec/unit/version_spec.rb` asserts both. So a release bumps the gem version in three places
-   (version.rb, Cargo.toml, binaries.rb), and a runtime adoption bumps the tag in five places
+   (version.rb, Cargo.toml, binaries.rb) and commits the matching `Cargo.lock` (the gemspec packs
+   it; `--locked` builds break otherwise), and a runtime adoption bumps the tag in five places
    (all three Cargo git deps, `RUNTIME_VERSION`, `Binaries::RUNTIME_VERSION`), commits the new
    release's `checksums.sha256` as `binaries/checksums/<tag>.sha256` (vendoring fails closed
    without it, and refuses if the live release file disagrees with the committed one) — then
@@ -99,7 +103,13 @@ Deeper architecture is in `DESIGN.md`; usage in `README.md` (overview) and the p
   `MICROSANDBOX_NO_AUTO_INSTALL` — opt out of first-use runtime download.
 - With the `microsandbox-rb-binaries` gem installed, `Microsandbox.runtime_path=` is a **no-op**:
   `require "microsandbox"` already claimed the core's set-once SDK slot with the gem's vendored
-  `msb`. Use `MSB_PATH` (which outranks the slot) to point at a different runtime.
+  `msb`. Use `MSB_PATH` (which outranks the slot) to point at a different runtime. The same goes
+  for `Microsandbox.libkrunfw_path=` (the gem claims the `libkrunfw` slot too).
+- Runtime v0.7 launches only an `msb` whose embedded version equals `RUNTIME_VERSION` exactly: a
+  stale home runtime is replaced on first use, any other stale source (`MSB_PATH`, `runtime_path=`,
+  config) is refused at every local start. `msb` wrapper scripts (`#!`) carry no version and are
+  refused too. The runtime home must be private (no group/world-writable ancestor without the
+  sticky bit) — a scratch `MSB_HOME` must be a real, short directory.
 - `Gemfile` uses `gemspec glob: "{,*}.gemspec"` on purpose: Bundler's default glob would also
   evaluate `binaries/microsandbox-rb-binaries.gemspec` in every `bundle exec` process, defining
   `Microsandbox::Binaries` before the SDK can decide whether the gem is actually installed. Don't
