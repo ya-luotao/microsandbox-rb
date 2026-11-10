@@ -422,6 +422,14 @@ module Microsandbox
       #   under TLS interception. Without that visibility (e.g. bypassed or
       #   non-intercepted HTTPS) a flow allowed only by a hostname rule is
       #   denied before the upstream dial. Create-only; `modify` cannot change it.
+      # @param http [Hash, nil] how a request the network policy denies is
+      #   answered (runtime v0.7). By default a denied plain-HTTP request — or
+      #   an HTTPS one under TLS interception — gets a JSON `403`. Keys:
+      #   `deny_response:` (Boolean; `false` closes the connection instead),
+      #   `format:` (`:json`, the default, or `:text`), `network_message:` and
+      #   `secret_message:` (the JSON `message` for a network-policy or a
+      #   secret-policy denial; JSON format only). Create-only and local-only:
+      #   a cloud create accepts only the defaults or `deny_response: false`.
       # @param rate_limiter [Hash, nil] per-sandbox egress/ingress token-bucket
       #   limits (runtime v0.6.9, local backend):
       #   `{ egress: { bandwidth: { size: 1_048_576, refill_time_ms: 1000,
@@ -695,7 +703,7 @@ module Microsandbox
         entrypoint: nil, cmd: nil, ports: nil, ports_udp: nil, volumes: nil, network: nil,
         dns: nil, tls: nil, ipv4_pool: nil, ipv6_pool: nil,
         max_connections: nil, max_tcp_connections: nil, max_udp_connections: nil,
-        trust_host_cas: nil, strict: nil, rate_limiter: nil, proxy: nil,
+        trust_host_cas: nil, strict: nil, http: nil, rate_limiter: nil, proxy: nil,
         vsock: nil,
         patches: nil,
         from_snapshot: nil, fstype: nil, init: nil, ephemeral: false,
@@ -764,6 +772,7 @@ module Microsandbox
         apply_connection_limits(opts, max_connections, max_tcp_connections, max_udp_connections)
         set_bool(opts, "trust_host_cas", trust_host_cas)
         set_bool(opts, "strict", strict)
+        opts["http"] = normalize_http(http) unless http.nil?
         opts["rate_limiter"] = normalize_rate_limiter(rate_limiter) if rate_limiter
         opts["proxy"] = OutboundProxy.coerce(proxy) unless proxy.nil?
         opts["vsock"] = normalize_vsock(vsock) if vsock
@@ -1348,6 +1357,44 @@ module Microsandbox
         set_bool(out, "rebind_protection", fetch_opt(dns, :rebind_protection))
         qt = dns[:query_timeout_ms] || dns["query_timeout_ms"]
         out["query_timeout_ms"] = Integer(qt) if qt
+        out
+      end
+
+      HTTP_KEYS = %i[deny_response format network_message secret_message].freeze
+      private_constant :HTTP_KEYS
+
+      # Normalize the `http:` deny-response Hash (runtime v0.7). Validation
+      # mirrors the Python SDK's HttpConfig; the two message keys additionally
+      # need JSON responses that are switched on, the only mode that uses them.
+      def normalize_http(http)
+        unless http.is_a?(Hash)
+          raise ArgumentError, "http: must be a Hash (deny_response:, format:, network_message:, secret_message:)"
+        end
+        given = http.to_h { |key, value| [key.to_sym, value] }.compact
+        unknown = given.keys - HTTP_KEYS
+        unless unknown.empty?
+          raise ArgumentError, "unknown http: key(s) #{unknown.join(", ")} (expected #{HTTP_KEYS.join(", ")})"
+        end
+        out = {}
+        if given.key?(:deny_response)
+          value = given[:deny_response]
+          raise ArgumentError, "http: deny_response: must be true or false" unless value == true || value == false
+          out["deny_response"] = value
+        end
+        if given.key?(:format)
+          value = given[:format]
+          format = (value.is_a?(Symbol) || value.is_a?(String)) ? value.to_s.downcase : nil
+          raise ArgumentError, "http: format: must be :json or :text, got #{value.inspect}" unless %w[json text].include?(format)
+          out["format"] = format
+        end
+        %i[network_message secret_message].each do |key|
+          next unless given.key?(key)
+          value = given[key]
+          raise ArgumentError, "http: #{key}: must be a String" unless value.is_a?(String)
+          raise ArgumentError, "http: #{key}: needs the JSON format (it is the JSON `message`)" if out["format"] == "text"
+          raise ArgumentError, "http: #{key}: has no effect with deny_response: false" if out["deny_response"] == false
+          out[key.to_s] = value
+        end
         out
       end
 

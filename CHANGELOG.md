@@ -90,6 +90,11 @@ hostname enforcement on by default. Migration notes are below.
 - **`Sandbox.create(max_tcp_connections:, max_udp_connections:)`**: caps on
   proxied TCP connections and UDP relay sessions (`0` = unlimited, omitted =
   the runtime default).
+- **`Sandbox.create(http:)`**: how a denied request is answered —
+  `deny_response:` (`false` closes the connection, as before 0.18.0),
+  `format:` (`:json` or `:text`), and the JSON `network_message:` /
+  `secret_message:`. Local-only: a cloud create accepts only the defaults or
+  `deny_response: false`. See `docs/configuration.md#http-deny-response`.
 - **Error classes for the v0.7 core variants**, mirroring the Python SDK:
   `RuntimeNotInstalledError` (`runtime-not-installed`),
   `RuntimeIncompleteError` (`runtime-incomplete` — e.g. an `MSB_PATH` with no
@@ -102,6 +107,11 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Changed
 
+- **A request the network policy denies gets an HTTP `403` with a JSON body**
+  (`code: "network_policy_denied"`) instead of a reset, when it is plain HTTP
+  or HTTPS under TLS interception; a secret-policy block is answered the same
+  way. This applies to sandboxes created by 0.17.x too, from their next start.
+  Pass `http: { deny_response: false }` for the old behaviour.
 - Execution flow control is fixed by the runtime: at most 128 executions per
   sandbox (exited streams with unread output included), 64 KiB of pending
   stdin, 1 MiB of unread output, 16 KiB chunks. See `docs/execution.md`.

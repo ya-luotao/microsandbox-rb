@@ -134,6 +134,33 @@ RSpec.describe "create request as serialized by the native layer" do
     api&.close
   end
 
+  # Cloud has no deny-response configuration (upstream
+  # `reject_dropped_cloud_create_fields`): the local defaults and an explicit
+  # opt-out still create, anything else is refused before any HTTP request.
+  describe "http: (runtime v0.7 deny response, local-only)" do
+    it "creates with the defaults or an opt-out, sending no network.http" do
+      [{deny_response: true, format: :json}, {deny_response: false}, {deny_response: false, format: :text}].each do |http|
+        body = capture_create(http: http)
+        expect(body.fetch("network", {})).not_to have_key("http"), "http: #{http.inspect} reached the wire"
+      end
+    end
+
+    it "refuses a custom format or message before calling the API" do
+      [{format: :text}, {network_message: "blocked"}, {secret_message: "leak"}].each do |http|
+        api = CloudRequestSpec::FakeCloudApi.new
+        with_proxy_env_cleared do
+          Microsandbox.with_backend(:cloud, url: api.url, api_key: "test-key") do
+            expect { Microsandbox::Sandbox.create("wire-probe", image: "python", http: http) }
+              .to raise_error(Microsandbox::UnsupportedError, /network\.http\.deny_response \(local-only\)/)
+          end
+        end
+        expect(api.request_line).to be_nil, "http: #{http.inspect} reached the API"
+      ensure
+        api&.close
+      end
+    end
+  end
+
   describe "strict: (v0.6.18)" do
     it "serializes network.strict == true when strict: is the ONLY advanced network option" do
       body = capture_create(strict: true)

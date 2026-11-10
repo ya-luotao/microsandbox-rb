@@ -412,6 +412,51 @@ RSpec.describe Microsandbox::Sandbox do
       )
     end
 
+    describe "http: deny response (runtime v0.7)" do
+      def native_http
+        opts = nil
+        expect(Microsandbox::Native::Sandbox).to have_received(:create).with("box", satisfy { |o| opts = o })
+        opts["http"]
+      end
+
+      it "normalizes every key (String format, case-insensitive)" do
+        Microsandbox::Sandbox.create("box", image: "x",
+          http: {deny_response: true, format: "JSON", network_message: "no", secret_message: ""})
+        expect(native_http).to eq("deny_response" => true, "format" => "json",
+          "network_message" => "no", "secret_message" => "")
+      end
+
+      it "accepts String keys" do
+        Microsandbox::Sandbox.create("box", image: "x", http: {"format" => :json, "network_message" => "no"})
+        expect(native_http).to eq("format" => "json", "network_message" => "no")
+      end
+
+      it "accepts format: :text and deny_response: false on their own" do
+        Microsandbox::Sandbox.create("box", image: "x", http: {format: :text})
+        expect(native_http).to eq("format" => "text")
+      end
+
+      it "leaves nil keys out" do
+        Microsandbox::Sandbox.create("box", image: "x", http: {deny_response: false, format: nil})
+        expect(native_http).to eq("deny_response" => false)
+      end
+
+      {
+        "a non-Hash" => [:json, /http: must be a Hash/],
+        "an unknown key (no aliases)" => [{deny_response_format: :json}, /unknown http: key\(s\) deny_response_format/],
+        "a non-boolean deny_response" => [{deny_response: "yes"}, /deny_response: must be true or false/],
+        "an unknown format" => [{format: :xml}, /format: must be :json or :text/],
+        "a non-String message" => [{network_message: :blocked}, /network_message: must be a String/],
+        "a message with the text format" => [{format: :text, network_message: "x"}, /network_message: needs the JSON format/],
+        "a message with deny_response: false" => [{deny_response: false, secret_message: "x"}, /secret_message: has no effect/]
+      }.each do |label, (value, message)|
+        it "rejects #{label} before any native call" do
+          expect { Microsandbox::Sandbox.create("box", image: "x", http: value) }.to raise_error(ArgumentError, message)
+          expect(Microsandbox::Native::Sandbox).not_to have_received(:create)
+        end
+      end
+    end
+
     describe "connection caps (runtime v0.7)" do
       it "maps the deprecated max_connections: onto the TCP cap, with a warning" do
         allow(Microsandbox::Sandbox).to receive(:warn)

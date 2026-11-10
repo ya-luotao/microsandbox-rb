@@ -52,6 +52,20 @@ RSpec.describe "fake runtime: v0.7 launch contract", :fake_runtime do
     expect(report["relay_args"]).to be_nil
   end
 
+  it "launches a networked sandbox on that runtime once http: {deny_response: false} opts out" do
+    report = probe(:no_http_json, http: {deny_response: false})
+    expect(report["outcome"]).to eq("created"), report.inspect
+    expect(report["relay_args"].first).to eq("machine")
+  end
+
+  it "refuses http: {format: :text} on a runtime without http_deny_message (UnsupportedError)" do
+    report = probe(:no_http_text, http: {format: "text"})
+    expect(report["outcome"]).to eq("error"), report.inspect
+    expect(report["error_class"]).to eq("Microsandbox::UnsupportedError")
+    expect(report["message"]).to include("network.http.deny_response")
+    expect(report["relay_args"]).to be_nil
+  end
+
   it "still launches a network-disabled sandbox on that runtime (the capability is only needed with a network)" do
     report = probe(:no_http_json, network: "none")
     expect(report["outcome"]).to eq("created"), report.inspect

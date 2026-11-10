@@ -68,6 +68,44 @@ Microsandbox::Sandbox.create("worker", image: "python",
 # strict hostname enforcement applies by default; `strict: false` opts out.
 ```
 
+### HTTP deny response
+
+Since 0.18.0 (runtime `v0.7`) a request the network policy denies is answered
+instead of reset: a denied plain-HTTP request — or an HTTPS one under TLS
+interception — gets `403 Forbidden` with a JSON body such as
+`{"code": "network_policy_denied", "domain": "example.com", "message":
+"Request blocked by network policy."}`, and a request that a secret policy
+blocks gets one too. Other denied traffic is still dropped. This is the
+default for every sandbox the runtime starts, including ones created under
+0.17.x or earlier: their stored config has no `http` setting, so they pick up
+the default on their next start.
+
+Tune it with the create-only `http:` Hash:
+
+```ruby
+Microsandbox::Sandbox.create("worker", image: "python",
+  http: { network_message: "Egress is limited to the build mirror.",
+          secret_message: "Secrets only go to api.example.com." })
+
+# a plain-text 403 body instead of JSON (no custom messages in this format)
+Microsandbox::Sandbox.create("worker", image: "python", http: { format: :text })
+
+# the 0.17 behaviour: close the connection, no HTTP answer
+Microsandbox::Sandbox.create("worker", image: "python", http: { deny_response: false })
+```
+
+| Key | Values | Default |
+|---|---|---|
+| `deny_response:` | `true` / `false` | `true` |
+| `format:` | `:json` / `:text` (Symbol or String) | `:json` |
+| `network_message:` | String, used as is as the JSON `message` of a network-policy denial | the runtime's message |
+| `secret_message:` | String, the JSON `message` of a secret-policy denial | the runtime's message |
+
+The two messages need the JSON format and an enabled response; an unknown key
+or a wrong type raises `ArgumentError`. The setting is local-only: a cloud
+create accepts the defaults and `deny_response: false`, and raises
+`UnsupportedError` for a custom format or message.
+
 ## Outbound proxy
 
 Route the sandbox's egress through a SOCKS4 (TCP) or SOCKS5 (TCP + non-DNS UDP)

@@ -50,6 +50,8 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   TLS-interception tuning (`tls:`), guest address pools (`ipv4_pool:`/
   `ipv6_pool:`), `max_tcp_connections`/`max_udp_connections` (the deprecated
   `max_connections` aliases the TCP cap), `trust_host_cas`, `strict` hostname mode,
+  the HTTP deny response (`http:` — JSON or text `403`, custom messages, or
+  off; see [configuration.md](configuration.md#http-deny-response)),
   outbound SOCKS4/SOCKS5 `proxy:` (`OutboundProxy`/`SecretSource`),
   `rate_limiter:`, `vsock:`.
 - **Secrets** — per-secret `allow:` lists (exact hosts, `*.example.com`

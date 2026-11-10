@@ -20,10 +20,11 @@ use microsandbox::logs::{
 };
 use microsandbox::sandbox::{
     AttachOptionsBuilder, DestroyOptions, DiskImageFormat, EnvVar, FlatClone, FsEntry, FsEntryKind,
-    FsMetadata, HostPermissions, Patch, PullPolicy, PullProgress, PullProgressHandle,
-    RestartOptions, RlimitResource, RootDiskBuilder, SandboxBuilder, SandboxHandle, SandboxMetrics,
-    SandboxModificationBuilder, SandboxModificationPatch, SandboxStatus, SandboxStopResult,
-    SecretBuilder, SecretModificationPatch, SecretSource, SecurityProfile, StatVirtualization,
+    FsMetadata, HostPermissions, HttpDenyResponseFormat, Patch, PullPolicy, PullProgress,
+    PullProgressHandle, RestartOptions, RlimitResource, RootDiskBuilder, SandboxBuilder,
+    SandboxHandle, SandboxMetrics, SandboxModificationBuilder, SandboxModificationPatch,
+    SandboxStatus, SandboxStopResult, SecretBuilder, SecretModificationPatch, SecretSource,
+    SecurityProfile, StatVirtualization,
 };
 use microsandbox::LogLevel;
 use microsandbox::MicrosandboxResult;
@@ -76,6 +77,33 @@ fn prepare_local_sandboxes_dir() -> Result<(), Error> {
         return Ok(());
     }
     std::fs::create_dir_all(local.sandboxes_dir()).map_err(|error| error::to_ruby(error.into()))
+}
+
+/// The `http:` create option, read from the Ruby layer's normalized Hash.
+struct HttpDeny {
+    deny_response: Option<bool>,
+    format: Option<HttpDenyResponseFormat>,
+    network_message: Option<String>,
+    secret_message: Option<String>,
+}
+
+fn parse_http_deny(h: RHash) -> Result<HttpDeny, Error> {
+    let format = match conv::opt_string(h, "format")?.as_deref() {
+        None => None,
+        Some("json") => Some(HttpDenyResponseFormat::Json),
+        Some("text") => Some(HttpDenyResponseFormat::Text),
+        Some(other) => {
+            return Err(error::base_error(format!(
+                "http format must be json or text, got {other:?}"
+            )));
+        }
+    };
+    Ok(HttpDeny {
+        deny_response: conv::opt::<bool>(h, "deny_response")?,
+        format,
+        network_message: conv::opt_string(h, "network_message")?,
+        secret_message: conv::opt_string(h, "secret_message")?,
+    })
 }
 
 fn secs_to_duration(secs: f64) -> Result<Duration, Error> {
@@ -449,6 +477,12 @@ impl Sandbox {
         // core's generated network config patch (ConfigPatch derive) does
         // carry a `strict` field, so this is SDK parity, not a core limit.
         let strict = conv::opt::<bool>(opts, "strict")?;
+        // http: how a policy-denied request is answered (runtime v0.7). The
+        // Ruby layer validated it; the deprecated text `deny_message` is not
+        // bound.
+        let http = conv::opt::<RHash>(opts, "http")?
+            .map(parse_http_deny)
+            .transpose()?;
         if dns.is_some()
             || tls.is_some()
             || ipv4_pool.is_some()
@@ -457,6 +491,7 @@ impl Sandbox {
             || max_udp_connections.is_some()
             || trust_host_cas.is_some()
             || strict.is_some()
+            || http.is_some()
         {
             b = b.network(move |mut n| {
                 if let Some(dns) = dns {
@@ -516,6 +551,23 @@ impl Sandbox {
                 }
                 if let Some(s) = strict {
                     n = n.strict(s);
+                }
+                if let Some(http) = http {
+                    n = n.http(move |mut h| {
+                        if let Some(enabled) = http.deny_response {
+                            h = h.deny_response(enabled);
+                        }
+                        if let Some(format) = http.format {
+                            h = h.deny_response_format(format);
+                        }
+                        if let Some(message) = http.network_message {
+                            h = h.network_deny_message(message);
+                        }
+                        if let Some(message) = http.secret_message {
+                            h = h.secret_deny_message(message);
+                        }
+                        h
+                    });
                 }
                 n
             });
