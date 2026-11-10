@@ -2,7 +2,7 @@
 
 [![Gem Version](https://img.shields.io/gem/v/microsandbox-rb)](https://rubygems.org/gems/microsandbox-rb)
 [![CI](https://github.com/ya-luotao/microsandbox-rb/actions/workflows/ci.yml/badge.svg)](https://github.com/ya-luotao/microsandbox-rb/actions/workflows/ci.yml)
-[![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.1-CC342D)](https://www.ruby-lang.org/)
+[![Ruby](https://img.shields.io/badge/ruby-%3E%3D%203.3-CC342D)](https://www.ruby-lang.org/)
 [![Docs](https://img.shields.io/badge/docs-rubydoc.info-blue)](https://rubydoc.info/gems/microsandbox-rb)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
@@ -36,7 +36,7 @@ gem compiles the Rust extension, so the first install takes a few minutes.
 
 **Prerequisites**
 
-- Ruby 3.1 or newer.
+- Ruby 3.3 or newer.
 - Linux with KVM enabled, or macOS on Apple Silicon. Cloud-only users
   (`MSB_BACKEND=cloud`) need neither.
 - A stable Rust toolchain (1.91 or newer) on `PATH` to compile the source gem.
@@ -264,7 +264,7 @@ cargo fmt --check --manifest-path ext/microsandbox/Cargo.toml
 cargo clippy --manifest-path ext/microsandbox/Cargo.toml -- -D warnings
 ```
 
-CI compiles and runs the unit suite on Ruby 3.1 through 3.4 on Linux and macOS,
+CI compiles and runs the unit suite on Ruby 3.3 and 3.4 on Linux and macOS,
 lints Rust and Ruby, packages and installs the built gems, builds every
 `microsandbox-rb-binaries` platform gem, and boots real microVMs in a KVM
 integration job against both the provisioned and the bundled runtime.

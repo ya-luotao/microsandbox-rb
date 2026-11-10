@@ -17,6 +17,10 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Breaking
 
+- **Ruby 3.3 or newer is required** (both gems). Ruby 3.1 and 3.2 are
+  end-of-life, and on the `ubuntu-26.04` image setup-ruby ships no 3.1 build
+  while rb-sys's bindgen step fails on the 3.2 headers. CI now runs Ruby 3.3
+  and 3.4 on `ubuntu-latest` and `macos-15`.
 - **The runtime must be exactly `v0.7.14`.** The core reads the version
   embedded in the `msb` executable and refuses a runtime that does not
   advertise protected sandbox state ("upgrade required … does not advertise

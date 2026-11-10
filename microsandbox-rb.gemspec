@@ -26,7 +26,7 @@ Gem::Specification.new do |spec|
   # Cargo dependency (superradcompany/microsandbox).
   spec.homepage = "https://github.com/ya-luotao/microsandbox-rb"
   spec.license = "Apache-2.0"
-  spec.required_ruby_version = ">= 3.1.0"
+  spec.required_ruby_version = ">= 3.3"
   # Per-platform precompiled gems (built with rb-sys) require a recent RubyGems.
   spec.required_rubygems_version = ">= 3.3.11"
 

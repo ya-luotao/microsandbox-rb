@@ -28,7 +28,7 @@ Gem::Specification.new do |spec|
 
   spec.homepage = "https://github.com/ya-luotao/microsandbox-rb"
   spec.license = "Apache-2.0"
-  spec.required_ruby_version = ">= 3.1.0"
+  spec.required_ruby_version = ">= 3.3"
   # `x86_64-linux-gnu`-style platforms (the binaries are glibc-linked) need a
   # RubyGems that distinguishes libc variants; older ones mis-match musl hosts.
   spec.required_rubygems_version = ">= 3.3.11"

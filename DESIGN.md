@@ -464,7 +464,7 @@ git. The override must never be committed — it would break container builds.
 
 ## Build requirements
 
-* Ruby >= 3.1, RubyGems >= 3.3.11
+* Ruby >= 3.3, RubyGems >= 3.3.11
 * Rust (stable) >= 1.91 — the core crate is edition 2024 and pulls `smoltcp`
   which sets MSRV 1.91. `rust-toolchain.toml` pins `stable`.
 * Linux with KVM, or macOS on Apple Silicon (same as the other SDKs).
