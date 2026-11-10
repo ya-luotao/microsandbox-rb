@@ -1292,8 +1292,12 @@ module Microsandbox
         "inject_headers" => "use substitution: { headers: true|false }",
         "inject_query" => "use substitution: { query: true|false }",
         "inject_body" => "use substitution: { body: true|false }",
-        "inject_basic_auth" => "removed in runtime v0.7: Basic credentials in an Authorization " \
-          "header are substituted whenever header substitution applies (substitution: { headers: true })",
+        "inject_basic_auth" => "removed in runtime v0.7, which has no Basic-only substitution. The " \
+          "narrowest replacement is substitution: { headers: true, header_fields: [\"Authorization\"], " \
+          "query: false, body: false }: it substitutes only in the Authorization header, but in any " \
+          "scheme there (decoded Basic first, otherwise the literal placeholder, e.g. in a Bearer " \
+          "token). Do not use a bare headers: true, which substitutes in every header. See " \
+          "docs/configuration.md#migrating-secrets-from-017x",
         "require_tls" => "renamed to require_tls_identity:",
         "on_violation" => "renamed to violation_action: (:block, :block_and_log, or " \
           ":block_and_terminate); hosts that may receive the unchanged placeholder go in " \

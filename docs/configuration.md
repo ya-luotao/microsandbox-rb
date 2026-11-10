@@ -162,8 +162,9 @@ The other per-secret keys:
   `{ headers:, header_fields:, query:, body: }`. Defaults: headers on, query
   and body off. `header_fields: [...]` limits header substitution to the named
   headers (it needs headers on). At least one location must stay enabled.
-  Basic credentials in an `Authorization` header are substituted whenever
-  header substitution applies.
+  Inside an allowed header the runtime substitutes a Basic credential in
+  decoded form, otherwise the literal placeholder in any scheme (`Bearer`,
+  `token`, …); there is no Basic-only setting.
 - `violation_action:` — what happens when the placeholder heads for a host not
   in `allow:`/`allow_placeholder_for:`: `:block`, `:block_and_log`, or
   `:block_and_terminate` (kebab-case spellings are accepted too). The
@@ -179,7 +180,7 @@ Runtime `v0.7` replaced the secrets vocabulary. The old keys raise
 | --- | --- |
 | `host:` / `hosts:` / `host_patterns:` | one `allow: [...]` list (wildcards included) |
 | `inject_headers:` / `inject_query:` / `inject_body:` | `substitution: { headers:, query:, body: }` |
-| `inject_basic_auth:` | removed: Basic credentials are substituted with header substitution |
+| `inject_basic_auth:` | removed, with no Basic-only equivalent: see [Basic-only secrets](#basic-only-secrets-inject_basic_auth) |
 | `require_tls:` | `require_tls_identity:` |
 | `on_violation:` (per secret) | `violation_action:` |
 | `on_secret_violation:` (create) | `secret_violation_action:` |
@@ -187,6 +188,54 @@ Runtime `v0.7` replaced the secrets vocabulary. The old keys raise
 
 `passthrough:` is still accepted on a secret spec as a deprecated alias of
 `allow_placeholder_for:` (it warns, and the two lists are merged).
+
+#### Basic-only secrets (`inject_basic_auth:`)
+
+0.17.x could substitute a secret only inside a Basic `Authorization` header
+(`inject_basic_auth: true` with `inject_headers: false`). Runtime `v0.7` has no
+such setting. The narrowest replacement is:
+
+```ruby
+Microsandbox::Sandbox.create("worker", image: "public.ecr.aws/docker/library/alpine:latest",
+  secrets: [{env: "API_KEY", value: ENV.fetch("API_KEY"), allow: ["api.example.com"],
+             substitution: {headers: true, header_fields: ["Authorization"], query: false, body: false}}])
+```
+
+It still widens the old policy within that one header: the runtime
+substitutes a Basic credential in decoded form and otherwise replaces the
+literal placeholder in any scheme, such as `Bearer` or `token`. Never use a
+bare `substitution: { headers: true }` for such a secret: it substitutes the
+value into **every** header sent to an allowed host, including ones a server
+may reflect or log.
+
+**Saved sandboxes are widened automatically.** The first `v0.7` runtime to
+open a 0.17.x runtime home converts every saved Basic-only secret to
+substitution in every header, with no `header_fields` allowlist (upstream
+catalog migration `migrate_secret_config`). No removed keyword is involved,
+and `modify` cannot narrow the converted policy. After the conversion such a
+secret looks the same as one that asked for header-wide substitution, so find
+the affected sandboxes **before upgrading**, with 0.17.x:
+
+```ruby
+# Run with microsandbox-rb 0.17.x, before upgrading.
+page = Microsandbox::Sandbox.list_with(limit: 100)
+loop do
+  page.each do |h|
+    secrets = h.config.dig("network", "secrets", "secrets") || []
+    basic_only = secrets.any? { |s| s.dig("injection", "basic_auth") && !s.dig("injection", "headers") }
+    puts h.name if basic_only
+  end
+  break unless page.next_cursor
+  page = Microsandbox::Sandbox.list_with(limit: 100, cursor: page.next_cursor)
+end
+```
+
+Then, after upgrading and before any of them is started again, remove each
+one (`Sandbox.remove`) and create it again with the recipe above. The new
+sandbox starts from a fresh root disk; named volumes are kept. If you already
+upgraded without the list, treat every saved secret whose `substitution` has
+`headers: true` and no `header_fields` (in `SandboxHandle#config`) as a
+candidate.
 
 An inline `value:` is part of the sandbox's saved configuration: it is stored
 in cleartext in the local catalog under the runtime home (`~/.microsandbox` by

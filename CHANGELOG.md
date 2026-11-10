@@ -47,8 +47,12 @@ hostname enforcement on by default. Migration notes are below.
   `substitution: { headers:, header_fields:, query:, body: }`. The 0.17 keys
   (`host:`/`hosts:`/`host_patterns:`, `inject_*:`, `require_tls:`,
   `on_violation:`) raise `ArgumentError` naming their replacement.
-  `inject_basic_auth:` is gone: Basic credentials in an `Authorization` header
-  are substituted whenever header substitution applies.
+  `inject_basic_auth:` is gone and has no Basic-only equivalent: the
+  narrowest replacement, `substitution: { headers: true, header_fields:
+  ["Authorization"], query: false, body: false }`, also substitutes a
+  non-Basic placeholder in that header (`Bearer`, `token`, …). The first
+  `v0.7` open of a 0.17.x home widens saved Basic-only secrets to every
+  header; see the migration notes.
 - **`Sandbox.create(on_secret_violation:)` → `secret_violation_action:`**
   (`:block`, `:block_and_log` — the default — or `:block_and_terminate`). The
   passthrough policy is gone; list the hosts that may receive the unchanged
@@ -141,6 +145,13 @@ hostname enforcement on by default. Migration notes are below.
   forms of `create`, `connect_or_create` and `restore` therefore stop with a
   `BLOCK_STOP_TIMEOUT` budget and kill when it runs out, so a block exit cannot
   hang; an interrupted create does the same.
+  `create(replace: true)` is the exception and still escalates when the name
+  is held by a running sandbox: `TERM`, a grace of `replace_with_timeout:`
+  (10 seconds by default; `0` skips the `TERM`), `KILL`, then 5 seconds to
+  prove the runtime exited. If it has not, the create raises
+  `SandboxStillRunningError`, as it does when an untracked runtime endpoint
+  may still be live; a failed signal raises its own error. This is separate
+  from `stop_with_timeout` and from `Snapshot.create`'s `force:`.
 - **A request the network policy denies gets an HTTP `403` with a JSON body**
   (`code: "network_policy_denied"`) instead of a reset, when it is plain HTTP
   or HTTPS under TLS interception; a secret-policy block is answered the same
@@ -230,7 +241,18 @@ hostname enforcement on by default. Migration notes are below.
 
 ### Migration notes
 
-- Rewrite secret specs with the table in `docs/configuration.md#secrets`.
+- Rewrite secret specs with the table in
+  `docs/configuration.md#migrating-secrets-from-017x`.
+- **Basic-only secrets** (`inject_basic_auth: true` without `inject_headers:
+  true`): rewrite them with `substitution: { headers: true, header_fields:
+  ["Authorization"], query: false, body: false }`, never a bare `headers:
+  true`. Saved sandboxes need more: the first `v0.7` runtime to open a 0.17.x
+  home converts each saved Basic-only secret to substitution in every header,
+  with no allowlist (upstream migration `migrate_secret_config`), and
+  `modify` cannot narrow it. List those sandboxes with 0.17.x before
+  upgrading, then remove and recreate each with the recipe before it starts
+  again; `docs/configuration.md#basic-only-secrets-inject_basic_auth` has the
+  listing snippet.
 - Replace `on_secret_violation:` with `secret_violation_action:`, and
   `Snapshot.create(resumable: true)` with `full: true`.
 - Keep `SnapshotInfo#id` from `Snapshot.create` and pass it (or
@@ -239,7 +261,9 @@ hostname enforcement on by default. Migration notes are below.
   from `Snapshot.list`: it is in no group, so its bare name raises
   `InvalidConfigError` (the message names the path), and runtime `v0.7`
   re-indexes it under a new digest and a `snap_…` id, so a digest recorded
-  under 0.17.x stops selecting it once the snapshot has been opened. Its
+  under 0.17.x stops selecting it once the snapshot has been opened
+  (`Snapshot.list` reports a digest-shaped `sha256:…` id for it until it is
+  first opened, and a `snap_…` id afterwards). Its
   files stay where they were. When the same artifact exists twice in a home
   (for example after `Snapshot.load` of its own archive), its id and digest
   are ambiguous: select it by path.
@@ -255,8 +279,12 @@ hostname enforcement on by default. Migration notes are below.
   `Microsandbox.install` ahead of time). Point `MSB_PATH`, `runtime_path=` or
   configured paths at a `v0.7.14` runtime yourself; with
   `MICROSANDBOX_NO_AUTO_INSTALL`, provision `v0.7.14` out of band.
-- Replace any `installed?` check that meant "the home holds a runtime" with
-  `runtime_info` (and `#matches_sdk?`).
+- Code that provisions the runtime home should call `Microsandbox.install`
+  unconditionally instead of guarding it with `installed?`: it is idempotent,
+  keeps a current pair and replaces a stale one, even when `MSB_PATH` or the
+  binaries gem shadows the home. `runtime_info` / `#matches_sdk?` describe
+  the *selected* pair, from whichever source wins, so they cannot tell you
+  whether the home is installed or current.
 - On macOS, before starting a sandbox created by 0.17.x or earlier: stop
   every pre-0.18 VM in every runtime home, then run
   `Sandbox.recover_storage(name, legacy_writers_stopped: true)` for each

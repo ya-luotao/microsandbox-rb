@@ -40,9 +40,15 @@ RSpec.describe "runtime bootstrap matrix" do
 
   def vendor_msb = File.join(vendor_dir, "bin", "msb")
 
+  # With MICROSANDBOX_INTEGRATION set, the skip names only the matrix's own
+  # opt-in: CI's "integration examples actually ran" check treats a pending
+  # message mentioning MICROSANDBOX_INTEGRATION as spec_helper's runtime gate.
   before do
-    skip "set MICROSANDBOX_INTEGRATION=1 and MICROSANDBOX_BOOTSTRAP_MATRIX=1" unless
-      ENV["MICROSANDBOX_INTEGRATION"] && ENV["MICROSANDBOX_BOOTSTRAP_MATRIX"]
+    if !ENV["MICROSANDBOX_INTEGRATION"]
+      skip "set MICROSANDBOX_INTEGRATION=1 and MICROSANDBOX_BOOTSTRAP_MATRIX=1"
+    elsif !ENV["MICROSANDBOX_BOOTSTRAP_MATRIX"]
+      skip "opt-in bootstrap matrix: set MICROSANDBOX_BOOTSTRAP_MATRIX=1 (downloads the runtime bundle)"
+    end
   end
 
   # A fresh, private, short runtime home per scenario (the agent socket lives

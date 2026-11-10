@@ -146,6 +146,18 @@ RSpec.describe "create options on the wire (native-serialized)" do
       )
       expect(secrets["violation_action"]).to eq("type" => "block")
     end
+
+    # The documented replacement for a 0.17 `inject_basic_auth:`-only secret
+    # (docs/configuration.md) must survive the builder unchanged.
+    it "serializes the Basic-auth migration recipe" do
+      entry = wire_create(
+        secrets: [{env: "K", value: "v", allow: ["api.example.com"],
+                   substitution: {headers: true, header_fields: ["Authorization"], query: false, body: false}}]
+      ).dig("network", "secrets", "entries", 0)
+      expect(entry["substitution"]).to eq(
+        "headers" => true, "header_fields" => ["Authorization"], "query" => false, "body" => false
+      )
+    end
   end
 
   describe "scalar options" do

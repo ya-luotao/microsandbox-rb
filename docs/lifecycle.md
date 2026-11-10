@@ -118,6 +118,15 @@ rescue Microsandbox::StopTimeoutError
 end
 ```
 
+`create(replace: true)` does not follow this model: it still escalates. When
+the name belongs to a running sandbox it sends `TERM`, waits the replacement
+grace (`replace_with_timeout:`, 10 seconds by default; `0` skips the `TERM`),
+sends `KILL`, and gives the runtime 5 seconds to prove it exited. If it has
+not, the create raises `Microsandbox::SandboxStillRunningError` rather than
+reusing the name; it raises the same when an untracked runtime endpoint may
+still be live, and a signal that fails raises its own error. None of this
+involves `stop_with_timeout` or `Snapshot.create`'s `force:`.
+
 ## Convergent lifecycle
 
 Idempotent operations that take a name to the state you want, whatever state

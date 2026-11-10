@@ -199,7 +199,7 @@ RSpec.describe Microsandbox::Sandbox do
       inject_headers: /:inject_headers was removed.*substitution: \{ headers:/,
       inject_query: /:inject_query was removed.*substitution: \{ query:/,
       inject_body: /:inject_body was removed.*substitution: \{ body:/,
-      inject_basic_auth: /:inject_basic_auth was removed.*Authorization/,
+      inject_basic_auth: /:inject_basic_auth was removed.*header_fields: \["Authorization"\], query: false, body: false \}.*any scheme.*bare headers: true/,
       require_tls: /:require_tls was removed.*require_tls_identity:/,
       on_violation: /:on_violation was removed.*violation_action:.*allow_placeholder_for:/
     }.each do |key, message|
