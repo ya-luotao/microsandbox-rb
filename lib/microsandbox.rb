@@ -198,10 +198,14 @@ module Microsandbox
         # A cloud backend has no local msb/libkrunfw runtime to provision.
         return if default_backend_kind == :cloud
         # The local backend captured its runtime configuration when it was
-        # built (this builds it if nothing has yet); the checks below read it
-        # afresh. Refuse when the two disagree — before anything is installed
-        # or memoized — so that they decide for the runtime `create` launches.
+        # built (this builds it if nothing has yet). Refuse when the current
+        # configuration has moved away from it — before anything is installed
+        # or memoized. Everything below then reads that captured
+        # configuration only (`Native.backend_*`): the runtime it selects, its
+        # home pair and the install target, so a change to the environment
+        # while bootstrap runs cannot redirect the decision or the write.
         Native.verify_backend_runtime_config
+        home_msb, = Native.backend_runtime_home_pair
         # The binaries gem won the resolver: its vendored pair is exactly the
         # version this gem was built for, so there is nothing to check.
         if bundled_runtime_active?
@@ -216,16 +220,16 @@ module Microsandbox
           warn_runtime_mismatch(info) if info && !info.matches_sdk?
         elsif info.nil?
           warn "[microsandbox] runtime (msb + libkrunfw) not found; " \
-               "downloading runtime #{sdk_runtime_version} to #{File.dirname(Native.runtime_home_pair.first, 2)} " \
+               "downloading runtime #{sdk_runtime_version} to #{File.dirname(home_msb, 2)} " \
                "(set MICROSANDBOX_NO_AUTO_INSTALL to skip, or install the microsandbox-rb-binaries gem " \
                "to ship it with your bundle)..."
-          install
+          bootstrap_install(home_msb)
         elsif !info.matches_sdk?
-          if replaceable_home_runtime?(info)
+          if replaceable_home_runtime?(info, home_msb)
             warn "[microsandbox] runtime #{describe_runtime_version(info)} in #{File.dirname(info.msb_path, 2)} " \
                  "is not the #{sdk_runtime_version} this SDK launches; replacing it " \
                  "(set MICROSANDBOX_NO_AUTO_INSTALL to keep it)..."
-            install(force: true)
+            bootstrap_install(home_msb, force: true)
           else
             warn_runtime_mismatch(info)
           end
@@ -527,7 +531,7 @@ module Microsandbox
     # and the library paired with its msb is its own.
     def bundled_runtime_active?
       return false unless @bundled_msb_path
-      info = runtime_info
+      info = backend_runtime_info
       info.origin == :sdk_package && same_path?(info.libkrunfw_path, @bundled_libkrunfw_path)
     rescue Microsandbox::Error
       false
@@ -587,11 +591,25 @@ module Microsandbox
         "delete #{msb} and #{lib} (whichever exist) and retry"
     end
 
-    # runtime_info for ensure_runtime!: nil when nothing resolves. A partial
-    # runtime raises with directions — unless opted out, when the operation
-    # is left to raise it (and the process is marked ready).
+    # {runtime_info} of the local backend's captured configuration — the pair
+    # `create` launches — for ensure_runtime!.
+    def backend_runtime_info
+      data = Native.backend_runtime_info
+      RuntimeInfo.new(data.merge("origin" => classify_runtime_origin(data)))
+    end
+
+    # ensure_runtime!'s install: into the captured configuration's home
+    # (`home_msb` is the pair the decision was made for), never one read
+    # afresh. {install} stays backend-independent.
+    def bootstrap_install(home_msb, force: false)
+      Native.install_backend_runtime(home_msb, force ? {"force" => true} : {})
+    end
+
+    # backend_runtime_info for ensure_runtime!: nil when nothing resolves. A
+    # partial runtime raises with directions — unless opted out, when the
+    # operation is left to raise it (and the process is marked ready).
     def bootstrap_runtime_info
-      runtime_info
+      backend_runtime_info
     rescue RuntimeNotInstalledError
       nil
     rescue RuntimeIncompleteError => e
@@ -602,7 +620,7 @@ module Microsandbox
       # The error comes from the first source the resolver consulted: the
       # environment when it is set, otherwise (no configured paths) the home.
       hint = runtime_env_hint || begin
-        msb, lib = Native.runtime_home_pair
+        msb, lib = Native.backend_runtime_home_pair
         partial_home_message(msb, lib) if home_runtime_state(msb, lib) == :partial
       end
       raise unless hint
@@ -617,8 +635,8 @@ module Microsandbox
 
     # The forced reinstall replaces files in the user's home, so only when the
     # resolved pair provably IS the home pair.
-    def replaceable_home_runtime?(info)
-      info.origin == :home && same_path?(info.msb_path, Native.runtime_home_pair.first)
+    def replaceable_home_runtime?(info, home_msb)
+      info.origin == :home && same_path?(info.msb_path, home_msb)
     end
 
     def describe_runtime_version(info)

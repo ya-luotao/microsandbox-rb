@@ -76,7 +76,9 @@ once, when it is first used in a process (any sandbox, image or catalog call,
 `runtime_path`, `default_backend_kind`). If one of them changed afterwards so
 that the home or the selected pair differs, `ensure_runtime!` raises
 `Microsandbox::InvalidConfigError` before it checks or installs anything,
-rather than repairing a runtime that sandboxes will not use. Set the
+rather than repairing a runtime that sandboxes will not use. Otherwise both
+the check and any install it makes use the backend's own configuration, so
+changing the environment while it runs cannot redirect them. Set the
 environment before the first SDK call, or call
 `Microsandbox.set_default_backend(:local)` to rebuild the backend from the
 current configuration. `Microsandbox.install` is not affected: it always

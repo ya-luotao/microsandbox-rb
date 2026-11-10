@@ -534,10 +534,11 @@ RSpec.describe "Microsandbox runtime helpers" do
     end
 
     before do
-      allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:bootstrap_install)
       allow(Microsandbox).to receive(:warn)
+      allow(Microsandbox::Native).to receive(:install_backend_runtime)
       allow(Microsandbox::Native).to receive(:install_runtime)
-      allow(Microsandbox::Native).to receive(:runtime_home_pair).and_return(["/home/u/.microsandbox/bin/msb", "/home/u/.microsandbox/lib/#{firmware}"])
+      allow(Microsandbox::Native).to receive(:backend_runtime_home_pair).and_return(["/home/u/.microsandbox/bin/msb", "/home/u/.microsandbox/lib/#{firmware}"])
     end
 
     def with_auto_install(disabled)
@@ -546,7 +547,7 @@ RSpec.describe "Microsandbox runtime helpers" do
       stub_const("ENV", env)
     end
 
-    def resolves(info) = allow(Microsandbox).to receive(:runtime_info).and_return(info)
+    def resolves(info) = allow(Microsandbox).to receive(:backend_runtime_info).and_return(info)
 
     def mismatch_warning = /every local sandbox start will be refused/
 
@@ -557,16 +558,16 @@ RSpec.describe "Microsandbox runtime helpers" do
         resolves(runtime_info(origin: :home, msb: "/home/u/.microsandbox/bin/msb"))
         Microsandbox.ensure_runtime!
         Microsandbox.ensure_runtime!
-        expect(Microsandbox).to have_received(:runtime_info).once
-        expect(Microsandbox).not_to have_received(:install)
+        expect(Microsandbox).to have_received(:backend_runtime_info).once
+        expect(Microsandbox).not_to have_received(:bootstrap_install)
         expect(Microsandbox).not_to have_received(:warn)
       end
 
       it "auto-installs once (with a notice) when nothing resolves" do
-        allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "expected …")
+        allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "expected …")
         Microsandbox.ensure_runtime!
         Microsandbox.ensure_runtime!
-        expect(Microsandbox).to have_received(:install).with(no_args).once
+        expect(Microsandbox).to have_received(:bootstrap_install).with("/home/u/.microsandbox/bin/msb").once
         expect(Microsandbox).to have_received(:warn).with(/not found; downloading runtime #{Regexp.escape(sdk_runtime)}/).once
       end
 
@@ -576,15 +577,27 @@ RSpec.describe "Microsandbox runtime helpers" do
         it "force-reinstalls a stale home runtime (#{version.inspect})" do
           resolves(runtime_info(origin: :home, version: version, msb: "/home/u/.microsandbox/bin/msb"))
           Microsandbox.ensure_runtime!
-          expect(Microsandbox).to have_received(:install).with(force: true).once
+          expect(Microsandbox).to have_received(:bootstrap_install).with("/home/u/.microsandbox/bin/msb", force: true).once
           expect(Microsandbox).to have_received(:warn).with(a_string_matching(wording).and(matching(/replacing it/)))
         end
+      end
+
+      # The bootstrap install goes to the home of the backend's captured
+      # configuration (decided above), never through the ambient installer
+      # that explicit Microsandbox.install uses.
+      it "installs into the backend's captured home, not through the ambient installer" do
+        allow(Microsandbox).to receive(:bootstrap_install).and_call_original
+        resolves(runtime_info(origin: :home, version: "0.7.2", msb: "/home/u/.microsandbox/bin/msb"))
+        Microsandbox.ensure_runtime!
+        expect(Microsandbox::Native).to have_received(:install_backend_runtime)
+          .with("/home/u/.microsandbox/bin/msb", {"force" => true}).once
+        expect(Microsandbox::Native).not_to have_received(:install_runtime)
       end
 
       it "does not replace a :home pair that is not the home pair it would install into" do
         resolves(runtime_info(origin: :home, version: "0.7.2", msb: "/other/home/bin/msb"))
         Microsandbox.ensure_runtime!
-        expect(Microsandbox).not_to have_received(:install)
+        expect(Microsandbox).not_to have_received(:bootstrap_install)
         expect(Microsandbox).to have_received(:warn).with(mismatch_warning)
       end
 
@@ -593,8 +606,8 @@ RSpec.describe "Microsandbox runtime helpers" do
           resolves(runtime_info(origin: origin, version: "0.7.2", msb: "/opt/rt/bin/msb"))
           Microsandbox.ensure_runtime!
           Microsandbox.ensure_runtime!
-          expect(Microsandbox).not_to have_received(:install)
-          expect(Microsandbox::Native).not_to have_received(:install_runtime)
+          expect(Microsandbox).not_to have_received(:bootstrap_install)
+          expect(Microsandbox::Native).not_to have_received(:install_backend_runtime)
           expect(Microsandbox).to have_received(:warn)
             .with("[microsandbox] runtime 0.7.2 at /opt/rt/bin/msb ≠ SDK #{sdk_runtime}: every local sandbox start will be refused").once
         end
@@ -615,26 +628,26 @@ RSpec.describe "Microsandbox runtime helpers" do
           lib = File.join(home, "lib", firmware)
           FileUtils.mkdir_p(File.dirname(msb))
           File.write(msb, "")
-          allow(Microsandbox::Native).to receive(:runtime_home_pair).and_return([msb, lib])
+          allow(Microsandbox::Native).to receive(:backend_runtime_home_pair).and_return([msb, lib])
           allow(Microsandbox::Native).to receive(:msb_version).and_return(sdk_runtime)
-          allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeIncompleteError, "expected both #{msb} and #{lib}")
+          allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeIncompleteError, "expected both #{msb} and #{lib}")
           expect { Microsandbox.ensure_runtime! }.to raise_error(Microsandbox::RuntimeIncompleteError, /delete #{Regexp.escape(msb)} and #{Regexp.escape(lib)}/)
-          expect(Microsandbox).not_to have_received(:install)
+          expect(Microsandbox).not_to have_received(:bootstrap_install)
           expect(Microsandbox.instance_variable_get(:@runtime_ready)).to be_nil
         end
       end
 
       it "explains MSB_PATH's pairing rule when MSB_PATH has no libkrunfw" do
         stub_const("ENV", ENV.to_h.merge("MSB_PATH" => "/opt/custom/msb"))
-        allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeIncompleteError, "/opt/custom/msb has no matching libkrunfw")
+        allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeIncompleteError, "/opt/custom/msb has no matching libkrunfw")
         expect { Microsandbox.ensure_runtime! }.to raise_error(Microsandbox::RuntimeIncompleteError, /no matching libkrunfw — MSB_PATH needs libkrunfw beside it/)
       end
 
       it "treats MICROSANDBOX_NO_AUTO_INSTALL=0/false as 'not disabled'" do
         stub_const("ENV", ENV.to_h.merge("MICROSANDBOX_NO_AUTO_INSTALL" => "false"))
-        allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
+        allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
         Microsandbox.ensure_runtime!
-        expect(Microsandbox).to have_received(:install)
+        expect(Microsandbox).to have_received(:bootstrap_install)
       end
     end
 
@@ -642,10 +655,10 @@ RSpec.describe "Microsandbox runtime helpers" do
       before { with_auto_install(true) }
 
       it "4a: nothing resolves — no install, no warning; the operation raises" do
-        allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
+        allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
         Microsandbox.ensure_runtime!
-        expect(Microsandbox).not_to have_received(:install)
-        expect(Microsandbox::Native).not_to have_received(:install_runtime)
+        expect(Microsandbox).not_to have_received(:bootstrap_install)
+        expect(Microsandbox::Native).not_to have_received(:install_backend_runtime)
         expect(Microsandbox).not_to have_received(:warn)
       end
 
@@ -653,7 +666,7 @@ RSpec.describe "Microsandbox runtime helpers" do
         resolves(runtime_info(origin: :environment))
         Microsandbox.ensure_runtime!
         expect(Microsandbox).not_to have_received(:warn)
-        expect(Microsandbox).not_to have_received(:install)
+        expect(Microsandbox).not_to have_received(:bootstrap_install)
       end
 
       [nil, "0.7.2"].each do |version|
@@ -661,15 +674,15 @@ RSpec.describe "Microsandbox runtime helpers" do
           resolves(runtime_info(origin: :home, version: version, msb: "/home/u/.microsandbox/bin/msb"))
           Microsandbox.ensure_runtime!
           expect(Microsandbox).to have_received(:warn).with(mismatch_warning).once
-          expect(Microsandbox).not_to have_received(:install)
-          expect(Microsandbox::Native).not_to have_received(:install_runtime)
+          expect(Microsandbox).not_to have_received(:bootstrap_install)
+          expect(Microsandbox::Native).not_to have_received(:install_backend_runtime)
         end
       end
 
       it "a partial runtime — left for the operation to raise" do
-        allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeIncompleteError, "partial")
+        allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeIncompleteError, "partial")
         expect { Microsandbox.ensure_runtime! }.not_to raise_error
-        expect(Microsandbox).not_to have_received(:install)
+        expect(Microsandbox).not_to have_received(:bootstrap_install)
         expect(Microsandbox.instance_variable_get(:@runtime_ready)).to be(true)
       end
     end
@@ -678,34 +691,34 @@ RSpec.describe "Microsandbox runtime helpers" do
       with_auto_install(false)
       Microsandbox.instance_variable_set(:@bundled_msb_path, "/gems/binaries/vendor/bin/msb")
       Microsandbox.instance_variable_set(:@bundled_libkrunfw_path, "/gems/binaries/vendor/lib/#{firmware}")
-      allow(Microsandbox::Native).to receive(:runtime_info).and_return(
+      allow(Microsandbox::Native).to receive(:backend_runtime_info).and_return(
         "msb_path" => "/gems/binaries/vendor/bin/msb", "libkrunfw_path" => "/gems/binaries/vendor/lib/#{firmware}",
         "origin" => "configuration"
       )
       allow(Microsandbox::Native).to receive(:msb_version)
       Microsandbox.ensure_runtime!
       expect(Microsandbox::Native).not_to have_received(:msb_version)
-      expect(Microsandbox).not_to have_received(:install)
+      expect(Microsandbox).not_to have_received(:bootstrap_install)
       expect(Microsandbox).not_to have_received(:warn)
     end
 
     it "checks the version when something outranks the bundled msb (MSB_PATH)" do
       stub_const("ENV", ENV.to_h.except("MICROSANDBOX_NO_AUTO_INSTALL").merge("MSB_PATH" => "/opt/custom/bin/msb"))
       Microsandbox.instance_variable_set(:@bundled_msb_path, "/gems/binaries/vendor/bin/msb")
-      allow(Microsandbox::Native).to receive(:runtime_info).and_return(
+      allow(Microsandbox::Native).to receive(:backend_runtime_info).and_return(
         "msb_path" => "/opt/custom/bin/msb", "libkrunfw_path" => "/opt/custom/lib/#{firmware}", "origin" => "configuration"
       )
       allow(Microsandbox::Native).to receive(:msb_version).with("/opt/custom/bin/msb").and_return("0.7.2")
       Microsandbox.ensure_runtime!
       expect(Microsandbox).to have_received(:warn).with(mismatch_warning)
-      expect(Microsandbox).not_to have_received(:install)
+      expect(Microsandbox).not_to have_received(:bootstrap_install)
     end
 
     it "is not fooled by the bundled msb paired with a foreign library" do
       with_auto_install(false)
       Microsandbox.instance_variable_set(:@bundled_msb_path, "/gems/binaries/vendor/bin/msb")
       Microsandbox.instance_variable_set(:@bundled_libkrunfw_path, "/gems/binaries/vendor/lib/#{firmware}")
-      allow(Microsandbox::Native).to receive(:runtime_info).and_return(
+      allow(Microsandbox::Native).to receive(:backend_runtime_info).and_return(
         "msb_path" => "/gems/binaries/vendor/bin/msb", "libkrunfw_path" => "/custom/#{firmware}", "origin" => "configuration"
       )
       allow(Microsandbox::Native).to receive(:msb_version).and_return(sdk_runtime)
@@ -715,10 +728,10 @@ RSpec.describe "Microsandbox runtime helpers" do
 
     it "skips the local-runtime check entirely under a cloud backend" do
       allow(Microsandbox).to receive(:default_backend_kind).and_return(:cloud)
-      allow(Microsandbox).to receive(:runtime_info)
+      allow(Microsandbox).to receive(:backend_runtime_info)
       Microsandbox.ensure_runtime!
-      expect(Microsandbox).not_to have_received(:runtime_info)
-      expect(Microsandbox).not_to have_received(:install)
+      expect(Microsandbox).not_to have_received(:backend_runtime_info)
+      expect(Microsandbox).not_to have_received(:bootstrap_install)
     end
   end
 end

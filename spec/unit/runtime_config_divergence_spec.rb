@@ -10,8 +10,9 @@ require "tmpdir"
 # the two disagree (MSB_HOME or MSB_PATH changed in between), bootstrap must
 # refuse rather than check or repair a runtime `create` will not launch. Each
 # case runs in a child process: the backend is process-wide and cannot be
-# reset in-process. The installer is replaced by a recorder; nothing is
-# downloaded.
+# reset in-process. Nothing is downloaded: the child keeps the real native
+# install target logic and only points it at a local directory holding a
+# marked pair, so each case observes which home was actually written.
 RSpec.describe "runtime bootstrap vs the local backend's captured configuration (subprocess)" do
   let(:lib_dir) { File.expand_path("../../lib", __dir__) }
   let(:firmware) { RUBY_PLATFORM.include?("darwin") ? "libkrunfw.5.dylib" : "libkrunfw.so.5.6.1" }
@@ -26,18 +27,24 @@ RSpec.describe "runtime bootstrap vs the local backend's captured configuration 
     msb
   end
 
-  # Child prelude: record installer calls with the home they would write to,
-  # silence warnings, build the backend under the starting environment, then
-  # apply `after` to ENV.
+  def marker = "# installed-by-bootstrap-spec"
+
+  # Child prelude: record bootstrap installs with the home they were decided
+  # for and run them for real from the marked source directory (ARGV[1]);
+  # the ambient installer must not run at all. Silence warnings, build the
+  # backend under the starting environment, then apply `after` to ENV.
   def child_code(before_bootstrap)
     <<~RUBY
       require "json"
       require "microsandbox"
       calls = []
-      Microsandbox::Native.define_singleton_method(:install_runtime) do |opts|
-        calls << [opts, Microsandbox::Native.runtime_home_pair.first]
-        {}
+      source = ARGV[1]
+      real_install = Microsandbox::Native.method(:install_backend_runtime)
+      Microsandbox::Native.define_singleton_method(:install_backend_runtime) do |home_msb, opts|
+        calls << [opts, home_msb]
+        real_install.call(home_msb, opts.merge("source" => "directory", "source_path" => source, "verify" => false))
       end
+      Microsandbox::Native.define_singleton_method(:install_runtime) { |*| raise "the ambient installer must not run" }
       Microsandbox.define_singleton_method(:warn) { |*| }
       Microsandbox.default_backend_kind
       JSON.parse(ARGV[0]).each { |k, v| ENV[k] = v }
@@ -61,7 +68,7 @@ RSpec.describe "runtime bootstrap vs the local backend's captured configuration 
     includes = ["-I", lib_dir]
     includes += ["-I", include] if include
     out, err, status = Open3.capture3(base.merge(env), RbConfig.ruby, *includes, "-e",
-      child_code(before_bootstrap), JSON.generate(after))
+      child_code(before_bootstrap), JSON.generate(after), source_dir)
     expect(status).to be_success, err
     JSON.parse(out)
   end
@@ -71,6 +78,19 @@ RSpec.describe "runtime bootstrap vs the local backend's captured configuration 
   around do |example|
     Dir.mktmpdir("cfg") { |dir| @dir = File.realpath(dir) and example.run }
   end
+
+  # The flat `<dir>/msb` + `<dir>/<libkrunfw>` layout upstream's directory
+  # install takes, with a marked msb.
+  let(:source_dir) do
+    dir = File.join(@dir, "source")
+    FileUtils.mkdir_p(dir)
+    File.write(File.join(dir, "msb"), "#!/bin/sh\n#{marker}\nexit 0\n")
+    File.chmod(0o755, File.join(dir, "msb"))
+    File.write(File.join(dir, firmware), "")
+    dir
+  end
+
+  def installed?(home) = File.read(File.join(home, "bin", "msb")).include?(marker)
 
   let(:home_a) { File.join(@dir, "a") }
   let(:home_b) { File.join(@dir, "b") }
@@ -85,6 +105,60 @@ RSpec.describe "runtime bootstrap vs the local backend's captured configuration 
     expect(result["error"]).to be_nil
     expect(result["calls"]).to eq([[{"force" => true}, File.join(home_a, "bin", "msb")]])
     expect(result["ready"]).to be(true)
+    expect(installed?(home_a)).to be(true)
+    expect(installed?(home_b)).to be(false)
+  end
+
+  # Warnings are where bootstrap yields: another thread that changes MSB_HOME
+  # while the replacement warning is written must not redirect the forced
+  # install, which follows the backend's captured home (the one `create`
+  # launches from), not the environment read afresh.
+  it "keeps the install in the backend's home when MSB_HOME changes during the replacement warning" do
+    interleave = <<~RUBY
+      entered = Queue.new
+      resume = Queue.new
+      Microsandbox.define_singleton_method(:warn) do |*|
+        entered << true
+        resume.pop
+      end
+      Thread.new do
+        entered.pop
+        ENV["MSB_HOME"] = #{home_b.inspect}
+        resume << true
+      end
+    RUBY
+    result = run_child(@dir, {"MSB_HOME" => home_a}, {}, before_bootstrap: interleave)
+    expect(result["error"]).to be_nil
+    expect(result["calls"]).to eq([[{"force" => true}, File.join(home_a, "bin", "msb")]])
+    expect(installed?(home_a)).to be(true)
+    expect(installed?(home_b)).to be(false)
+    expect(result["ready"]).to be(true)
+  end
+
+  # A backend rebuilt from another home between the decision and the write
+  # makes the install refuse rather than write a home nobody checked.
+  it "refuses the install when the backend is rebuilt with another home during the warning" do
+    interleave = <<~RUBY
+      entered = Queue.new
+      resume = Queue.new
+      Microsandbox.define_singleton_method(:warn) do |*|
+        entered << true
+        resume.pop
+      end
+      Thread.new do
+        entered.pop
+        ENV["MSB_HOME"] = #{home_b.inspect}
+        Microsandbox.set_default_backend(:local)
+        resume << true
+      end
+    RUBY
+    result = run_child(@dir, {"MSB_HOME" => home_a}, {}, before_bootstrap: interleave)
+    klass, message = result["error"]
+    expect(klass).to eq("Microsandbox::InvalidConfigError")
+    expect(message).to match(/local backend changed during the runtime bootstrap/)
+    expect(installed?(home_a)).to be(false)
+    expect(installed?(home_b)).to be(false)
+    expect(result["ready"]).to be_nil
   end
 
   it "refuses when MSB_HOME changed after the backend was built: no install, not ready" do
@@ -118,6 +192,8 @@ RSpec.describe "runtime bootstrap vs the local backend's captured configuration 
       before_bootstrap: "Microsandbox.set_default_backend(:local)")
     expect(result["error"]).to be_nil
     expect(result["calls"]).to eq([[{"force" => true}, File.join(home_b, "bin", "msb")]])
+    expect(installed?(home_b)).to be(true)
+    expect(installed?(home_a)).to be(false)
   end
 
   it "refuses before the binaries gem's early return" do

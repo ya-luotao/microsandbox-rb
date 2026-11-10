@@ -157,9 +157,9 @@ RSpec.describe "guards no other spec pins" do
     before do
       allow(Microsandbox).to receive(:ensure_runtime!).and_call_original
       # Missing runtime, so "not disabled" is observable as an install.
-      allow(Microsandbox).to receive(:runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
-      allow(Microsandbox::Native).to receive(:runtime_home_pair).and_return(["/h/bin/msb", "/h/lib/libkrunfw"])
-      allow(Microsandbox).to receive(:install)
+      allow(Microsandbox).to receive(:backend_runtime_info).and_raise(Microsandbox::RuntimeNotInstalledError, "none")
+      allow(Microsandbox::Native).to receive(:backend_runtime_home_pair).and_return(["/h/bin/msb", "/h/lib/libkrunfw"])
+      allow(Microsandbox).to receive(:bootstrap_install)
       allow(Microsandbox).to receive(:warn)
     end
 
@@ -171,14 +171,14 @@ RSpec.describe "guards no other spec pins" do
     ["0", "false", "FALSE", "no", "No", ""].each do |value|
       it "treats #{value.inspect} as NOT disabled (auto-install still runs)" do
         ensure_runtime_with(value)
-        expect(Microsandbox).to have_received(:install).once
+        expect(Microsandbox).to have_received(:bootstrap_install).once
       end
     end
 
     %w[1 true yes on].each do |value|
       it "treats #{value.inspect} as disabled" do
         ensure_runtime_with(value)
-        expect(Microsandbox).not_to have_received(:install)
+        expect(Microsandbox).not_to have_received(:bootstrap_install)
       end
     end
   end
