@@ -6,7 +6,10 @@ require "timeout"
 # WITHOUT booting a real microVM, by stubbing the native layer. The native
 # binding itself is covered by the integration specs.
 RSpec.describe Microsandbox::Sandbox do
-  let(:native) { instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil, stop_with_timeout: nil, kill: nil) }
+  let(:native) {
+    instance_double(Microsandbox::Native::Sandbox, name: "box", stop: nil, stop_with_timeout: nil, kill: nil,
+      kill_with_timeout: nil)
+  }
 
   before do
     allow(Microsandbox::Native::Sandbox).to receive(:create).and_return(native)
@@ -875,6 +878,7 @@ RSpec.describe Microsandbox::Sandbox do
       expect(result).to eq(:done)
       expect(native).to have_received(:stop_with_timeout).with(10.0)
       expect(native).not_to have_received(:kill)
+      expect(native).not_to have_received(:kill_with_timeout)
     end
 
     it "stops the sandbox even if the block raises" do
@@ -885,11 +889,15 @@ RSpec.describe Microsandbox::Sandbox do
     end
 
     # Runtime v0.7: a graceful stop never escalates, so the block form bounds
-    # it and kills on expiry rather than hanging on the way out.
-    it "kills the sandbox when the bounded stop times out on block exit" do
+    # it and kills on expiry rather than hanging on the way out. The kill has
+    # its own end-to-end budget: a plain #kill waits for the transition lock
+    # without a deadline.
+    it "kills the sandbox with a bounded kill when the bounded stop times out on block exit" do
       allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
-      expect(Microsandbox::Sandbox.create("box", image: "x") { :done }).to eq(:done)
-      expect(native).to have_received(:kill)
+      expect { expect(Microsandbox::Sandbox.create("box", image: "x") { :done }).to eq(:done) }
+        .not_to output.to_stderr
+      expect(native).to have_received(:kill_with_timeout).with(10.0)
+      expect(native).not_to have_received(:kill)
     end
 
     it "uses BLOCK_STOP_TIMEOUT as the block-form budget" do
@@ -898,11 +906,23 @@ RSpec.describe Microsandbox::Sandbox do
       expect(native).to have_received(:stop_with_timeout).with(3.0)
     end
 
-    it "swallows a failing kill after a timed-out stop and keeps the block's exception" do
+    it "warns about a failing kill after a timed-out stop and keeps the block's exception" do
       allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
-      allow(native).to receive(:kill).and_raise(Microsandbox::Error, "kill timed out")
-      expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "boom" } }
-        .to raise_error(IOError, "boom")
+      allow(native).to receive(:kill_with_timeout).and_raise(Microsandbox::Error, "kill timed out")
+      expect do
+        expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "boom" } }
+          .to raise_error(IOError, "boom")
+      end.to output(/cleanup gave up on sandbox "box", which may still be running.*kill timed out/).to_stderr
+    end
+
+    it "still warns when the sandbox's name cannot be read" do
+      allow(native).to receive(:stop_with_timeout).and_raise(Microsandbox::StopTimeoutError, "timed out")
+      allow(native).to receive(:kill_with_timeout).and_raise(Microsandbox::Error, "kill timed out")
+      allow(native).to receive(:name).and_raise(Microsandbox::ForkedHandleError, "forked")
+      expect do
+        expect { Microsandbox::Sandbox.create("box", image: "x") { raise IOError, "boom" } }
+          .to raise_error(IOError, "boom")
+      end.to output(/cleanup gave up on sandbox "<unknown: Microsandbox::ForkedHandleError>"/).to_stderr
     end
   end
 
@@ -1308,6 +1328,7 @@ RSpec.describe Microsandbox::Sandbox do
       Microsandbox::Sandbox.connect_or_create("box", image: "x") { |sb| sb.name }
       expect(native).not_to have_received(:stop_with_timeout)
       expect(native).not_to have_received(:kill)
+      expect(native).not_to have_received(:kill_with_timeout)
     end
 
     it "leaves a detached sandbox running after the .connect_or_create block form" do
@@ -1337,6 +1358,7 @@ RSpec.describe Microsandbox::Sandbox do
       expect(result).to eq(:block_value)
       expect(native).to have_received(:stop_with_timeout)
       expect(native).not_to have_received(:kill)
+      expect(native).not_to have_received(:kill_with_timeout)
     end
 
     it "exposes the sandbox identity as #id" do

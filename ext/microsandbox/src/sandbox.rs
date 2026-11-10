@@ -107,6 +107,29 @@ fn parse_http_deny(h: RHash) -> Result<HttpDeny, Error> {
     })
 }
 
+/// Run a whole kill under one deadline: the name's transition lock, the
+/// dispatch and the stopped-state observation. Upstream `kill_with_timeout`
+/// bounds only the observation; its `request_kill` waits for the transition
+/// lock without a deadline, so a held lock would block the caller forever.
+///
+/// Dropping the kill future on expiry is safe at v0.7.14: before the lock is
+/// taken it only closes the lock file; afterwards the guard's drop releases
+/// the lock, SIGKILL (if already sent) is synchronous, and a row left
+/// `Running` is reconciled from the dead pid by the next `get`/`list`/`start`.
+async fn kill_within<F>(name: &str, duration: Duration, kill: F) -> MicrosandboxResult<()>
+where
+    F: std::future::Future<Output = MicrosandboxResult<()>>,
+{
+    match tokio::time::timeout(duration, kill).await {
+        Ok(result) => result,
+        Err(_) => Err(microsandbox::MicrosandboxError::Runtime(format!(
+            "timed out killing sandbox '{name}' within {:.3}s (the budget covers the \
+             transition lock, the kill request and observing the stop)",
+            duration.as_secs_f64()
+        ))),
+    }
+}
+
 fn secs_to_duration(secs: f64) -> Result<Duration, Error> {
     Duration::try_from_secs_f64(secs).map_err(|e| {
         error::base_error(format!(
@@ -823,17 +846,24 @@ impl Sandbox {
         block_on(inner.stop_with_timeout(duration))?.map_err(error::to_ruby)
     }
 
-    /// Force kill, waiting up to 5 s for the stopped state.
+    /// Force kill (upstream `kill`): waits without a deadline for the name's
+    /// transition lock, then up to 5 s for the stopped state.
     fn kill(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.kill())?.map_err(error::to_ruby)
     }
 
-    /// Force kill, waiting up to `secs` for the stopped state.
+    /// Force kill under one budget of `secs`, transition lock and dispatch
+    /// included (see `kill_within`).
     fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
         let duration = secs_to_duration(secs)?;
         let inner = self.inner.get()?;
-        block_on(inner.kill_with_timeout(duration))?.map_err(error::to_ruby)
+        block_on(kill_within(
+            inner.name(),
+            duration,
+            inner.kill_with_timeout(duration),
+        ))?
+        .map_err(error::to_ruby)
     }
 
     /// Trigger a graceful drain (SIGUSR1 on local).
@@ -2978,16 +3008,24 @@ impl SbHandle {
         block_on(inner.stop_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
     }
 
-    /// Force kill, waiting up to 5 s for the stopped state.
+    /// Force kill (upstream `kill`): waits without a deadline for the name's
+    /// transition lock, then up to 5 s for the stopped state.
     fn kill(&self) -> Result<(), Error> {
         let inner = self.inner.get()?;
         block_on(inner.kill())?.map_err(error::to_ruby)
     }
 
-    /// Force kill, waiting up to `secs` for the stopped state.
+    /// Force kill under one budget of `secs`, transition lock and dispatch
+    /// included (see `kill_within`).
     fn kill_with_timeout(&self, secs: f64) -> Result<(), Error> {
+        let duration = secs_to_duration(secs)?;
         let inner = self.inner.get()?;
-        block_on(inner.kill_with_timeout(secs_to_duration(secs)?))?.map_err(error::to_ruby)
+        block_on(kill_within(
+            inner.name(),
+            duration,
+            inner.kill_with_timeout(duration),
+        ))?
+        .map_err(error::to_ruby)
     }
 
     /// Send the graceful-shutdown request and return without waiting.

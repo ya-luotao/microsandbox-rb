@@ -101,7 +101,8 @@ hostname enforcement on by default. Migration notes are below.
   `InvalidConfigError`. The block form stops the sandbox on exit. See
   `docs/images.md#restoring-a-snapshot`.
 - **`Sandbox#stop_with_timeout(seconds)` / `#kill_with_timeout(seconds)`** on
-  the live sandbox (they were on `SandboxHandle` only), and
+  the live sandbox (they were on `SandboxHandle` only; on both, the budget now
+  covers the whole call, waiting for the transition lock included), and
   **`Sandbox::BLOCK_STOP_TIMEOUT`** (10).
 - **`Snapshot.create(guest_flush:)`** (`:auto`, `:required`, `:skip`) and
   **`SnapshotInfo#reference`** / **`#reference_kind`**, the reference
@@ -143,8 +144,14 @@ hostname enforcement on by default. Migration notes are below.
   waits without a deadline; `stop_with_timeout` and `restart`/`destroy`'s
   `timeout:` raise `StopTimeoutError` on expiry and kill nothing. The block
   forms of `create`, `connect_or_create` and `restore` therefore stop with a
-  `BLOCK_STOP_TIMEOUT` budget and kill when it runs out, so a block exit cannot
-  hang; an interrupted create does the same.
+  `BLOCK_STOP_TIMEOUT` budget and then kill with a 10-second budget, both
+  covering the sandbox's transition lock, so a block exit cannot hang; an
+  interrupted create does the same. When that kill fails or runs out of time
+  the SDK warns (`cleanup gave up on sandbox "<name>", which may still be
+  running`) instead of raising over the block's own result or exception.
+  `#kill` keeps upstream's behaviour: it waits for the transition lock without
+  a deadline, then up to 5 seconds to see the sandbox stopped;
+  `#kill_with_timeout(n)` bounds the whole call, lock included.
   `create(replace: true)` is the exception and still escalates when the name
   is held by a running sandbox: `TERM`, a grace of `replace_with_timeout:`
   (10 seconds by default; `0` skips the `TERM`), `KILL`, then 5 seconds to

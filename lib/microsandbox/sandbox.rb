@@ -74,15 +74,19 @@ module Microsandbox
       nil
     end
 
-    # Force-kill the sandbox, waiting up to 5 seconds to observe it stopped.
+    # Force-kill the sandbox, then wait up to 5 seconds to observe it stopped.
+    # Taking the name's transition lock first has no deadline: while another
+    # lifecycle operation holds it, this waits. Use {#kill_with_timeout} for
+    # one bound over the whole call.
     # @return [nil]
     def kill
       @native.kill
       nil
     end
 
-    # Force-kill, waiting up to `timeout` seconds to observe it stopped (expiry
-    # raises {Error}).
+    # Force-kill under one budget of `timeout` seconds that covers the
+    # transition lock, the kill request and observing the stop. Expiry raises
+    # {Error}; the sandbox may then still be running.
     # @param timeout [Numeric]
     # @return [nil]
     def kill_with_timeout(timeout)
@@ -359,13 +363,21 @@ module Microsandbox
     # without a deadline.
     BLOCK_STOP_TIMEOUT = 10
 
+    # Seconds the same cleanup gives the kill that follows an expired
+    # {BLOCK_STOP_TIMEOUT}, transition lock and dispatch included (the kill's
+    # own waits for the process to exit and release take up to 5 s each).
+    BLOCK_KILL_TIMEOUT = 10
+    private_constant :BLOCK_KILL_TIMEOUT
+
     class << self
       # Create and boot a sandbox.
       #
       # When a block is given the sandbox is yielded and stopped automatically
       # when the block returns (the block's value is returned): a graceful stop
-      # with a {BLOCK_STOP_TIMEOUT} budget, then a kill, so leaving the block
-      # never hangs. Otherwise the live {Sandbox} is returned and you are
+      # with a {BLOCK_STOP_TIMEOUT} budget, then a kill with its own 10-second
+      # budget, both covering the name's transition lock, so leaving the block
+      # never hangs (a kill that cannot finish is reported with a warning and
+      # the sandbox may still be running). Otherwise the live {Sandbox} is returned and you are
       # responsible for calling {#stop}.
       #
       # @param name [String] sandbox name (max 128 UTF-8 bytes)
@@ -1004,13 +1016,29 @@ module Microsandbox
       end
 
       # Stop `target` (a {Sandbox} or its native object) without hanging: a
-      # graceful stop with a {BLOCK_STOP_TIMEOUT} budget, then a kill (itself
-      # bounded at 5 seconds). Since runtime v0.7 a plain stop waits forever
-      # and never escalates.
+      # graceful stop with a {BLOCK_STOP_TIMEOUT} budget, then a kill with a
+      # BLOCK_KILL_TIMEOUT budget. Both budgets are enforced natively and
+      # cover the name's transition lock too: since runtime v0.7 a plain stop
+      # waits forever and never escalates, and a plain kill waits for that
+      # lock without a deadline. A kill that fails or runs out of time is
+      # reported with a warning, never raised: the caller's own result or
+      # exception must win.
       def bounded_stop(target)
         target.stop_with_timeout(BLOCK_STOP_TIMEOUT.to_f)
       rescue StopTimeoutError
-        target.kill
+        begin
+          target.kill_with_timeout(BLOCK_KILL_TIMEOUT.to_f)
+        rescue Microsandbox::Error => e
+          warn "microsandbox: cleanup gave up on sandbox #{cleanup_name(target).inspect}, which " \
+            "may still be running: the graceful stop timed out and the kill failed (#{e.class}: #{e.message})"
+        end
+      end
+
+      # The name for a cleanup warning; never raises over the caller's exception.
+      def cleanup_name(target)
+        target.name
+      rescue => e
+        "<unknown: #{e.class}>"
       end
 
       # The `[value, kind]` pair {restore} hands the native layer: a String is
@@ -2213,15 +2241,19 @@ module Microsandbox
       nil
     end
 
-    # Force-kill the sandbox, waiting up to 5 seconds to observe it stopped.
+    # Force-kill the sandbox, then wait up to 5 seconds to observe it stopped.
+    # Taking the name's transition lock first has no deadline: while another
+    # lifecycle operation holds it, this waits. Use {#kill_with_timeout} for
+    # one bound over the whole call.
     # @return [nil]
     def kill
       @native.kill
       nil
     end
 
-    # Force-kill, waiting up to `timeout` seconds to observe it stopped (expiry
-    # raises {Error}).
+    # Force-kill under one budget of `timeout` seconds that covers the
+    # transition lock, the kill request and observing the stop. Expiry raises
+    # {Error}; the sandbox may then still be running.
     # @param timeout [Numeric]
     # @return [nil]
     def kill_with_timeout(timeout)

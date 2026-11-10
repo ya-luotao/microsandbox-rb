@@ -35,7 +35,8 @@ ensure
   sb.stop          # graceful; waits without a deadline (never escalates)
   # sb.stop_with_timeout(10) # graceful within 10s, else StopTimeoutError (no kill)
   # sb.stop_and_wait # graceful, then wait → ExitStatus(#exit_code, #success?)
-  # sb.kill          # force; waits up to 5s (kill_with_timeout(n) for more)
+  # sb.kill          # force; then waits up to 5s to see it stopped
+  # sb.kill_with_timeout(10) # force; one 10s bound over the whole call
   # sb.drain         # graceful drain
 end
 
@@ -77,9 +78,9 @@ for `Thread#raise` and `Thread#kill`, and for `Sandbox.connect_or_create`,
   that merely connected to a sandbox already running for someone else leaves
   it running, exactly as its block form does.
 
-The cleanup stop is best-effort: if it fails, the interrupt is still the
-exception you get, and the sandbox is torn down when its now unreferenced
-object is garbage-collected.
+The cleanup stop is best-effort and bounded like a block form's (below): if
+it fails, the interrupt is still the exception you get, and the sandbox is
+torn down when its now unreferenced object is garbage-collected.
 
 A Ctrl-C (`SIGINT`) is the one interrupt that cannot be held back until the
 sandbox is in your hands: one that lands during the create is raised the
@@ -98,17 +99,27 @@ A graceful stop no longer escalates to a kill. `#stop` sends the shutdown
 request and waits, without a deadline, until the runtime has released the
 sandbox. `#stop_with_timeout(n)` waits at most `n` seconds and then raises
 `Microsandbox::StopTimeoutError` — it kills nothing, and the shutdown may still
-complete later (a zero budget times out before the request is sent). End it
-for sure with `#kill` (it waits up to 5 seconds to see the sandbox stopped;
-`#kill_with_timeout(n)` for longer). `restart`/`destroy` take the same kind of
+complete later (a zero budget times out before the request is sent). The
+budget covers the whole call, including waiting for the sandbox's transition
+lock while another lifecycle operation on the same name holds it.
+
+End it for sure with `#kill`. `#kill` first waits, **without a deadline**, for
+that transition lock, then sends the kill and waits up to 5 seconds to see the
+sandbox stopped. `#kill_with_timeout(n)` puts one budget of `n` seconds over
+all of it, lock included, and raises `Microsandbox::Error` when it runs out
+(the sandbox may then still be running). `restart`/`destroy` take a graceful
 budget in `timeout:` (10 seconds by default) and raise `StopTimeoutError` when
 it runs out, unless `force: true`.
 
 The block forms of `create`, `connect_or_create` and `restore` stop the sandbox
 on exit with a budget of `Microsandbox::Sandbox::BLOCK_STOP_TIMEOUT` (10)
-seconds and kill it when that runs out, so leaving a block never hangs on a
-guest that does not shut down. Errors in that teardown are swallowed (the
-block's own result or exception wins).
+seconds and, when that runs out, kill it with a further 10-second budget; both
+cover the transition lock, so leaving a block takes at most about 20 seconds
+even when a guest does not shut down or another process holds the lock.
+Errors in that teardown are swallowed (the block's own result or exception
+wins). When the kill fails or runs out of time, the SDK warns once on
+`$stderr` — `cleanup gave up on sandbox "<name>", which may still be running`
+— and leaves the sandbox as it is: stop or kill it yourself later.
 
 ```ruby
 begin
