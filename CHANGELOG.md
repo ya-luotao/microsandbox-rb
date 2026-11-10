@@ -8,7 +8,7 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
-## [0.18.0] - TBD
+## [0.18.0] - 2026-11-10
 
 Adopts upstream runtime `v0.7.14` (from `v0.6.18`). **Breaking.** Runtime
 `v0.7` replaces the secrets vocabulary and the snapshot model, refuses to
