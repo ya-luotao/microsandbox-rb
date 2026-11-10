@@ -163,11 +163,12 @@ hostname enforcement on by default. Migration notes are below.
   well as the `msb` one (unless `MSB_PATH` is set when `microsandbox` is
   required), so `Microsandbox.libkrunfw_path=` is a no-op with it, like
   `runtime_path=`.
-- **SSH `exec`/`attach` report abnormal exits** (upstream #2011): a command
-  killed by a signal returns status `128 + <signal number>` (`128` for an
-  unknown signal name) instead of a success, an agent exit code of `-1`
-  becomes `1`, and a channel that closes with no exit status raises instead of
-  reporting `0`.
+- **SSH `exec`/`attach` report abnormal exits** (upstream #2011) instead of
+  a success: the guest agent's exit code `-1` (a command killed by a signal,
+  or a lost exit notification) becomes status `1` — `exec("kill -KILL $$")`
+  returns `1` —, an exit signal the SSH channel reports becomes
+  `128 + <signal number>` (`128` for an unknown signal name), and a channel
+  that closes with no exit status raises.
 - The runtime's cloud backend now implements `modify` for secrets (upstream
   #1849): `secrets:`/`remove_secrets:` on a cloud sandbox go to the cloud API
   (no gem change; not exercised by this gem's tests), other fields still
@@ -285,8 +286,13 @@ hostname enforcement on by default. Migration notes are below.
   address its stored policy denies with `network_policy_denied`); pass
   `http: { deny_response: false }` where clients relied on the reset.
 - Send EOF with `ExecStdin#close`; `write("")` no longer closes stdin.
-- Code that read an SSH `exec` status of `0` as success for a signalled
-  command now sees `128 + signal`.
+- SSH `exec` of a command that dies abnormally now returns a non-zero
+  status (`1`, or `128 + <signal>` when the channel reports the signal)
+  instead of `0`; check `#success?` rather than a specific code.
+- Executions are capped by the runtime (128 per sandbox, unread exited
+  streams included; 64 KiB pending stdin; 1 MiB unread output): drain or
+  close streams you start, and don't keep more than 128 open.
+- Upgrade Ruby to 3.3 or newer first; Ruby 3.1 and 3.2 are not supported.
 
 ## [0.17.5] - 2026-10-27
 
