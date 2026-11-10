@@ -179,8 +179,8 @@ sandbox created by 0.17.x or earlier still has the old layout, and it is
 moved into the new one before its first start under 0.18.0:
 
 - **Linux**: automatically, when the sandbox next starts.
-- **macOS**: not automatically. The start fails with a message about
-  "explicit maintenance recovery". Stop every pre-0.18 VM in every runtime
+- **macOS**: not automatically. The start raises `Microsandbox::Error`
+  ("macOS legacy storage requires explicit maintenance recovery …"). Stop every pre-0.18 VM in every runtime
   home first (old full snapshots can leave writers behind in another home),
   make sure no older tool will start one or write to this storage, then
   recover each stopped sandbox:
@@ -199,7 +199,7 @@ ones already migrated, need none of this.
 
 To see where each sandbox stands first, `Microsandbox.diagnose_storage`
 inspects the local runtime home without starting, stopping, repairing or
-migrating anything:
+migrating anything — including a home that only 0.17.x has opened so far:
 
 ```ruby
 report = Microsandbox.diagnose_storage(all_sandboxes: true)   # or names: ["worker"]

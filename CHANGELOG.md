@@ -168,9 +168,11 @@ hostname enforcement on by default. Migration notes are below.
   unknown signal name) instead of a success, an agent exit code of `-1`
   becomes `1`, and a channel that closes with no exit status raises instead of
   reporting `0`.
-- `modify` works on cloud sandboxes for secrets (`secrets:`/`remove_secrets:`,
-  upstream #1849); other fields still raise `UnsupportedError` there, and a
-  change the cloud did not confirm raises `ModificationNotConfirmedError`.
+- The runtime's cloud backend now implements `modify` for secrets (upstream
+  #1849): `secrets:`/`remove_secrets:` on a cloud sandbox go to the cloud API
+  (no gem change; not exercised by this gem's tests), other fields still
+  raise `UnsupportedError` there, and a change the cloud did not confirm
+  raises `ModificationNotConfirmedError`.
 - `modify(labels:)` on a running sandbox applies live (upstream #1881) instead
   of at the next start. `modify` refuses an empty label key and the reserved
   `sandbox.`/`microsandbox.`/`service.` prefixes (#1857), and `create`/`modify`
@@ -232,6 +234,14 @@ hostname enforcement on by default. Migration notes are below.
   `Snapshot.create(resumable: true)` with `full: true`.
 - Keep `SnapshotInfo#id` from `Snapshot.create` and pass it (or
   `"<source-sandbox>:<name>"`) wherever a snapshot name was passed before.
+- Select a snapshot made by 0.17.x by its path, or pass the `SnapshotInfo`
+  from `Snapshot.list`: it is in no group, so its bare name raises
+  `InvalidConfigError` (the message names the path), and runtime `v0.7`
+  re-indexes it under a new digest and a `snap_…` id, so a digest recorded
+  under 0.17.x stops selecting it once the snapshot has been opened. Its
+  files stay where they were. When the same artifact exists twice in a home
+  (for example after `Snapshot.load` of its own archive), its id and digest
+  are ambiguous: select it by path.
 - Replace `Sandbox.create(name, from_snapshot: snap)` with
   `Sandbox.restore(snap_info_or_id, name: name)`. Pass only destination
   options; give captured bind/named mounts a destination in `volumes:`. Stop
@@ -250,7 +260,11 @@ hostname enforcement on by default. Migration notes are below.
   every pre-0.18 VM in every runtime home, then run
   `Sandbox.recover_storage(name, legacy_writers_stopped: true)` for each
   stopped sandbox (`Microsandbox.diagnose_storage(all_sandboxes: true)` lists
-  which need it). On Linux the move happens on the next start.
+  which need it — it reads a 0.17.x home without migrating it). Until then
+  `start` raises `Microsandbox::Error` ("macOS legacy storage requires
+  explicit maintenance recovery …"). The recovery keeps the original disks
+  and does not boot the sandbox; afterwards it starts normally, secrets
+  included. On Linux the move happens on the next start.
 - A VM that 0.17.x started and that is still running keeps working for
   `exec` and stop, but cannot be snapshotted, forked or have its disk grown
   until it is stopped and started again under 0.18.0.
@@ -259,13 +273,17 @@ hostname enforcement on by default. Migration notes are below.
   `snapshot_groups`, `migrate_secret_config`, `guest_clock_config`,
   `sandbox_caller_config_overrides`, `sandbox_creation`, `volume_creation`,
   `protected_sandbox_state`); 0.17.x then fails there with `database schema is
-  newer than this msb binary`. Try 0.18.0 against a copy of the home, or a
-  separate `MSB_HOME`, first.
+  newer than this msb binary`. The first open also makes the catalog
+  owner-only (`0700` directory, `0600` files). Back the home up first, and
+  restore a backup to the same path: the catalog and image cache store
+  absolute paths into the home. To try 0.18.0 side by side, give it a
+  separate `MSB_HOME`.
 - The runtime home must be private: no group- or world-writable ancestor
   without the sticky bit.
 - Denied plain-HTTP (and intercepted HTTPS) requests now get a JSON `403`,
-  in old sandboxes too; pass `http: { deny_response: false }` where clients
-  relied on the reset.
+  in old sandboxes too (a 0.17.x sandbox answers a request to a private
+  address its stored policy denies with `network_policy_denied`); pass
+  `http: { deny_response: false }` where clients relied on the reset.
 - Send EOF with `ExecStdin#close`; `write("")` no longer closes stdin.
 - Code that read an SSH `exec` status of `0` as success for a signalled
   command now sees `128 + signal`.
