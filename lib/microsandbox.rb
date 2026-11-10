@@ -181,8 +181,15 @@ module Microsandbox
     # - another source (`MSB_PATH`, configured paths) is another version:
     #   never touched — warn that every local start will be refused;
     # - a partial pair: raise with the files to delete or the variable to set.
+    #
+    # The local backend reads its runtime configuration (`MSB_HOME`,
+    # `MSB_PATH`, `MSB_LIBKRUNFW_PATH`, the config file) once, when it is
+    # first used; if it has changed since, this raises {InvalidConfigError}
+    # before checking or installing anything.
     # @return [nil]
     # @raise [RuntimeIncompleteError] for a partial runtime (unless opted out)
+    # @raise [InvalidConfigError] when the runtime configuration changed after
+    #   the local backend was created
     def ensure_runtime!
       return if @runtime_ready
       RUNTIME_SETUP_LOCK.synchronize do
@@ -190,6 +197,11 @@ module Microsandbox
         return if @runtime_ready
         # A cloud backend has no local msb/libkrunfw runtime to provision.
         return if default_backend_kind == :cloud
+        # The local backend captured its runtime configuration when it was
+        # built (this builds it if nothing has yet); the checks below read it
+        # afresh. Refuse when the two disagree — before anything is installed
+        # or memoized — so that they decide for the runtime `create` launches.
+        Native.verify_backend_runtime_config
         # The binaries gem won the resolver: its vendored pair is exactly the
         # version this gem was built for, so there is nothing to check.
         if bundled_runtime_active?

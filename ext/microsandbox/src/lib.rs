@@ -262,6 +262,56 @@ fn resolved_msb_path() -> Result<String, Error> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// One side of `verify_backend_runtime_config`'s comparison: a configuration's
+/// runtime home and the pair it resolves (or the resolver's error, rendered).
+fn runtime_selection(config: &microsandbox::config::GlobalConfig) -> (std::path::PathBuf, String) {
+    let pair = match microsandbox::setup::resolve_runtime(config) {
+        Ok(runtime) => format!(
+            "msb {} with libkrunfw {}",
+            runtime.msb_path.display(),
+            runtime.libkrunfw_path.display()
+        ),
+        Err(error) => format!("no runtime ({error})"),
+    };
+    (config.home(), pair)
+}
+
+/// Refuse to bootstrap a runtime the active local backend would not launch.
+/// The backend captures its configuration (runtime home, `MSB_PATH`,
+/// `MSB_LIBKRUNFW_PATH`, the SDK slots, the config file) once, when it is
+/// first built — this call builds it if nothing has yet — while `runtime_info`,
+/// `runtime_home_pair` and `install_runtime` read the configuration afresh.
+/// When the two disagree on the home or the resolved pair, the readiness
+/// check and any install would target a runtime `create` does not use, so
+/// this raises `InvalidConfigError` instead; when they agree, every later
+/// bootstrap decision is the backend's. A non-local backend has nothing to
+/// compare.
+fn verify_backend_runtime_config() -> Result<(), Error> {
+    backend::ensure_this_process_backend()?;
+    let backend = microsandbox::default_backend();
+    let Some(local) = backend.as_local() else {
+        return Ok(());
+    };
+    let current = effective_runtime_config("{}").map_err(error::to_ruby)?;
+    let (captured_home, captured_pair) = runtime_selection(local.config());
+    let (current_home, current_pair) = runtime_selection(&current);
+    if captured_home == current_home && captured_pair == current_pair {
+        return Ok(());
+    }
+    Err(error::to_ruby(
+        microsandbox::MicrosandboxError::InvalidConfig(format!(
+            "the runtime configuration changed after this process's local backend was created: \
+         the backend uses runtime home {} and {captured_pair}, but the current configuration \
+         selects runtime home {} and {current_pair}. The backend reads MSB_HOME, MSB_PATH, \
+         MSB_LIBKRUNFW_PATH and the config file once, when it is first used; restore the \
+         earlier setting, or call Microsandbox.set_default_backend(:local) to rebuild it \
+         from the current configuration",
+            captured_home.display(),
+            current_home.display()
+        )),
+    ))
+}
+
 /// This process's fork generation (see `runtime::ProcessIdentity`): how many
 /// `fork`s led from the process that loaded the extension to this one. A
 /// diagnostic for the fork specs, not part of the Ruby API (nothing in
@@ -324,6 +374,10 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
         function!(set_runtime_libkrunfw_path, 1),
     )?;
     native.define_singleton_method("resolved_msb_path", function!(resolved_msb_path, 0))?;
+    native.define_singleton_method(
+        "verify_backend_runtime_config",
+        function!(verify_backend_runtime_config, 0),
+    )?;
     native.define_singleton_method("all_sandbox_metrics", function!(all_sandbox_metrics, 0))?;
     native.define_singleton_method("fork_generation", function!(fork_generation, 0))?;
     native.define_singleton_method("fork_identity_equal", function!(fork_identity_equal, 4))?;

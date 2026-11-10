@@ -69,6 +69,19 @@ sandbox start `Microsandbox.ensure_runtime!` checks the selected runtime:
 With `MICROSANDBOX_NO_AUTO_INSTALL` set nothing is installed or replaced in any
 of these cases; a mismatch is reported with the same warning.
 
+The selected runtime is the one the local backend will launch. That backend
+reads its runtime configuration — `MSB_HOME`, `MSB_PATH`,
+`MSB_LIBKRUNFW_PATH`, `runtime_path=`/`libkrunfw_path=`, the config file —
+once, when it is first used in a process (any sandbox, image or catalog call,
+`runtime_path`, `default_backend_kind`). If one of them changed afterwards so
+that the home or the selected pair differs, `ensure_runtime!` raises
+`Microsandbox::InvalidConfigError` before it checks or installs anything,
+rather than repairing a runtime that sandboxes will not use. Set the
+environment before the first SDK call, or call
+`Microsandbox.set_default_backend(:local)` to rebuild the backend from the
+current configuration. `Microsandbox.install` is not affected: it always
+targets the home the current configuration names.
+
 `Microsandbox.install(force: false)` checks the runtime home itself — the exact
 two files the resolver expects there (`bin/msb` and `lib/libkrunfw.5.dylib` on
 macOS, `lib/libkrunfw.so.5.6.1` on Linux) — whatever `MSB_PATH` or another

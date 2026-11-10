@@ -79,8 +79,11 @@ hostname enforcement on by default. Migration notes are below.
   and `libkrunfw` together: the library must sit next to the executable (or
   in `../lib/`), or be given with `MSB_LIBKRUNFW_PATH`; `MSB_LIBKRUNFW_PATH`
   alone is an error. `Microsandbox.runtime_path` raises when no complete pair
-  resolves, and the local backend reads `MSB_PATH` once, when it is first
-  used in a process.
+  resolves, and the local backend reads `MSB_PATH` (like `MSB_HOME` and the
+  config file) once, when it is first used in a process. When they change
+  after that, the first-use bootstrap raises `InvalidConfigError` instead of
+  checking or replacing a runtime the backend will not launch;
+  `Microsandbox.set_default_backend(:local)` rebuilds the backend.
 - **A bind mount whose host path goes through a symlink is refused** unless
   the mount sets `follow_root_symlinks: true` (e.g. macOS's `/tmp`, `/var`);
   pass the resolved path.
