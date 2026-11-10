@@ -24,6 +24,8 @@ module Microsandbox
   def self.runtime_path=: (String path) -> void
   def self.libkrunfw_path=: (String path) -> void
   def self.all_sandbox_metrics: () -> Hash[String, Metrics]
+  # Local runtime-home storage inspection (runtime v0.7); exactly one scope.
+  def self.diagnose_storage: (?names: (Array[String | Symbol] | String | Symbol)?, ?all_sandboxes: bool, ?home: String?) -> StorageDiagnosis
 
   def self.set_default_backend: (String | Symbol kind, ?url: String?, ?api_key: String?, ?profile: String?) -> void
   def self.with_backend: [T] (String | Symbol kind, ?url: String?, ?api_key: String?, ?profile: String?) { () -> T } -> T
@@ -331,6 +333,10 @@ module Microsandbox
                        ?snapshot_base: String?, ?allow_missing_resources: bool,
                        ?external_mount_policy: (String | Symbol)?)
                       ?{ (Sandbox) -> untyped } -> untyped
+    # Import or resume a stopped sandbox's storage (runtime v0.7) without
+    # booting it. `selections:` maps disk id => candidate id.
+    def self.recover_storage: (String | Symbol name, ?selections: Hash[String | Symbol, String],
+                               ?accept_selected_view: bool, ?legacy_writers_stopped: bool) -> StorageRecovery
     def self.get: (String name) -> SandboxHandle
     def self.list: () -> SandboxPage
     def self.list_with: (?labels: Hash[untyped, untyped], ?limit: Integer?, ?cursor: String?) -> SandboxPage
@@ -655,6 +661,50 @@ module Microsandbox
     def version: () -> String?
     def legacy?: () -> bool
     def matches_sdk?: () -> bool
+  end
+
+  # Storage diagnosis and recovery results (runtime v0.7).
+  class StorageCandidate
+    def initialize: (Hash[String, untyped] data) -> void
+    attr_reader id: String
+    attr_reader disk_id: String
+    attr_reader layers: Integer
+    attr_reader virtual_size: Integer
+    attr_reader estimated_bytes: Integer
+  end
+
+  class StorageInspection
+    def initialize: (Hash[String, untyped] data) -> void
+    attr_reader status: Symbol?
+    attr_reader reasons: Array[String]
+    attr_reader candidates: Array[StorageCandidate]
+    attr_reader estimated_bytes: Integer?
+    def preview_available?: () -> bool
+  end
+
+  class StorageSandboxDiagnosis
+    def initialize: (Hash[String, untyped] data) -> void
+    attr_reader name: String
+    attr_reader status: Symbol
+    attr_reader reason: Symbol?
+    attr_reader inspection: StorageInspection?
+    attr_reader guest_mounts: Hash[String, String]
+    def running?: () -> bool
+    def protection_registered?: () -> bool
+  end
+
+  class StorageDiagnosis
+    def initialize: (Hash[String, untyped] data) -> void
+    attr_reader home: String
+    attr_reader sandboxes: Array[StorageSandboxDiagnosis]
+    attr_reader required_runtime_capability: String
+  end
+
+  class StorageRecovery
+    def initialize: (Hash[String, untyped] data) -> void
+    attr_reader name: String
+    def ready?: () -> bool
+    def originals_retained?: () -> bool
   end
 
   # Host-side secret source (runtime v0.6.17): only `env` exists.

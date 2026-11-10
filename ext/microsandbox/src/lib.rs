@@ -20,6 +20,7 @@ mod runtime;
 mod sandbox;
 mod snapshot;
 mod ssh;
+mod storage;
 mod stream;
 mod volume;
 
@@ -338,6 +339,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     volume::define(ruby, &native)?;
     agent::define(ruby, &native)?;
     ssh::define(ruby, &native)?;
+    storage::define(ruby, &native)?;
 
     Ok(())
 }

@@ -48,6 +48,11 @@ counterpart, and [DESIGN.md](../DESIGN.md) explains how the layers fit.
   `snapshot_base`/`allow_missing_resources`/`external_mount_policy` (see
   [images.md](images.md#restoring-a-snapshot)). It replaced create's
   `from_snapshot:`.
+- **Storage upgrade** — `Microsandbox.diagnose_storage` (read-only
+  inspection → `StorageDiagnosis`) and `Sandbox.recover_storage` (import a
+  stopped pre-0.18 sandbox's disks into the runtime `v0.7` protected layout →
+  `StorageRecovery`; macOS needs `legacy_writers_stopped: true`). See
+  [lifecycle.md](lifecycle.md#upgrading-sandboxes-created-before-0180).
 - **Rootfs patches** — `Microsandbox::Patch` (text/file/append/copy_file/
   copy_dir/symlink/mkdir/remove) via `create(patches:)`.
 - **Root disk** — structured `root_disk:` (managed / tmpfs / disk / flat via

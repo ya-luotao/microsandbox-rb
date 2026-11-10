@@ -105,6 +105,13 @@ hostname enforcement on by default. Migration notes are below.
   SDK, see `docs/runtime.md`), and the version embedded in the `msb`
   (`version`, `legacy?`, `matches_sdk?`). Reads files only.
 - **`Microsandbox.install(force: true)`** reinstalls the runtime into the home.
+- **`Sandbox.recover_storage(name, selections:, accept_selected_view:,
+  legacy_writers_stopped:)`** and **`Microsandbox.diagnose_storage(names:,
+  all_sandboxes:, home:)`** (→ `StorageRecovery` / `StorageDiagnosis`):
+  inspect and import the storage of sandboxes created before 0.18.0 into the
+  runtime `v0.7` protected layout without booting them. Linux migrates on the
+  next start; macOS needs the explicit recovery. See
+  `docs/lifecycle.md#upgrading-sandboxes-created-before-0180`.
 - **`Sandbox.create(max_tcp_connections:, max_udp_connections:)`**: caps on
   proxied TCP connections and UDP relay sessions (`0` = unlimited, omitted =
   the runtime default).
@@ -201,6 +208,11 @@ hostname enforcement on by default. Migration notes are below.
   `MICROSANDBOX_NO_AUTO_INSTALL`, provision `v0.7.14` out of band.
 - Replace any `installed?` check that meant "the home holds a runtime" with
   `runtime_info` (and `#matches_sdk?`).
+- On macOS, before starting a sandbox created by 0.17.x or earlier: stop
+  every pre-0.18 VM in every runtime home, then run
+  `Sandbox.recover_storage(name, legacy_writers_stopped: true)` for each
+  stopped sandbox (`Microsandbox.diagnose_storage(all_sandboxes: true)` lists
+  which need it). On Linux the move happens on the next start.
 
 ## [0.17.5] - 2026-10-27
 

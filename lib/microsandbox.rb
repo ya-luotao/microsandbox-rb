@@ -38,6 +38,7 @@ require_relative "microsandbox/agent"
 require_relative "microsandbox/ssh"
 require_relative "microsandbox/modification"
 require_relative "microsandbox/sandbox"
+require_relative "microsandbox/storage"
 
 # Microsandbox — lightweight microVM sandboxes for Ruby.
 #

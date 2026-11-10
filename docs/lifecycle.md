@@ -172,6 +172,65 @@ Microsandbox::Sandbox.restore(info, name: "replay") { |sb| sb.shell("make test")
 Selectors, destination options and mount bindings are covered in
 [images.md](images.md#restoring-a-snapshot).
 
+## Upgrading sandboxes created before 0.18.0
+
+Runtime `v0.7` keeps a sandbox's disks in a protected storage layout. A
+sandbox created by 0.17.x or earlier still has the old layout, and it is
+moved into the new one before its first start under 0.18.0:
+
+- **Linux**: automatically, when the sandbox next starts.
+- **macOS**: not automatically. The start fails with a message about
+  "explicit maintenance recovery". Stop every pre-0.18 VM in every runtime
+  home first (old full snapshots can leave writers behind in another home),
+  make sure no older tool will start one or write to this storage, then
+  recover each stopped sandbox:
+
+```ruby
+Microsandbox::Sandbox.recover_storage("worker", legacy_writers_stopped: true)
+# => #<Microsandbox::StorageRecovery name="worker" ready=true>
+```
+
+`legacy_writers_stopped: true` is your confirmation of that maintenance
+window; the runtime cannot check it from one home's catalog, so it never
+assumes it. Recovery does not boot the sandbox, and it keeps the original
+disks (`#originals_retained?`). The sandbox must be stopped
+(`SandboxStillRunningError` otherwise). Sandboxes created under 0.18.0, and
+ones already migrated, need none of this.
+
+To see where each sandbox stands first, `Microsandbox.diagnose_storage`
+inspects the local runtime home without starting, stopping, repairing or
+migrating anything:
+
+```ruby
+report = Microsandbox.diagnose_storage(all_sandboxes: true)   # or names: ["worker"]
+report.sandboxes.each { |s| puts "#{s.name}: #{s.status} #{s.reason}" }
+```
+
+| `status` | Meaning |
+|---|---|
+| `:ready` | already in the protected layout |
+| `:eligible` | Linux: migrates on its next start |
+| `:maintenance_required` | macOS: run `recover_storage(legacy_writers_stopped: true)` |
+| `:recovery_required` | the old metadata is ambiguous or damaged: pick a view (below) |
+| `:in_progress` | an interrupted migration; `recover_storage` resumes it |
+| `:unavailable` | the check could not finish; `reason` says why (`:not_found`, `:invalid_configuration`, `:incomplete_creation`, `:storage_unavailable`) |
+
+A sandbox whose report has a `running?` VM gets a provisional answer, and a
+recovery revalidates everything under locks anyway. For `:recovery_required`,
+`inspection.candidates` lists the complete disk views found: choose one per
+disk and acknowledge that it may lack later writes:
+
+```ruby
+candidate = report.sandboxes.first.inspection.candidates.first
+Microsandbox::Sandbox.recover_storage("worker",
+  selections: { candidate.disk_id => candidate.id }, accept_selected_view: true,
+  legacy_writers_stopped: true)   # macOS
+```
+
+Both calls are local-only and read the runtime home that `MSB_HOME` (or
+`diagnose_storage(home:)`) names; a home with no catalog yet raises
+`IoError`. `recover_storage` checks the runtime first, like a start.
+
 ## The live `Sandbox` / `SandboxHandle` split
 
 Upstream `v0.5.8` split the lifecycle into the live `Sandbox` and a
