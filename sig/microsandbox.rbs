@@ -635,6 +635,21 @@ module Microsandbox
     def self.deny_dns: () -> Hash[String, untyped]
   end
 
+  # Linux stopgap for unreaped detached VM children (upstream #1950). @api private
+  module ChildReaper
+    INTERVAL: Integer
+    GRACE: Integer
+    VM_COMMS: Array[String]
+    VM_COMM_PREFIX: String
+    DISABLE_ENV: String
+    def self.ensure_started: () -> bool
+    def self.enabled?: () -> bool
+    def self.running?: () -> bool
+    def self.reap_once: (?now: Float, ?proc_root: String) -> Array[Integer]
+    def self.vm_zombie_children: (?proc_root: String, ?parent: Integer) -> Array[Integer]
+    def self.vm_comm?: (String comm) -> bool
+  end
+
   module RootDisk
     def self.managed: (?Integer? size_mib) -> Hash[String, untyped]
     def self.tmpfs: (?Integer? size_mib) -> Hash[String, untyped]

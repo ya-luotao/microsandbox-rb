@@ -8,6 +8,20 @@ wraps, and the README's Versioning section keeps the full gem→runtime map.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Linux: stopped detached sandboxes no longer pile up as zombie processes**
+  ([superradcompany/microsandbox#1950](https://github.com/superradcompany/microsandbox/issues/1950)).
+  Runtime `v0.7.14` never waits for the VM child of a detached sandbox
+  (`detached: true`, `#detach`, a no-block `Sandbox.restore`), so each one
+  stayed `<defunct>` until the Ruby process exited. The first local start now
+  runs a background thread that collects only children of this process that
+  are zombies, carry the VM's process name, and have stayed zombies for 30 s
+  (so the runtime's own wait goes first), each with `waitpid` on its own pid.
+  The application's other children are never touched. Opt out with
+  `MICROSANDBOX_NO_CHILD_REAPER`. Upstream's fix (#1953) ships with runtime
+  `v0.8`; this stopgap goes when the gem adopts it.
+
 ## [0.18.0] - 2026-11-10
 
 Adopts upstream runtime `v0.7.14` (from `v0.6.18`). **Breaking.** Runtime

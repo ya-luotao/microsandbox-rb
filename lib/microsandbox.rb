@@ -39,6 +39,7 @@ require_relative "microsandbox/ssh"
 require_relative "microsandbox/modification"
 require_relative "microsandbox/sandbox"
 require_relative "microsandbox/storage"
+require_relative "microsandbox/child_reaper"
 
 # Microsandbox — lightweight microVM sandboxes for Ruby.
 #
@@ -191,6 +192,9 @@ module Microsandbox
     # @raise [InvalidConfigError] when the runtime configuration changed after
     #   the local backend was created
     def ensure_runtime!
+      # Every local start passes here, so this is where the Linux stopgap for
+      # unreaped detached VM children starts (see ChildReaper).
+      ChildReaper.ensure_started
       return if @runtime_ready
       RUNTIME_SETUP_LOCK.synchronize do
         # Re-check under the lock: another thread may have finished meanwhile.

@@ -333,9 +333,14 @@ security advisories.
   ([superradcompany/microsandbox#1950](https://github.com/superradcompany/microsandbox/issues/1950)).
   After a sandbox started with `detached: true` (or `#detach`ed, or restored
   without a block) stops, its VM child stays `<defunct>` in the SDK process
-  until that process exits. macOS reaps it. A long-running process that
-  creates many detached sandboxes accumulates them; prefer attached
-  sandboxes there.
+  until that process exits. macOS reaps it. **Worked around in the SDK on
+  Linux:** the first local start runs a background thread that, every 15 s,
+  collects a child of this process that is a zombie, carries the VM's name
+  (`libkrun VM`, `VM:<hostname>`, or `msb`), and has stayed a zombie for at
+  least 30 s, with `waitpid` on that one pid. The grace period lets the
+  runtime's own wait on a VM it still tracks go first; other children of the
+  application are never touched. Set `MICROSANDBOX_NO_CHILD_REAPER` to turn it
+  off. Upstream fixed it in #1953, released with runtime v0.8.
 
 ## Environment variables
 
@@ -348,5 +353,6 @@ security advisories.
 | `MSB_PROFILE` | Select a named profile from the config file |
 | `MSB_CONFIG_PATH` | Override the `~/.microsandbox/config.json` location |
 | `MICROSANDBOX_NO_AUTO_INSTALL` | Never install or replace the runtime: no first-use download, no upgrade of a stale home runtime |
+| `MICROSANDBOX_NO_CHILD_REAPER` | Linux: do not start the thread that collects stopped detached VM children (see Known issues) |
 | `MICROSANDBOX_INTEGRATION` | Set to `1` to run the integration specs (development only) |
 | `MICROSANDBOX_TEST_IMAGE` | Override the integration-spec image (development only) |
